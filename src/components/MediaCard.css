@@ -1,0 +1,323 @@
+.media-card {
+  display: block;
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  text-decoration: none !important;
+  color: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.media-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow);
+}
+
+.poster-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.3s ease;
+}
+
+.media-card:hover .poster-image {
+  transform: scale(1.05);
+}
+
+.poster-placeholder,
+.image-loading {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: loading-sweep 1.5s infinite linear;
+}
+
+@keyframes loading-sweep {
+  from { background-position-x: -400%; }
+  to { background-position-x: 0; }
+}
+
+/* Badge Styles */
+.badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+.hls-badge {
+  background-color: #ef4444;
+  color: white;
+}
+
+.duration-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background-color: rgba(0, 0, 0, 0.85);
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: monospace;
+}
+
+.resume-badge {
+  position: absolute;
+  bottom: 8px;
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background-color: rgba(37, 99, 235, 0.85);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+
+.resume-icon {
+  font-size: 9px;
+}
+
+/* Category badge */
+.category-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  background-color: rgba(0, 0, 0, 0.75);
+  color: white;
+  z-index: 1;
+}
+
+/* Title appears on hover */
+.card-content {
+  transition: opacity 0.2s ease;
+}
+
+.video-title {
+  margin: 0 0 4px 0;
+  font-size: 0.875rem;
+  color: var(--text);
+  line-height: 1.3;
+  max-height: 2.6em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.card-subtitle {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Favorite button */
+.favorite-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px;
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.favorite-btn:hover {
+  transform: scale(1.2);
+}
+
+.favorite-btn.active {
+  color: #fbbf24;
+}
+
+/* Inline card actions (playlist + delete + favorite) */
+.card-actions {
+  z-index: 2;
+}
+
+.playlist-btn,
+.trash-btn {
+  font-size: 15px;
+  padding: 4px 5px;
+}
+
+.trash-btn:hover {
+  color: #ef4444;
+}
+
+.card-error-text {
+  color: #ef4444;
+}
+
+/* Add-to-playlist dropdown */
+.playlist-menu-wrap {
+  position: relative;
+}
+
+.playlist-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 200px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 8px;
+  z-index: 30;
+}
+
+.playlist-menu-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  padding: 2px 6px 8px;
+}
+
+.playlist-menu-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 6px 8px;
+}
+
+.playlist-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.playlist-menu-item:hover {
+  background: var(--hover-overlay);
+}
+
+.playlist-menu-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--surface-3);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.playlist-menu-new {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.playlist-menu-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.playlist-menu-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.playlist-menu-create {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.playlist-menu-create:hover {
+  background: var(--accent-hover);
+}
+
+/* Play Overlay */
+.play-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.3s ease;
+}
+
+.play-overlay::before {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.3);
+}
+
+.media-card:hover .play-overlay {
+  opacity: 1;
+}
+
+.play-overlay span {
+  display: block;
+  font-size: 24px;
+  position: relative;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .media-card {
+    margin-bottom: 12px;
+  }
+
+  .video-title {
+    font-size: 0.8rem;
+  }
+  
+  .card-content {
+    opacity: 1;
+  }
+}

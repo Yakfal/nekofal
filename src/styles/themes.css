@@ -1,0 +1,71 @@
+/* ============================================================
+   Nekofal Light Theme overrides
+   Loaded AFTER index.css and the component stylesheets so these
+   rules win over both the Tailwind utilities and page CSS.
+   Scoped to the specific pages that still rely on Tailwind
+   text/bg utility classes; dark components (video player modal,
+   HLS badges, play overlays) intentionally keep their dark look.
+   ============================================================ */
+
+[data-theme="light-sky"] body,
+[data-theme="light-sky"] .layout-wrapper {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+/* Utility "white" text on light surfaces -> theme text color */
+[data-theme="light-sky"] .media-library-page :is(h1, h2, h3, p, span, div).text-white,
+[data-theme="light-sky"] .favorites-page :is(h1, h2, h3, p, span, div).text-white,
+[data-theme="light-sky"] .settings-page :is(h1, h2, h3, p, span, div).text-white {
+  color: var(--text);
+}
+
+/* Muted gray utility text -> theme muted color */
+[data-theme="light-sky"] .media-library-page :is(p, span, div, li).text-gray-400,
+[data-theme="light-sky"] .media-library-page :is(span, div).text-gray-300,
+[data-theme="light-sky"] .favorites-page :is(p, span, div).text-gray-400,
+[data-theme="light-sky"] .settings-page :is(p, span, div).text-gray-400 {
+  color: var(--text-muted);
+}
+
+/* Dark gray chip/surface utilities -> themed surfaces */
+[data-theme="light-sky"] .media-library-page .bg-gray-700\/50,
+[data-theme="light-sky"] .media-library-page .bg-gray-800\/50 {
+  background-color: var(--surface);
+}
+[data-theme="light-sky"] .media-library-page .bg-gray-700,
+[data-theme="light-sky"] .media-library-page .bg-gray-800 {
+  background-color: var(--surface-2);
+}
+[data-theme="light-sky"] .media-library-page .bg-gray-600,
+[data-theme="light-sky"] .media-library-page .bg-gray-500 {
+  background-color: var(--surface-3);
+}
+[data-theme="light-sky"] .media-library-page .hover\:bg-gray-700:hover,
+[data-theme="light-sky"] .media-library-page .hover\:bg-gray-800:hover {
+  background-color: var(--surface-3);
+}
+[data-theme="light-sky"] .media-library-page .hover\:bg-gray-500:hover {
+  background-color: var(--surface-2);
+}
+[data-theme="light-sky"] .media-library-page .hover\:text-white:hover {
+  color: var(--text);
+}
+[data-theme="light-sky"] .media-library-page .text-gray-200 {
+  color: var(--text);
+}
+[data-theme="light-sky"] .media-library-page .border-gray-700 {
+  border-color: var(--border);
+}
+[data-theme="light-sky"] .media-library-page .hover\:border-blue-500:hover {
+  border-color: var(--accent);
+}
+[data-theme="light-sky"] .media-library-page .bg-blue-600 {
+  background-color: var(--accent);
+}
+[data-theme="light-sky"] .media-library-page .bg-blue-600\/20 {
+  background-color: var(--accent-soft);
+}
+[data-theme="light-sky"] .media-library-page .text-blue-300 {
+  color: var(--accent-hover);
+}

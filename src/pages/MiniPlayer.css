@@ -1,0 +1,127 @@
+:root {
+  --mini-bg: #0d1320;
+  --mini-accent: #38bdf8;
+  --mini-text: #e2e8f0;
+  --mini-dim: #94a3b8;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--mini-bg);
+  color: var(--mini-text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  overflow: hidden;
+  height: 100%;
+}
+
+#root { height: 100%; }
+
+.mini-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--mini-bg);
+}
+
+/* Frameless drag region */
+.mini-titlebar {
+  -webkit-app-region: drag;
+  height: 28px;
+  flex: 0 0 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  background: #0a101c;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: none;
+}
+
+.mini-title {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--mini-text);
+}
+
+.mini-video {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  object-fit: contain;
+  background: #000;
+}
+
+.mini-controls {
+  -webkit-app-region: no-drag;
+  flex: 0 0 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: #0a101c;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mini-btn {
+  -webkit-app-region: no-drag;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--mini-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mini-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.mini-close:hover {
+  background: #c0392b;
+  color: #fff;
+}
+
+.mini-quality {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+  color: var(--mini-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Waiting state */
+.mini-wait {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--mini-dim);
+}
+
+.mini-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--mini-accent);
+  border-radius: 50%;
+  animation: mini-spin 0.8s linear infinite;
+}
+
+@keyframes mini-spin {
+  to { transform: rotate(360deg); }
+}
+
+.mini-wait-text {
+  font-size: 13px;
+}

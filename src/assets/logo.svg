@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="catBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="earIn" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#059669"/>
+      <stop offset="1" stop-color="#065f46"/>
+    </linearGradient>
+    <radialGradient id="bgGlow" cx="0.5" cy="0.42" r="0.72">
+      <stop offset="0" stop-color="#12201a"/>
+      <stop offset="1" stop-color="#0b0f17"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded deep-black tile -->
+  <rect x="26" y="26" width="460" height="460" rx="118" fill="url(#bgGlow)"/>
+  <rect x="26" y="26" width="460" height="460" rx="118" fill="none" stroke="#10b981" stroke-opacity="0.16" stroke-width="18"/>
+
+  <!-- Falling motion lines -->
+  <g stroke="#34d399" stroke-opacity="0.45" stroke-width="12" stroke-linecap="round">
+    <line x1="92" y1="120" x2="92" y2="168"/>
+    <line x1="92" y1="300" x2="92" y2="348"/>
+    <line x1="420" y1="90" x2="420" y2="138"/>
+    <line x1="420" y1="270" x2="420" y2="318"/>
+    <line x1="420" y1="400" x2="420" y2="440"/>
+  </g>
+
+  <!-- Tail trailing up -->
+  <path d="M338 118 C 400 96, 436 58, 406 34 C 384 16, 356 28, 366 48"
+        fill="none" stroke="url(#catBody)" stroke-width="30" stroke-linecap="round"/>
+
+  <!-- Hind legs (flailing up, classic startled fall) -->
+  <rect x="196" y="8" width="46" height="128" rx="23" fill="url(#catBody)"
+        transform="rotate(-20 219 72)"/>
+  <rect x="270" y="8" width="46" height="128" rx="23" fill="url(#catBody)"
+        transform="rotate(20 293 72)"/>
+  <ellipse cx="160" cy="56" rx="26" ry="30" fill="#34d399" transform="rotate(-20 160 56)"/>
+  <ellipse cx="352" cy="56" rx="26" ry="30" fill="#34d399" transform="rotate(20 352 56)"/>
+
+  <!-- Body (tapered above the head) -->
+  <path d="M256 52 C 352 52 388 158 366 232 L 146 232 C 124 158 160 52 256 52 Z"
+        fill="url(#catBody)"/>
+
+  <!-- Front paws splayed outwards -->
+  <rect x="104" y="196" width="44" height="126" rx="22" fill="url(#catBody)"
+        transform="rotate(26 126 259)"/>
+  <rect x="364" y="196" width="44" height="126" rx="22" fill="url(#catBody)"
+        transform="rotate(-26 386 259)"/>
+
+  <!-- Light belly -->
+  <ellipse cx="256" cy="182" rx="62" ry="86" fill="#ecfdf5" opacity="0.9"/>
+
+  <!-- Ears -->
+  <polygon points="176,252 146,128 240,212" fill="url(#catBody)"/>
+  <polygon points="336,252 366,128 272,212" fill="url(#catBody)"/>
+  <polygon points="183,222 162,156 222,204" fill="url(#earIn)"/>
+  <polygon points="329,222 350,156 290,204" fill="url(#earIn)"/>
+
+  <!-- Head -->
+  <circle cx="256" cy="372" r="118" fill="url(#catBody)"/>
+
+  <!-- Cheeks -->
+  <ellipse cx="168" cy="392" rx="26" ry="16" fill="#34d399" opacity="0.85"/>
+  <ellipse cx="344" cy="392" rx="26" ry="16" fill="#34d399" opacity="0.85"/>
+
+  <!-- Eyes -->
+  <circle cx="212" cy="352" r="27" fill="#f3fefa"/>
+  <circle cx="300" cy="352" r="27" fill="#f3fefa"/>
+  <circle cx="218" cy="356" r="11" fill="#0b0f17"/>
+  <circle cx="306" cy="356" r="11" fill="#0b0f17"/>
+  <circle cx="222" cy="351" r="4" fill="#ffffff"/>
+  <circle cx="310" cy="351" r="4" fill="#ffffff"/>
+
+  <!-- Nose + mouth -->
+  <polygon points="250,404 262,404 256,418" fill="#065f46"/>
+  <path d="M240,428 Q256,446 272,428" fill="none" stroke="#065f46" stroke-width="7"
+        stroke-linecap="round"/>
+
+  <!-- Whiskers -->
+  <g stroke="#0b0f17" stroke-opacity="0.75" stroke-width="7" stroke-linecap="round">
+    <line x1="150" y1="374" x2="84"  y2="364"/>
+    <line x1="150" y1="394" x2="86"  y2="398"/>
+    <line x1="362" y1="374" x2="428" y2="364"/>
+    <line x1="362" y1="394" x2="426" y2="398"/>
+  </g>
+</svg>

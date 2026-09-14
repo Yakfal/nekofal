@@ -1,0 +1,86 @@
+.adult-gate {
+  min-height: calc(100vh - 140px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.adult-gate-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px;
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+
+.adult-gate-lock {
+  font-size: 2.4rem;
+  margin-bottom: 12px;
+}
+
+.adult-gate-card h2 {
+  color: var(--text);
+  margin: 0 0 10px 0;
+  font-size: 1.3rem;
+}
+
+.adult-gate-card p {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 18px 0;
+}
+
+.adult-gate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.adult-gate-input {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 1rem;
+  padding: 12px 14px;
+  text-align: center;
+  letter-spacing: 2px;
+}
+
+.adult-gate-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.adult-gate-btn {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.adult-gate-btn:hover {
+  background: var(--accent-hover);
+}
+
+.adult-gate-error {
+  color: var(--danger);
+  font-size: 0.82rem;
+  margin-top: 10px;
+}
+
+.adult-gate-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 16px;
+}

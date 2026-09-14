@@ -1,0 +1,112 @@
+/* Portal-rendered "Add to playlist" dropdown (see PlaylistMenu.jsx).
+   Fixed to the viewport below the trigger so .media-card overflow:hidden and
+   grid scrolling never clip it. */
+
+.pm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+}
+
+.pm-menu {
+  position: fixed;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 8px;
+  animation: pm-pop-in 0.16s ease;
+}
+
+@keyframes pm-pop-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.pm-menu-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  padding: 2px 6px 8px;
+}
+
+/* Internal vertical scroll for long playlist lists (never grows the page) */
+.pm-menu-scroll {
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pm-menu-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 6px 8px;
+}
+
+.pm-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.pm-menu-item:hover {
+  background: var(--hover-overlay);
+}
+
+.pm-menu-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--surface-3);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.pm-menu-new {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.pm-menu-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.pm-menu-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pm-menu-create {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.pm-menu-create:hover {
+  background: var(--accent-hover);
+}

@@ -1,0 +1,31 @@
+# Yakfal Hub - Caddy reverse proxy
+#
+# {$DOMAIN} is injected from the docker-compose environment (see deploy.sh).
+#   /pb/*    -> PocketBase (admin UI + API) on 8090
+#   everything else -> Express gateway on 3000
+
+{$DOMAIN} {
+	encode gzip
+
+	handle /pb/* {
+		uri strip_prefix /pb
+		reverse_proxy pocketbase:8090
+	}
+
+	handle {
+		reverse_proxy backend:3000
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+	}
+
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}
+
+# Port 8090 stays exposed for direct/offline access and for running
+# backend/init-schema.mjs from the client against http://132.145.159.2:8090.

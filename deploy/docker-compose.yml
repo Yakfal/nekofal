@@ -1,0 +1,66 @@
+# Yakfal Hub - server stack for 132.145.159.2
+#
+#   pocketbase : PocketBase (SQLite) DB + API       :8090
+#   backend    : Express proxy/gateway              :3000
+#   caddy      : HTTPS reverse proxy (Let's Encrypt) :80/:443  (optional)
+#
+# Default deploy runs pocketbase + backend only (use over the encrypted
+# Tailscale tunnel: http://<host>:3000). Caddy + HTTPS is opt-in with a
+# public domain that resolves to this server:
+#
+#   DOMAIN=hub.example.com docker compose --profile tls up -d
+
+services:
+  pocketbase:
+    image: ghcr.io/muchobien/pocketbase:latest
+    container_name: yakfal-pb
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./pb_data:/pb_data
+    environment:
+      PB_ENCRYPTION_KEY: ${PB_ENCRYPTION_KEY:-change-me-to-a-random-secret}
+    command: serve --http=0.0.0.0:8090 --dir=/pb_data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: yakfal-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      POCKETBASE_URL: http://pocketbase:8090
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2
+    container_name: yakfal-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy_data:/data
+      - ./caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_started
+      pocketbase:
+        condition: service_started

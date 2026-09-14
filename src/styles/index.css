@@ -1,0 +1,210 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Nekofal Themes
+   - dark-cyber (default): #0B0F17 bg / #161B26 surface / #10B981 accent
+   - light-sky:            #F8FAFC bg / #E2E8F0 surface / #0284C7 accent
+   ============================================================ */
+:root,
+[data-theme="dark-cyber"] {
+  --bg: #0b0f17;
+  --bg-deep: #070b12;
+  --surface: #161b26;
+  --surface-2: #1c2434;
+  --surface-3: #222b3d;
+  --border: #2a3447;
+  --border-strong: #3a465c;
+  --input-bg: #121826;
+  --text: #e6eaf2;
+  --text-muted: #9aa3b2;
+  --text-dim: #6e7686;
+  --accent: #10b981;
+  --accent-hover: #059669;
+  --accent-soft: rgba(16, 185, 129, 0.15);
+  --danger: #ef4444;
+  --ok: #22c55e;
+  --hover-overlay: rgba(255, 255, 255, 0.08);
+  --shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+[data-theme="light-sky"] {
+  --bg: #f8fafc;
+  --bg-deep: #eef2f7;
+  --surface: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #e2e8f0;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --input-bg: #ffffff;
+  --text: #0f172a;
+  --text-muted: #475569;
+  --text-dim: #94a3b8;
+  --accent: #0284c7;
+  --accent-hover: #0369a1;
+  --accent-soft: rgba(2, 132, 199, 0.12);
+  --danger: #dc2626;
+  --ok: #16a34a;
+  --hover-overlay: rgba(15, 23, 42, 0.06);
+  --shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  color-scheme: light;
+}
+
+/* Base reset and setup */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+/* Focus styles for accessibility */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Custom scrollbar throughout app */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface-2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* Selection colors */
+::selection {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Loading skeleton animation */
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--surface-3) 50%,
+    var(--surface-2) 100%
+  );
+  animation: shimmer 2s infinite;
+}
+
+/* Video player fixed background */
+.video-player-background {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  background: transparent;
+}
+
+/* Card hover effects */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow);
+}
+
+/* Netflix-style grid animation */
+@media (prefers-reduced-motion: no-preference) {
+  .lazy-load-in {
+    animation: lazyLoadIn 0.5s ease-out forwards;
+  }
+}
+
+@keyframes lazyLoadIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Hide loading states */
+.hidden-load {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.loaded-and-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Themed app shell (replaces Tailwind bg-brand-900 utilities) */
+.app-bg {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------------------
+   Grid scrolling: every page route inside <main> stays bounded and scrolls
+   internally so grids (media / search results) never overflow the window or
+   create a second outer scrollbar.
+   --------------------------------------------------------------------------- */
+.layout-wrapper {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main-content {
+  height: calc(100vh - 70px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.media-library-page,
+.adult-page,
+.iptv-page,
+.playlists-page,
+.favorites-page,
+.vss-root {
+  height: 100%;
+}
+
+.media-grid,
+.vss-grid {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "description": "Yakfal Hub PocketBase schema manifest. Consumed by init-schema.mjs (run it after deploying PocketBase).",
+  "collections": {
+    "users": {
+      "type": "auth",
+      "fields": [
+        { "type": "text", "name": "username" },
+        { "type": "email", "name": "email" },
+        { "type": "password", "name": "password" },
+        { "type": "bool", "name": "emailVisibility" },
+        { "type": "bool", "name": "verified" }
+      ],
+      "options": {
+        "allowEmailAuth": true,
+        "allowUsernameAuth": true,
+        "requireEmail": true,
+        "onlyVerified": false,
+        "minUsernameLength": 3,
+        "maxUsernameLength": 150,
+        "minPasswordLength": 6
+      }
+    },
+    "favorites": {
+      "type": "base",
+      "rules": {
+        "listRule": "user = @request.auth.id",
+        "viewRule": "user = @request.auth.id",
+        "createRule": "@request.auth.id != \"\"",
+        "updateRule": "user = @request.auth.id",
+        "deleteRule": "user = @request.auth.id"
+      },
+      "fields": [
+        { "type": "relation", "name": "user", "maxSelect": 1, "cascadeDelete": true, "required": true, "collectionId": "users" },
+        { "type": "text", "name": "media_id", "required": true },
+        { "type": "text", "name": "title", "required": true },
+        { "type": "text", "name": "url" },
+        { "type": "text", "name": "type" },
+        { "type": "text", "name": "thumbnail" },
+        { "type": "bool", "name": "is_adult" }
+      ],
+      "options": {}
+    },
+    "playlists": {
+      "type": "base",
+      "rules": {
+        "listRule": "user = @request.auth.id",
+        "viewRule": "user = @request.auth.id",
+        "createRule": "@request.auth.id != \"\"",
+        "updateRule": "user = @request.auth.id",
+        "deleteRule": "user = @request.auth.id"
+      },
+      "fields": [
+        { "type": "relation", "name": "user", "maxSelect": 1, "cascadeDelete": true, "required": true, "collectionId": "users" },
+        { "type": "text", "name": "title", "required": true },
+        { "type": "text", "name": "description" },
+        { "type": "bool", "name": "is_public" }
+      ],
+      "options": {}
+    },
+    "playlist_items": {
+      "type": "base",
+      "rules": {
+        "listRule": "playlist.user = @request.auth.id",
+        "viewRule": "playlist.user = @request.auth.id",
+        "createRule": "@request.auth.id != \"\"",
+        "updateRule": "playlist.user = @request.auth.id",
+        "deleteRule": "playlist.user = @request.auth.id"
+      },
+      "fields": [
+        { "type": "relation", "name": "playlist", "maxSelect": 1, "cascadeDelete": true, "required": true, "collectionId": "playlists" },
+        { "type": "text", "name": "title" },
+        { "type": "text", "name": "url", "required": true },
+        { "type": "text", "name": "thumbnail" },
+        { "type": "number", "name": "position" }
+      ],
+      "options": {}
+    },
+    "iptv_sources": {
+      "type": "base",
+      "rules": {
+        "listRule": "user = @request.auth.id",
+        "viewRule": "user = @request.auth.id",
+        "createRule": "@request.auth.id != \"\"",
+        "updateRule": "user = @request.auth.id",
+        "deleteRule": "user = @request.auth.id"
+      },
+      "fields": [
+        { "type": "relation", "name": "user", "maxSelect": 1, "cascadeDelete": true, "required": true, "collectionId": "users" },
+        { "type": "text", "name": "name", "required": true },
+        { "type": "text", "name": "url", "required": true },
+        { "type": "number", "name": "channel_count" }
+      ],
+      "options": {}
+    }
+  }
+}

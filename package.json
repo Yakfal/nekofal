@@ -1,0 +1,100 @@
+{
+  "name": "nekofal",
+  "version": "1.0.0",
+  "description": "Nekofal - Desktop media streaming hub",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "node scripts/dist.js",
+    "dist:publish": "node scripts/dist.js --publish",
+    "dist:local": "npm run build && electron-builder --win"
+  },
+  "keywords": [
+    "media",
+    "streaming",
+    "scraper"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "cors": "^2.8.5",
+    "electron-updater": "^6.8.9",
+    "express": "^4.18.2",
+    "hls.js": "^1.7.2",
+    "react-error-boundary": "^6.1.5",
+    "react-router-dom": "^7.18.3",
+    "sql.js": "^1.10.3",
+    "uuid": "^9.0.0",
+    "video.js": "^8.7.0",
+    "yt-dlp-wrap": "^2.3.12"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.14",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.4.31",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^3.3.5",
+    "vite": "^5.0.0",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.nekofal.app",
+    "productName": "Nekofal",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "!electron/main2.js",
+      "!electron/main_new.js",
+      "db/**/*",
+      "backends/**/*",
+      "lib/**/*",
+      "utils/**/*",
+      "config/**/*",
+      "public/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/",
+        "to": "./",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Nekofal-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Yakfal",
+        "repo": "nekofal"
+      }
+    ]
+  }
+}

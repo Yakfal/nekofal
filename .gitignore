@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output (regenerated every build; the icons below are committed)
+build/*
+!build/icon.png
+!build/icon.ico
+
+# Packaged apps
+release/
+dist/
+real-dist/
+
+# Local-only CI workflow (push after granting the token `workflow` scope)
+/.github/workflows/
+
+# Local secrets — never commit
+.env
+.env.local
+*.secret
+
+# Logs / OS noise
+npm-debug.log*
+yarn-error.log*
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini

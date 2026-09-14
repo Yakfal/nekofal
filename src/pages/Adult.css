@@ -1,0 +1,126 @@
+.adult-page {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.adult-header h1 {
+  font-size: 1.9rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.adult-header p {
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-size: 0.95rem;
+}
+
+.adult-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 6px;
+}
+
+.adult-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.adult-chip:hover { border-color: rgba(255, 255, 255, 0.3); }
+
+.adult-chip.active {
+  background: rgba(225, 29, 72, 0.18);
+  border-color: #e11d48;
+  color: var(--text);
+}
+
+.adult-chip.add { border-style: dashed; }
+
+.adult-chip-x {
+  color: var(--text-dim);
+  padding: 0 2px;
+  font-size: 1rem;
+}
+
+.adult-chip-x:hover { color: #fca5a5; }
+
+.adult-presets {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.adult-preset {
+  background: none;
+  border: 1px dashed rgba(225, 29, 72, 0.5);
+  color: #fda4af;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.adult-preset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.adult-empty-hint {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  padding: 6px 0;
+}
+
+.adult-add-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.adult-input {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.adult-input:focus { border-color: #e11d48; }
+
+.adult-add-actions { display: flex; gap: 8px; }
+
+.adult-btn {
+  background: var(--input-bg);
+  color: var(--text-muted);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.adult-btn.primary { background: #e11d48; color: var(--text); }
+.adult-btn:disabled { opacity: 0.5; cursor: default; }
+
+.adult-hint {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}

@@ -1,0 +1,18 @@
+{
+  "name": "yakfal-hub-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Yakfal Hub - Express Gateway & Proxy Engine + PocketBase schema init",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "init-schema": "node init-schema.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}

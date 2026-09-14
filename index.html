@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: http: https:; media-src 'self' blob: data: http: https:; connect-src 'self' http://localhost:* blob: http: https:" />
+  <title>Nekofal</title>
+  
+  <!-- Google Fonts - Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              900: '#0b0f17',
+              800: '#161b26',
+              700: '#1c2434',
+              600: '#2a3447',
+            },
+            accent: {
+              500: '#10b981',
+              400: '#34d399',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          }
+        },
+      },
+    }
+  </script>
+  
+  <!-- Video.js CSS -->
+  <link href="https://vjs.zencdn.net/8.7.1/video-js.css" rel="stylesheet" />
+
+  <style>
+    /* Custom scrollbar for Netflix-style dark theme */
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--surface-2, #1c2434); 
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-strong, #3a465c); 
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-dim, #6e7686); 
+    }
+
+    /* Hide scrollbar for Netflix look but still scroll */
+    .hide-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    
+    .hide-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    /* Smooth image loading */
+    .lazy-image.loading {
+      background: linear-gradient(90deg, var(--surface-2, #1c2434) 25%, var(--surface-3, #222b3d) 50%, var(--surface-2, #1c2434) 75%);
+      background-size: 200% 100%;
+      animation: loading-sweep 1.5s infinite linear;
+    }
+
+    @keyframes loading-sweep {
+      from { background-position-x: 0; }
+      to { background-position-x: -100%; }
+    }
+
+    .poster-container img[src], .card-image img[src] {
+      min-width: 100%;
+      min-height: 62.5%; /* 16:10 aspect ratio */
+      object-fit: cover;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <!-- Preload Script -->
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
