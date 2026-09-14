@@ -864,13 +864,15 @@ async function stealthAutoSearch(baseUrl, query, count = 25) {
   // If no form input was found, try a single lightweight query-param fallback
   // (best effort — the primary path is the real form, not URL guessing).
   if (!fill || fill.__stealthError || (fill.reason === 'no-input' && !fill.foundForm)) {
-    if (!(/[?&](?:q|s|search|query|k)=/i.test(base))) {
+    if (/[?&](?:q|s|search|query|k)=/i.test(base)) {
+      // Already a search/results URL (e.g. a {query}-substituted site template):
+      // nothing to fill — go straight to extracting the rendered results.
+      console.log('[stealth] query URL already loaded, extracting directly:', base);
+    } else {
       const fallbackUrl = base + (base.includes('?') ? '&' : '?') + 'q=' + encodeURIComponent(query);
       console.log('[stealth] no search input found, trying query-param fallback:', fallbackUrl);
       const fallback = await loadInStealth(fallbackUrl, { pauseAfterLoadMs: 2000, challengeTimeoutMs: 15000 });
       if (!fallback.success) return [];
-    } else {
-      return [];
     }
   }
 
@@ -1428,9 +1430,12 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
       };
     }
 
-    // Hanime fast-path: page URLs resolve to the master .m3u8 from the native
-    // v8 API (yt-dlp has no hanime extractor path that survives the SPA).
-    if (/hanime\.tv\/videos\/hentai\//i.test(url)) {
+    // Hanime fast-path: hanime.tv is a Cloudflare-guarded JS SPA, so yt-dlp
+    // has no working extractor for it. Route every hanime.tv link through the
+    // stealth resolver (native v8 API first, then offscreen-browser .m3u8
+    // sniffing on the cf_clearance-cleared session) and NEVER hand the URL to
+    // the yt-dlp binary — if the resolver fails, that is a hard error.
+    if (/hanime\.tv/i.test(url)) {
       try {
         const info = await resolveHanimeStream(url);
         console.log(`[hanime] resolved ${url} -> ${info.m3u8}`);
@@ -1438,7 +1443,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
           success: true,
           streamUrl: info.m3u8,
           isHls: true,
-          extractor: 'hanime-v8',
+          extractor: info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8',
           title: info.title,
           duration: info.duration,
           httpHeaders: {
@@ -1448,7 +1453,12 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
           }
         };
       } catch (hanErr) {
-        console.warn(`[hanime] v8 fast-path failed (falling back to yt-dlp): ${hanErr.message}`);
+        console.warn(`[hanime] stealth resolver failed — yt-dlp deliberately NOT used: ${hanErr.message}`);
+        return {
+          success: false,
+          error: `Hanime stream resolution failed: ${hanErr.message}`,
+          details: 'hanime.tv is only resolvable through the stealth v8/sniffer (yt-dlp bypassed); retry or verify connectivity'
+        };
       }
     }
     
@@ -1852,6 +1862,23 @@ ipcMain.handle('video:download', async (event, video) => {
       return { success: false, error: 'yt-dlp binary is not available' };
     }
 
+    // Hanime: hand yt-dlp the direct .m3u8 manifest, never the raw page URL.
+    // hanime.tv is a Cloudflare-guarded SPA so the generic extractor can't
+    // resolve page links — resolveHanimeStream (v8 API/stealth sniff) gives
+    // us the manifest URL to download directly.
+    let targetUrl = url;
+    if (/hanime\.tv/i.test(String(url))) {
+      try {
+        const hinfo = await resolveHanimeStream(url);
+        if (!hinfo || !hinfo.m3u8) throw new Error('resolved to no playable manifest');
+        console.log(`[Download] hanime ${url} -> ${hinfo.m3u8}`);
+        targetUrl = hinfo.m3u8;
+      } catch (hanErr) {
+        console.warn(`[Download] hanime resolution failed: ${hanErr.message}`);
+        return { success: false, error: `Hanime stream resolution failed: ${hanErr.message}` };
+      }
+    }
+
     // Show save dialog
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Save Video As',
@@ -1886,7 +1913,8 @@ ipcMain.handle('video:download', async (event, video) => {
     const fs = require('fs');
     const ytDlpPath = getYtDlpPath();
     const args = withFFmpegArgs([
-      url,
+      targetUrl,
+      ...(targetUrl !== url ? ['--referer', 'https://hanime.tv/'] : []),
       '-o', filePath,
       '-f', 'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best',
       '--merge-output-format', 'mp4',
@@ -3444,6 +3472,17 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       return { success: true, source: 'yt-dlp', videos };
     }
 
+    // Stealth fallback for site searches: yt-dlp blocked/challenged a search
+    // URL -> load the already-substituted results URL in the offscreen (real
+    // browser) engine and read the rendered result cards from the DOM.
+    if (mode === 'site' && /^https?:\/\//i.test(target)) {
+      const stealthVideos = await stealthAutoSearch(target, q, count);
+      if (stealthVideos.length > 0) {
+        console.log(`[web:search] stealth fallback returned ${stealthVideos.length} results`);
+        return { success: true, source: 'stealth', videos: stealthVideos };
+      }
+    }
+
     // Fallback: HTML scraping for sites yt-dlp can't enumerate
     console.log(`[web:search] flat-playlist gave nothing for ${target}, trying HTML scraper`);
     const { executeScrapeFunction } = require('../backends/main.js');
@@ -3540,6 +3579,24 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
 
     for (const url of urls) {
       try {
+        // Hanime must never reach yt-dlp.exe — route through the stealth
+        // resolver (v8 API + offscreen .m3u8 sniff) like stream extraction.
+        if (/hanime\.tv/i.test(url)) {
+          const h = await resolveHanimeStream(url);
+          await db.bulkInsertVideos([{
+            id: h.id || `hanime-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+            title: h.title || 'Hanime video',
+            videoUrl: h.m3u8 || url,
+            thumbnailUrl: h.thumbnailUrl || '',
+            duration: h.duration || 0,
+            category: 'Hanime',
+            sourceSite: 'hanime.tv',
+            scrapedAt: new Date().toISOString(),
+            isScraped: true
+          }]);
+          inserted++;
+          continue;
+        }
         const rawJson = await ytDlp.execPromise(withFFmpegArgs([
           url, '--dump-json', '-f', 'b',
           '--extractor-args', 'generic:impersonate'

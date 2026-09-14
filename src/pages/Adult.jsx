@@ -5,8 +5,32 @@ import './Adult.css';
 const STORAGE_KEY = 'pmh-adult-sites';
 
 const PRESETS = [
-  { name: 'XVideos', searchTemplate: 'https://www.xvideos.com/?k={query}', homepage: 'https://www.xvideos.com/' }
+  { name: 'XVideos', searchTemplate: 'https://www.xvideos.com/?k={query}', homepage: 'https://www.xvideos.com/' },
+  { name: 'XNXX', searchTemplate: 'https://www.xnxx.com/search/{query}', homepage: 'https://www.xnxx.com/' },
+  { name: 'Pornhub', searchTemplate: 'https://www.pornhub.com/video/search?search={query}', homepage: 'https://www.pornhub.com/' }
 ];
+
+// Sites whose search URL follows a known pattern. Matching is by hostname so
+// www./m. subdomains all work — paste the main site URL and the app figures
+// out the search format automatically (no manual ?k= guessing).
+const KNOWN_SEARCH_URLS = [
+  { host: 'xvideos.com', template: 'https://www.xvideos.com/?k={query}' },
+  { host: 'xnxx.com', template: 'https://www.xnxx.com/search/{query}' },
+  { host: 'pornhub.com', template: 'https://www.pornhub.com/video/search?search={query}' }
+];
+
+function detectSearchTemplate(input) {
+  const raw = String(input || '').trim();
+  if (!/^https?:\/\//i.test(raw)) return null;
+  let host = '';
+  try { host = new URL(raw).hostname.toLowerCase().replace(/^www\./, ''); } catch { return null; }
+  const match = KNOWN_SEARCH_URLS.find(e => host === e.host || host.endsWith('.' + e.host));
+  return match ? match.template : null;
+}
+
+function hostNameOf(input) {
+  try { return new URL(String(input || '').trim()).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
 
 const loadSites = () => {
   try {
@@ -35,8 +59,7 @@ const Adult = () => {
   const activeSite = sites.find(s => s.id === activeId) || null;
 
   const addSite = () => {
-    const name = form.name.trim();
-    if (!name) return;
+    const name = form.name.trim() || hostNameOf(form.homepage) || 'Custom Site';
     const site = {
       id: 'site-' + Date.now(),
       name,
@@ -105,28 +128,45 @@ const Adult = () => {
           <div className="adult-add-form">
             <input
               className="adult-input"
-              placeholder="Site name (e.g. MyTube)"
+              placeholder="Site name (optional — auto-filled from URL)"
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
             />
             <input
               className="adult-input"
-              placeholder="Search URL with {query}  e.g. https://www.example.com/?k={query}"
-              value={form.searchTemplate}
-              onChange={e => setForm({ ...form, searchTemplate: e.target.value })}
+              placeholder="Paste the site main URL  e.g. https://www.xnxx.com"
+              value={form.homepage}
+              onChange={e => {
+                const homepage = e.target.value;
+                setForm(prev => {
+                  const next = { ...prev, homepage };
+                  if (!prev.name) next.name = hostNameOf(homepage);
+                  if (!prev.searchTemplate) {
+                    const t = detectSearchTemplate(homepage);
+                    if (t) { next.searchTemplate = t; next.detected = true; }
+                    else next.detected = false;
+                  }
+                  return next;
+                });
+              }}
             />
             <input
               className="adult-input"
-              placeholder="Homepage / category URL (optional)"
-              value={form.homepage}
-              onChange={e => setForm({ ...form, homepage: e.target.value })}
+              placeholder="Search URL with {query} (auto-filled for known sites)"
+              value={form.searchTemplate}
+              onChange={e => setForm({ ...form, searchTemplate: e.target.value, detected: false })}
             />
             <div className="adult-add-actions">
-              <button className="adult-btn primary" onClick={addSite} disabled={!form.name.trim()}>Save site</button>
+              <button className="adult-btn primary" onClick={addSite} disabled={!form.name.trim() && !form.homepage.trim()}>Save site</button>
               <button className="adult-btn" onClick={() => setShowAdd(false)}>Cancel</button>
             </div>
+            {form.detected && (
+              <p className="adult-hint ok">
+                Auto-detected search URL for this site — searching will work right away. You can edit it above.
+              </p>
+            )}
             <p className="adult-hint">
-              Tip: no search URL? Paste the site's category/search page URL to enumerate its videos. Some sites block automation — try a different section or provider.
+              Tip: if the URL isn't auto-detected, just paste the homepage — the app drives the site's own search box. For known sites (XVideos, XNXX, Pornhub) the correct search URL is filled in for you; no need to know the ?k= format.
             </p>
           </div>
         )}
