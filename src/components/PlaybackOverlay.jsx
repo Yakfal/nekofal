@@ -1,5 +1,7 @@
+import React, { Suspense, lazy } from 'react';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
-import VideoPlayer from './VideoPlayer.jsx';
+
+const VideoPlayer = lazy(() => import('./VideoPlayer.jsx'));
 
 export default function PlaybackOverlay() {
   const { activeVideo, activeChannels, activeChannelIndex, close, zapTo } = usePlayback();
@@ -7,12 +9,14 @@ export default function PlaybackOverlay() {
   if (!activeVideo) return null;
 
   return (
-    <VideoPlayer
-      video={activeVideo}
-      onClose={close}
-      channelList={activeChannels}
-      channelIndex={activeChannelIndex}
-      onZapTo={zapTo}
-    />
+    <Suspense fallback={null}>
+      <VideoPlayer
+        video={activeVideo}
+        onClose={close}
+        channelList={activeChannels}
+        channelIndex={activeChannelIndex}
+        onZapTo={zapTo}
+      />
+    </Suspense>
   );
 }

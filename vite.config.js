@@ -29,7 +29,12 @@ export default defineConfig({
           return chunkInfo.name === 'preload' ? 'preload.js' : 'assets/[name]-[hash].js';
         },
         chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash].[ext]'
+        assetFileNames: 'assets/[name]-[hash].[ext]',
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            return 'vendor';
+          }
+        }
       }
     }
   },

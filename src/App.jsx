@@ -1,8 +1,7 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import AppLayout from './components/AppLayout.jsx';
 import MediaLibrary from './pages/MediaLibrary.jsx';
-import VideoPlayer from './components/VideoPlayer.jsx';
 import PlaybackOverlay from './components/PlaybackOverlay.jsx';
 import Favorites from './pages/Favorites.jsx';
 import Settings from './pages/Settings.jsx';
@@ -19,6 +18,8 @@ import { AppSettingsProvider } from './contexts/AppSettingsContext.jsx';
 import { PlaylistsProvider } from './contexts/PlaylistsContext.jsx';
 import { PlaybackProvider } from './contexts/PlaybackContext.jsx';
 
+const VideoPlayer = lazy(() => import('./components/VideoPlayer.jsx'));
+
 export default function App() {
   return (
     <AppSettingsProvider>
@@ -27,7 +28,8 @@ export default function App() {
           <PlaylistsProvider>
             <PlaybackProvider>
               <PlaybackOverlay />
-              <Routes>
+              <Suspense fallback={null}>
+                <Routes>
                 <Route path="/miniplayer" element={<MiniPlayer />} />
                 <Route path="/" element={<AppLayout />}>
                   <Route index element={<Navigate to="/discover" replace />} />
@@ -44,6 +46,7 @@ export default function App() {
                   <Route path="*" element={<Navigate to="/discover" replace />} />
                 </Route>
               </Routes>
+              </Suspense>
             </PlaybackProvider>
           </PlaylistsProvider>
         </SearchProvider>
