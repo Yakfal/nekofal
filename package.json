@@ -1,6 +1,6 @@
 {
   "name": "nekofal",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Nekofal - Desktop media streaming hub",
   "main": "electron/main.js",
   "scripts": {
@@ -84,7 +84,9 @@
     },
     "nsis": {
       "oneClick": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
+      "differentialPackage": true,
       "artifactName": "Nekofal-Setup-${version}.${ext}"
     },
     "publish": [

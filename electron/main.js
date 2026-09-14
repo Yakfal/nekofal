@@ -585,7 +585,12 @@ function ensureStealthWindow() {
 }
 
 function destroyStealthWindow() {
-  if (stealthWindow && !stealthWindow.isDestroyed()) stealthWindow.destroy();
+  if (stealthWindow && !stealthWindow.isDestroyed()) {
+    try {
+      stealthWindow.webContents.stop();
+      stealthWindow.destroy();
+    } catch (_err) { /* already tearing down */ }
+  }
   stealthWindow = null;
 }
 
@@ -734,13 +739,18 @@ function installStreamSniffer() {
     const isMedia = details.resourceType === 'media' || STREAM_SNIFF_RE.test(url);
     if (!isMedia || url.startsWith('http://localhost')) return;
 
-    const entry = { url, resourceType: details.resourceType || 'unknown', at: Date.now() };
+    const entry = { url, resourceType: details.resourceType || 'unknown', at: Date.now(), webContentsId: details.webContentsId };
     sniffedRecent.push(entry);
     if (sniffedRecent.length > 300) sniffedRecent = sniffedRecent.slice(-300);
 
     // During an active sniff session, collect + announce to the renderer.
     if (activeSniff) {
       activeSniff.captured.push(entry);
+      // Early-return hook: let the resolver resolve the instant a matching
+      // stream URL is captured instead of waiting out its full timeout.
+      if (typeof activeSniff.onCapture === 'function') {
+        try { activeSniff.onCapture(entry); } catch (_e) { /* hook errors ignored */ }
+      }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('stream:sniffed', {
           sessionId: activeSniff.sessionId,
@@ -769,6 +779,82 @@ function pickUsableStreams(captured) {
     const bMaster = b.includes('master') ? 1 : 0;
     return (bMaster - aMaster) || a.length - b.length;
   });
+}
+
+// Sniff a page in the offscreen browser with an EARLY RETURN: instead of
+// sleeping a fixed window, resolve the moment `match(entry)` fires on a
+// captured media request (or `probe()` returns a URL read from the page
+// itself). The offscreen window is destroyed immediately on resolution, and
+// cf_clearance/__cf_bm cookies persist in session.defaultSession for the
+// next (challenge-free) load.
+async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoadMs = 1500, match, probe } = {}) {
+  const pageUrl$ = String(pageUrl || '').trim();
+  if (!/^https?:\/\//i.test(pageUrl$)) return { success: false, error: 'Invalid URL' };
+  const win = ensureStealthWindow();
+  const sessionId = 'sniff-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  const captured = [];
+  let earlyUrl = null;
+  let settled = false;
+  let settle = null;
+  let probeTimer = null;
+
+  const finish = (extra) => {
+    if (settled) return;
+    settled = true;
+    activeSniff = null;
+    if (probeTimer) clearTimeout(probeTimer);
+    const streams = [...new Set(captured.map(e => e.url))];
+    if (earlyUrl) streams.unshift(earlyUrl);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('stream:sniffed', { sessionId, pageUrl: pageUrl$, streams });
+    }
+    // The manifest/CDN URL is known — tear the offscreen browser down now so
+    // it never blocks quit or lingers holding resources. Session cookies
+    // (cf_clearance / __cf_bm) live in defaultSession, not the window.
+    destroyStealthWindow();
+    if (settle) settle({ success: true, sessionId, pageUrl: pageUrl$, streams, matchedUrl: earlyUrl, ...extra });
+  };
+
+  activeSniff = {
+    sessionId,
+    pageUrl: pageUrl$,
+    captured,
+    onCapture: (entry) => {
+        // Only treat requests from THIS offscreen window as candidates — the
+        // webRequest hook is global, so the main window's own HLS/stream
+        // requests must never trigger a premature early return.
+        if (win && !win.isDestroyed() && entry.webContentsId && entry.webContentsId !== win.webContents.id) return;
+        try {
+          if (match && typeof match === 'function' && match(entry)) {
+            earlyUrl = entry.url;
+            finish({ early: true });
+          }
+        } catch (_e) { /* match errors ignored */ }
+      }
+  };
+
+  const scheduleProbe = () => {
+    if (settled || typeof probe !== 'function') return;
+    probeTimer = setTimeout(async () => {
+      if (settled) return;
+      try {
+        const u = await probe(win);
+        if (u && typeof u === 'string' && /^https?:\/\//i.test(u)) {
+          earlyUrl = u;
+          finish({ early: true });
+        }
+      } catch (_e) { /* probe failed */ }
+    }, pauseAfterLoadMs);
+  };
+
+  loadInStealth(pageUrl$, { pauseAfterLoadMs, challengeTimeoutMs: 20000, timeoutMs: Math.max(timeoutMs, 25000) })
+    .then(scheduleProbe)
+    .catch(() => { /* load failure handled by loadInStealth's own timeout */ });
+
+  // Watchdog: never block the caller past timeoutMs.
+  setTimeout(() => { if (!settled) finish({ error: 'sniff timeout' }); }, timeoutMs);
+
+  return new Promise((resolve) => { settle = resolve; });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1461,6 +1547,36 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
         };
       }
     }
+
+    // Pornhub: yt-dlp natively supports it but the CDN challenges default
+    // requests — resolve with explicit browser headers first, then a stealth
+    // sniff fallback, handing the master manifest straight to hls.js.
+    if (/pornhub\.com/i.test(url)) {
+      try {
+        const ph = await resolvePornhubStream(url);
+        console.log(`[pornhub] resolved ${url} -> ${ph.m3u8}`);
+        return {
+          success: true,
+          streamUrl: ph.m3u8,
+          isHls: /\.m3u8/i.test(ph.m3u8),
+          extractor: ph.fromYT ? 'yt-dlp-pornhub' : 'pornhub-stealth-sniff',
+          title: ph.title,
+          duration: ph.duration,
+          httpHeaders: {
+            'User-Agent': PH_UA,
+            'Referer': 'https://www.pornhub.com/',
+            'Origin': 'https://www.pornhub.com'
+          }
+        };
+      } catch (phErr) {
+        console.warn(`[pornhub] stream resolution failed: ${phErr.message}`);
+        return {
+          success: false,
+          error: `Pornhub stream resolution failed: ${phErr.message}`,
+          details: 'pornhub is resolved via yt-dlp (browser headers) then the stealth sniffer fallback'
+        };
+      }
+    }
     
     console.log(`[yt-dlp] Extracting stream info for: ${url}`);
     
@@ -1799,6 +1915,27 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
 let activeDownloads = [];
 let downloadCounter = 0;
 
+// Registry of live yt-dlp child processes spawned by this app (downloads) so
+// they can be terminated at quit instead of lingering and holding file locks
+// inside the install directory (%LOCALAPPDATA%\Programs\nekofal).
+const activeChildProcs = new Set();
+
+// Terminate every background child before exiting: directly-spawned download
+// processes first, then sweep any remaining yt-dlp.exe trees (yt-dlp-wrap
+// instances used for extraction don't expose process handles) including the
+// ffmpeg merges they spawn, so no child keeps resources locked after quit.
+function killBackgroundProcesses() {
+  for (const proc of activeChildProcs) {
+    try {
+      proc.kill('SIGTERM');
+    } catch (_e) { /* already gone */ }
+  }
+  activeChildProcs.clear();
+  try {
+    require('child_process').execSync('taskkill /im yt-dlp.exe /t /f', { windowsHide: true, stdio: 'ignore' });
+  } catch (_e) { /* no matching process running */ }
+}
+
 function sendToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
@@ -1879,6 +2016,21 @@ ipcMain.handle('video:download', async (event, video) => {
       }
     }
 
+    // Pornhub: resolve to a direct manifest the same way (yt-dlp with browser
+    // headers first, stealth sniff fallback) so the downloader never feeds a
+    // bot-check page to yt-dlp.
+    if (/pornhub\.com/i.test(String(url))) {
+      try {
+        const phinfo = await resolvePornhubStream(url);
+        if (!phinfo || !phinfo.m3u8) throw new Error('resolved to no playable manifest');
+        console.log(`[Download] pornhub ${url} -> ${phinfo.m3u8}`);
+        targetUrl = phinfo.m3u8;
+      } catch (phErr) {
+        console.warn(`[Download] pornhub resolution failed: ${phErr.message}`);
+        return { success: false, error: `Pornhub stream resolution failed: ${phErr.message}` };
+      }
+    }
+
     // Show save dialog
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Save Video As',
@@ -1914,7 +2066,7 @@ ipcMain.handle('video:download', async (event, video) => {
     const ytDlpPath = getYtDlpPath();
     const args = withFFmpegArgs([
       targetUrl,
-      ...(targetUrl !== url ? ['--referer', 'https://hanime.tv/'] : []),
+      ...(targetUrl !== url ? ['--referer', /hanime\.tv/i.test(url) ? 'https://hanime.tv/' : 'https://www.pornhub.com/'] : []),
       '-o', filePath,
       '-f', 'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best',
       '--merge-output-format', 'mp4',
@@ -1923,6 +2075,8 @@ ipcMain.handle('video:download', async (event, video) => {
     ]);
 
     const proc = spawn(ytDlpPath, args, { windowsHide: true });
+    activeChildProcs.add(proc);
+    proc.on('error', () => activeChildProcs.delete(proc));
     let stderrTail = '';
 
     proc.stdout.on('data', (chunk) => {
@@ -1955,6 +2109,7 @@ ipcMain.handle('video:download', async (event, video) => {
     });
 
     proc.on('close', async (code) => {
+      activeChildProcs.delete(proc);
       activeDownloads = activeDownloads.filter(d => d.id !== downloadId);
       if (code === 0) {
         let sizeBytes = 0;
@@ -3143,13 +3298,78 @@ async function resolveHanimeStream(pageUrl) {
   } catch (v8Err) {
     console.warn(`[resolveHanimeStream] v8 video failed (trying stealth sniff): ${v8Err.message}`);
   }
-  // Stealth fallback: render the page in the offscreen browser and sniff the
-  // .m3u8 requests the site's own HLS player triggers, extracting the master.
-  const sniff = await sniffPageInStealth(pageUrl, 9000);
-  const streams = sniff && Array.isArray(sniff.streams) ? sniff.streams : [];
-  const m3u8 = streams.find(s => /\.m3u8/i.test(String(s || ''))) || null;
+  // Stealth fallback: render the page in the offscreen browser and wait (up to
+  // 20s) for Cloudflare/Turnstile to clear in the background, intercepting the
+  // master .m3u8 the site's HLS player requests as soon as it appears — the
+  // resolver tears the offscreen window down the instant a valid manifest is
+  // captured instead of waiting out a fixed timer. cf_clearance / __cf_bm (and
+  // any v8 session cookies) persist in session.defaultSession, so the *next*
+  // video load on this machine skips the challenge entirely.
+  const sniff = await sniffWithEarlyReturn(pageUrl, {
+    timeoutMs: 20000,
+    match: (e) => /\.m3u8/i.test(String(e.url || '')) || /hanime\.tv\/api\/v8\/video/i.test(String(e.url || ''))
+  });
+  const m3u8 = sniff.matchedUrl || (sniff.streams && sniff.streams.find(s => /\.m3u8/i.test(String(s || '')))) || null;
   if (!m3u8) throw new Error('No .m3u8 manifest found for ' + slug);
   return { id: `hanime-${slug}`, slug, m3u8, canPlay: true, title: '', thumbnailUrl: '', duration: 0, viaSniff: true };
+}
+
+// ---- Pornhub resolver ----------------------------------------------------
+// Pornhub is supported by yt-dlp, but the CDN rejects default/U-A-less
+// requests. Try yt-dlp with explicit browser headers first; if that fails or
+// returns a bot-check / empty result, fall back to the offscreen stealth
+// browser — load the video page, let the embedded player fire its HLS request
+// (intercepted by the stream sniffer), and read the master .m3u8 out of
+// window.flashvars.mediaDefinitions as a belt-and-suspenders source.
+const PH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+async function resolvePornhubStream(pageUrl) {
+  let ytError = null;
+  try {
+    const rawJson = await ytDlp.execPromise(withFFmpegArgs([
+      pageUrl,
+      '--dump-json',
+      '-f', 'best[height<=2160]/best',
+      '--no-playlist',
+      '--socket-timeout', '25',
+      '--user-agent', PH_UA,
+      '--referer', 'https://www.pornhub.com/'
+    ]));
+    const info = JSON.parse(rawJson);
+    const formats = info.formats || [];
+    const m3u8 = formats.find(f => /\.m3u8/i.test(String(f.url || '')) && f.vcodec && f.vcodec !== 'none')
+      ?.url || info.url || '';
+    if (m3u8) {
+      return { m3u8, title: info.title || '', duration: info.duration || 0, fromYT: true };
+    }
+    ytError = new Error('no playable format returned by yt-dlp');
+  } catch (err) {
+    ytError = err;
+    console.warn(`[pornhub] yt-dlp failed (trying stealth sniff): ${err.message}`);
+  }
+
+  // Stealth fallback: render the page in the offscreen browser (real
+  // fingerprint), capture the master .m3u8 as soon as the player requests it,
+  // and probe flashvars for the mediaDefinition videoUrl as a DOM backup.
+  const sniff = await sniffWithEarlyReturn(pageUrl, {
+    timeoutMs: 20000,
+    match: (e) => /\.m3u8/i.test(String(e.url || '')) || (/\.mp4/i.test(String(e.url || '')) && /phncdn\.com/i.test(String(e.url || ''))),
+    probe: async () => {
+      const val = await evalInStealth(
+        `var fv = window.flashvars || {}; var md = fv.mediaDefinitions || [];` +
+        `for (var i = 0; i < md.length; i++) { if (md[i] && /\.m3u8/i.test(md[i].videoUrl || '')) { return md[i].videoUrl; } }` +
+        `return '';`, 5000);
+      return typeof val === 'string' && val ? val : null;
+    }
+  });
+  const m3u8 = sniff.matchedUrl
+    || (sniff.streams && sniff.streams.find(s => /\.m3u8/i.test(String(s || ''))))
+    || (sniff.streams && sniff.streams[0])
+    || null;
+  if (!m3u8) {
+    throw new Error('No playable stream for ' + pageUrl + (ytError ? ' (yt-dlp: ' + ytError.message + ')' : ' (nothing found)'));
+  }
+  return { m3u8, title: '', duration: 0, fromYT: false };
 }
 
 async function searchHanime(query, count = 25) {
@@ -3670,10 +3890,12 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
 
   app.on('before-quit', () => {
     closeMiniPlayer();
+    destroyStealthWindow();
     globalShortcut.unregisterAll();
     if (videoServer && typeof videoServer.close === 'function') {
-      videoServer.close();
+      try { videoServer.close(); } catch (_e) { /* already closed */ }
     }
+    killBackgroundProcesses();
   });
 
   // Prevent window from opening twice
