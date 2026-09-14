@@ -14,26 +14,28 @@
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              900: '#0b0f17',
-              800: '#161b26',
-              700: '#1c2434',
-              600: '#2a3447',
+    if (typeof tailwind !== 'undefined') {
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                900: '#0b0f17',
+                800: '#161b26',
+                700: '#1c2434',
+                600: '#2a3447',
+              },
+              accent: {
+                500: '#10b981',
+                400: '#34d399',
+              }
             },
-            accent: {
-              500: '#10b981',
-              400: '#34d399',
+            fontFamily: {
+              sans: ['Inter', 'system-ui', 'sans-serif'],
             }
           },
-          fontFamily: {
-            sans: ['Inter', 'system-ui', 'sans-serif'],
-          }
         },
-      },
+      }
     }
   </script>
   
