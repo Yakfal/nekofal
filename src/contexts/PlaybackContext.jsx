@@ -14,6 +14,8 @@ const PlaybackContext = createContext({
 
 export const PlaybackProvider = ({ children }) => {
   const [activeVideo, setActiveVideo] = useState(null);
+  const [activeChannels, setActiveChannels] = useState(null);
+  const [activeChannelIndex, setActiveChannelIndex] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const [saveMenuVideo, setSaveMenuVideo] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
@@ -28,13 +30,35 @@ export const PlaybackProvider = ({ children }) => {
 
   const close = useCallback(() => {
     setActiveVideo(null);
+    setActiveChannels(null);
+    setActiveChannelIndex(null);
     setSaveMenuVideo(null);
     setNewPlaylistName('');
+  }, []);
+
+  // Zap to an adjacent channel: swap the active video (VideoPlayer reloads on
+  // the prop change) while keeping the zapping list/index in sync.
+  const zapTo = useCallback((video, index) => {
+    if (!video) return;
+    setActiveVideo(video);
+    if (Number.isInteger(index)) setActiveChannelIndex(index);
   }, []);
 
   const open = useCallback((video, opts = {}) => {
     if (!video) return;
     setActiveVideo(video);
+    if (Array.isArray(opts.channels) && opts.channels.length > 0) {
+      setActiveChannels(opts.channels);
+      const fromIndex = Number.isInteger(opts.channelIndex)
+        ? opts.channelIndex
+        : opts.channels.findIndex(
+            (c) => c && (c.id === video.id || (c.videoUrl && c.videoUrl === video.videoUrl))
+          );
+      setActiveChannelIndex(fromIndex >= 0 ? fromIndex : 0);
+    } else {
+      setActiveChannels(null);
+      setActiveChannelIndex(null);
+    }
     if (opts.viaDrop) {
       setSaveMenuVideo(video);
       setNewPlaylistName('');
@@ -140,7 +164,15 @@ export const PlaybackProvider = ({ children }) => {
     <PlaybackContext.Provider value={value}>
       {children}
 
-      {activeVideo && <VideoPlayer video={activeVideo} onClose={close} />}
+      {activeVideo && (
+        <VideoPlayer
+          video={activeVideo}
+          onClose={close}
+          channelList={activeChannels}
+          channelIndex={activeChannelIndex}
+          onZapTo={zapTo}
+        />
+      )}
 
       {dragActive && (
         <div className="drop-overlay">

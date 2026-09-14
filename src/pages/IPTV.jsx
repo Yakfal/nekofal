@@ -32,7 +32,6 @@ const IPTV = () => {
   const [sources, setSources] = useState([]);
   const [channels, setChannels] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeFolder, setActiveFolder] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
@@ -41,6 +40,9 @@ const IPTV = () => {
   const [toast, setToast] = useState(null);
   const [refreshId, setRefreshId] = useState(null);
   const [favoriteSet, setFavoriteSet] = useState(() => new Set());
+  const [query, setQuery] = useState('');
+  const [sortBy, setSortBy] = useState('category');
+  const [tab, setTab] = useState('all');
 
   // Load favorite ids once so each channel card shows the real DB state and
   // toggles update the grid immediately (same IPC path as every other surface).
@@ -95,23 +97,60 @@ const IPTV = () => {
     return () => window.removeEventListener('scrapers-synced', onSynced);
   }, [loadAll]);
 
+  const familyChannels = useMemo(
+    () => channels.filter(c => familyMode ? !isAdultMedia(c) : true),
+    [channels, familyMode]
+  );
+
   const groups = useMemo(() => {
     const g = {};
-    channels
-      .filter(c => familyMode ? !isAdultMedia(c) : true)
-      .forEach(c => {
-        const key = c.groupTitle || 'Uncategorized';
-        if (!g[key]) g[key] = [];
-        g[key].push(c);
-      });
+    familyChannels.forEach(c => {
+      const key = c.groupTitle || 'Uncategorized';
+      if (!g[key]) g[key] = [];
+      g[key].push(c);
+    });
     return g;
-  }, [channels, familyMode]);
+  }, [familyChannels]);
 
   const folderList = useMemo(() =>
     Object.entries(groups).sort((a, b) => b[1].length - a[1].length),
   [groups]);
 
-  const activeChannels = activeFolder ? groups[activeFolder] || [] : [];
+  const tabChannels = useMemo(() => {
+    if (!tab || tab === 'all' || tab === 'categories') return familyChannels;
+    return groups[tab] || familyChannels;
+  }, [tab, groups, familyChannels]);
+
+  // Channels shown in the guide: tab filter + live search (name OR group) +
+  // sort (by category, then name A-Z — or pure alphabetical).
+  const visibleChannels = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let list = tabChannels;
+    if (q) {
+      list = list.filter(c =>
+        String(c.title || '').toLowerCase().includes(q) ||
+        String(c.groupTitle || '').toLowerCase().includes(q) ||
+        String(c.category || '').toLowerCase().includes(q)
+      );
+    }
+    const sorted = [...list];
+    if (sortBy === 'alpha') {
+      sorted.sort((a, b) =>
+        String(a.title || '').localeCompare(String(b.title || ''), undefined, { sensitivity: 'base' }));
+    } else {
+      sorted.sort((a, b) =>
+        String(a.groupTitle || '').localeCompare(String(b.groupTitle || ''), undefined, { sensitivity: 'base' }) ||
+        String(a.title || '').localeCompare(String(b.title || ''), undefined, { sensitivity: 'base' }));
+    }
+    return sorted;
+  }, [tabChannels, query, sortBy]);
+
+  const handleSelectChannel = useCallback((ch) => {
+    // Zapping needs the exact list order the user sees + the index of the
+    // tuned channel, so ArrowUp/ArrowDown and Ch+/Ch- advance through it.
+    const idx = visibleChannels.findIndex((c) => c === ch || (c.id && c.id === ch.id));
+    openPlayback(ch, { channels: visibleChannels, channelIndex: idx >= 0 ? idx : 0 });
+  }, [visibleChannels, openPlayback]);
 
   const handleAdd = async (e) => {
     e.preventDefault();
@@ -201,46 +240,92 @@ const IPTV = () => {
         </form>
       )}
 
-      {/* Category folders */}
-      {!loading && !activeFolder && folderList.length > 0 && (
-        <div className="iptv-folders">
-          <h2 className="iptv-h2">
-            Categories <span className="iptv-count">{channels.length} channels</span>
-          </h2>
-          <div className="iptv-folder-grid">
-            {folderList.map(([name, list]) => (
-              <button key={name} className="iptv-folder" onClick={() => setActiveFolder(name)}>
-                <span className="iptv-folder-icon">📺</span>
-                <span className="iptv-folder-name">{name}</span>
-                <span className="iptv-folder-count">{list.length} channels</span>
+      {/* Channel guide: category tabs + live search + sort */}
+      {!loading && folderList.length > 0 && (
+        <div className="iptv-guide">
+          <div className="iptv-tabs">
+            <button
+              className={`iptv-tab ${tab === 'all' ? 'active' : ''}`}
+              onClick={() => setTab('all')}
+            >
+              All Channels
+            </button>
+            <button
+              className={`iptv-tab ${tab === 'categories' ? 'active' : ''}`}
+              onClick={() => setTab('categories')}
+            >
+              Categories
+            </button>
+            {folderList.map(([name]) => (
+              <button
+                key={name}
+                className={`iptv-tab ${tab === name ? 'active' : ''}`}
+                onClick={() => setTab(name)}
+              >
+                {name}
               </button>
             ))}
           </div>
+
+          {tab !== 'categories' && (
+            <>
+              <div className="iptv-toolbar">
+                <input
+                  className="iptv-input iptv-search"
+                  placeholder="Search channels by name or group…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+                <select
+                  className="iptv-sort"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  aria-label="Sort channels"
+                >
+                  <option value="category">Sort: Category</option>
+                  <option value="alpha">Sort: Name (A–Z)</option>
+                </select>
+              </div>
+
+              <div className="iptv-channel-grid">
+                {visibleChannels.map(c => (
+                  <MediaCard
+                    key={c.id}
+                    video={c}
+                    initialIsFavorite={favoriteSet.has(getMediaId(c))}
+                    onToggleFavorite={handleToggleFavorite}
+                    onSelectVideo={handleSelectChannel}
+                  />
+                ))}
+                {visibleChannels.length === 0 && (
+                  <div className="iptv-empty">
+                    <p>{query ? `No channels match "${query}".` : 'No channels in this category.'}</p>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {tab === 'categories' && (
+            <div className="iptv-folders">
+              <h2 className="iptv-h2">
+                Categories <span className="iptv-count">{familyChannels.length} channels</span>
+              </h2>
+              <div className="iptv-folder-grid">
+                {folderList.map(([name, list]) => (
+                  <button key={name} className="iptv-folder" onClick={() => setTab(name)}>
+                    <span className="iptv-folder-icon">📺</span>
+                    <span className="iptv-folder-name">{name}</span>
+                    <span className="iptv-folder-count">{list.length} channels</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Channels in folder */}
-      {activeFolder && (
-        <div className="iptv-folder-view">
-          <div className="iptv-crumb">
-            <button className="iptv-mini" onClick={() => setActiveFolder(null)}>← All categories</button>
-            <h2 className="iptv-h2">{activeFolder} <span className="iptv-count">{activeChannels.length} channels</span></h2>
-          </div>
-          <div className="iptv-channel-grid">
-            {activeChannels.map(c => (
-              <MediaCard
-              key={c.id}
-              video={c}
-              initialIsFavorite={favoriteSet.has(getMediaId(c))}
-              onToggleFavorite={handleToggleFavorite}
-              onSelectVideo={openPlayback}
-            />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!loading && channels.length === 0 && !activeFolder && (
+      {!loading && channels.length === 0 && (
         <div className="iptv-empty">
           <p>No channels imported yet.</p>
           <p className="iptv-empty-hint">Paste an M3U playlist URL above. Works with iptv-org lists, free TV lists, etc.</p>

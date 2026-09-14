@@ -32,7 +32,7 @@ const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const MAX_PLAYBACK_RETRIES = 5;
 const RETRY_BACKOFF_MS = [800, 1600, 3200, 6400, 12800];
 
-const VideoPlayer = ({ video, onClose }) => {
+const VideoPlayer = ({ video, onClose, channelList, channelIndex, onZapTo }) => {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const streamHlsRef = useRef(false);
@@ -40,9 +40,15 @@ const VideoPlayer = ({ video, onClose }) => {
   const progressRef = useRef(null);
   const volumeRef = useRef(null);
   const volumeHoverTimer = useRef(null);
+  const controlsTimeoutRef = useRef(null);
+  const channelIndexRef = useRef(Number.isInteger(channelIndex) ? channelIndex : 0);
+  const osdTimerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [showOverlay, setShowOverlay] = useState(true);
+  const isPaused = !isPlaying;
+  const [isControlsVisible, setIsControlsVisible] = useState(true);
+  const [osd, setOsd] = useState(null);
+  const isZapping = Array.isArray(channelList) && channelList.length > 0;
   const [isLoading, setIsLoading] = useState(true);
   const [isExtracting, setIsExtracting] = useState(false);
   const [streamError, setStreamError] = useState(null);
@@ -290,11 +296,13 @@ const VideoPlayer = ({ video, onClose }) => {
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        adjustVolume(0.1);
+        if (isZapping) zap(-1);
+        else adjustVolume(0.1);
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        adjustVolume(-0.1);
+        if (isZapping) zap(1);
+        else adjustVolume(-0.1);
       }
     };
 
@@ -307,9 +315,9 @@ const VideoPlayer = ({ video, onClose }) => {
     const videoEl = videoRef.current;
     if (videoEl && videoEl.duration) {
       videoEl.currentTime = Math.max(0, Math.min(videoEl.duration - 0.1, videoEl.currentTime + seconds));
-      setShowOverlay(true);
+      resetControlsTimeout();
     }
-  }, []);
+  }, [resetControlsTimeout]);
 
   // Adjust volume
   const adjustVolume = useCallback((delta) => {
@@ -333,6 +341,89 @@ const VideoPlayer = ({ video, onClose }) => {
       } else {
         videoEl.pause();
       }
+    }
+  }, []);
+
+  // ------------- Mouse inactivity controls auto-hide -------------
+  // Controls stay on screen while the cursor is active (or paused) and fade
+  // out after 2.5s of no movement during playback (Netflix-style).
+  const clearControlsTimer = useCallback(() => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+  }, []);
+
+  const hideControlsSoon = useCallback(() => {
+    clearControlsTimer();
+    controlsTimeoutRef.current = setTimeout(() => setIsControlsVisible(false), 2500);
+  }, [clearControlsTimer]);
+
+  const resetControlsTimeout = useCallback(() => {
+    setIsControlsVisible(true);
+    clearControlsTimer();
+    if (!isPaused) hideControlsSoon();
+  }, [isPaused, clearControlsTimer, hideControlsSoon]);
+
+  // Pause guard: while paused, controls must stay visible regardless of mouse
+  // activity — clear any pending hide timer and force them on.
+  useEffect(() => {
+    if (isPaused) {
+      clearControlsTimer();
+      setIsControlsVisible(true);
+    }
+  }, [isPaused, clearControlsTimer]);
+
+  // Auto-hide shortly after playback starts (and any time the controls are
+  // re-shown during playback without a click that armed the timer).
+  useEffect(() => {
+    if (!isPaused && !isLoading && !menuOpen && isControlsVisible && !controlsTimeoutRef.current) {
+      hideControlsSoon();
+    }
+  }, [isPaused, isLoading, menuOpen, isControlsVisible, hideControlsSoon]);
+
+  useEffect(() => () => {
+    clearControlsTimer();
+    if (osdTimerRef.current) clearTimeout(osdTimerRef.current);
+  }, [clearControlsTimer]);
+
+  // ---------------- IPTV zapping (channel surfing) ----------------
+  // The current channel index is mirrored into a ref so rapid ArrowUp/Down
+  // presses during live TV don't race the async prop update from the parent.
+  useEffect(() => {
+    if (Number.isInteger(channelIndex)) channelIndexRef.current = channelIndex;
+  }, [channelIndex]);
+
+  // Cable-style On-Screen Display: channel number, logo, name and group,
+  // shown for 3s whenever the channel changes.
+  const showOsd = useCallback((ch, num) => {
+    if (osdTimerRef.current) clearTimeout(osdTimerRef.current);
+    setOsd({
+      number: num,
+      name: ch?.title || ch?.videoTitle || 'Channel',
+      group: ch?.groupTitle || ch?.category || 'Live TV',
+      logo: ch?.thumbnailUrl || ''
+    });
+    osdTimerRef.current = setTimeout(() => setOsd(null), 3000);
+  }, []);
+
+  const zap = useCallback((dir) => {
+    if (!isZapping) return;
+    const list = channelList;
+    const idx = channelIndexRef.current;
+    const next = idx + dir;
+    if (next < 0 || next >= list.length) return;
+    const ch = list[next];
+    showOsd(ch, next + 1);
+    setMenuOpen(null);
+    resetControlsTimeout();
+    if (onZapTo) onZapTo(ch, next);
+  }, [isZapping, channelList, showOsd, onZapTo, resetControlsTimeout]);
+
+  useEffect(() => {
+    if (isZapping && channelList && channelList.length) {
+      const idx = Math.min(Math.max(channelIndexRef.current, 0), channelList.length - 1);
+      showOsd(channelList[idx], idx + 1);
     }
   }, []);
 
@@ -1001,13 +1092,22 @@ const VideoPlayer = ({ video, onClose }) => {
     };
   }, [streamUrl, isDRM, shouldResume, seekToResume, scheduleRetry, hlsRetryKey]);
 
-  // Auto-hide the controls overlay while playing (Netflix-style)
-  useEffect(() => {
-    if (isPlaying && !isLoading && !menuOpen && showOverlay) {
-      const t = setTimeout(() => setShowOverlay(false), 2600);
-      return () => clearTimeout(t);
+  // Handle overlay click (but not on controls)
+  const handleOverlayClick = useCallback((e) => {
+    if (e.target.closest('video')) return;
+    if (e.target.closest('button')) return;
+    if (e.target.closest('webview')) return;
+    if (e.target.closest('.player-controls')) return;
+    if (e.target.closest('.progress-track')) return;
+    if (e.target.closest('.volume-slider')) return;
+    if (e.target.closest('.popup-menu')) return;
+    if (isControlsVisible) {
+      setIsControlsVisible(false);
+    } else {
+      resetControlsTimeout();
     }
-  }, [isPlaying, isLoading, menuOpen, showOverlay]);
+    setMenuOpen(null);
+  }, [isControlsVisible, resetControlsTimeout]);
 
   // Video event handlers
   const handlePlay = useCallback(() => setIsPlaying(true), []);
@@ -1119,22 +1219,16 @@ const VideoPlayer = ({ video, onClose }) => {
     setHasError(true);
   };
 
-  // Handle overlay click (but not on controls)
-  const handleOverlayClick = useCallback((e) => {
-    if (e.target.closest('video')) return;
-    if (e.target.closest('button')) return;
-    if (e.target.closest('webview')) return;
-    if (e.target.closest('.player-controls')) return;
-    if (e.target.closest('.progress-track')) return;
-    if (e.target.closest('.volume-slider')) return;
-    if (e.target.closest('.popup-menu')) return;
-    setShowOverlay(!showOverlay);
-    setMenuOpen(null);
-  }, [showOverlay]);
-
-  const handleMouseMove = useCallback(() => {
-    setShowOverlay(true);
-  }, []);
+  const osdBanner = osd && isZapping ? (
+    <div className="osd-banner">
+      <span className="osd-number">{osd.number}</span>
+      {osd.logo
+        ? <img className="osd-logo" src={osd.logo} alt="" draggable={false} />
+        : <span className="osd-logo">{'📺'}</span>}
+      <span className="osd-name">{osd.name}</span>
+      <span className="osd-group">{osd.group}</span>
+    </div>
+  ) : null;
 
   // Render error overlay
   if (hasError) {
@@ -1171,6 +1265,7 @@ const VideoPlayer = ({ video, onClose }) => {
   if (isLoading) {
     return (
       <div className="video-player-background">
+        {osdBanner}
         <div className="loading-container">
           <div className="loading-spinner"></div>
           <p>{isExtracting ? 'Extracting stream...' : (isDRM ? 'Loading DRM content...' : 'Loading video...')}</p>
@@ -1189,8 +1284,18 @@ const VideoPlayer = ({ video, onClose }) => {
   }
 
   return (
-    <div className="video-player-background" onClick={handleOverlayClick} onMouseMove={handleMouseMove}>
-      <div className="video-player-container">
+    <div className="video-player-background" onClick={handleOverlayClick}>
+      <div
+        className={`video-player-container ${!isControlsVisible && isFullscreen ? 'cursor-none' : ''}`}
+        onMouseMove={resetControlsTimeout}
+        onMouseEnter={resetControlsTimeout}
+        onMouseLeave={() => {
+          if (!isPaused) {
+            clearControlsTimer();
+            setIsControlsVisible(false);
+          }
+        }}
+      >
         {/* DRM Protected Content - WebView Fallback */}
         {isDRM && drmWebUrl && (
           <webview
@@ -1242,8 +1347,10 @@ const VideoPlayer = ({ video, onClose }) => {
           </video>
         )}
 
-        {/* Custom Controls Overlay - auto-hidden while playing, shown on hover/pause */}
-        <div className={`custom-controls ${showOverlay || isFullscreen ? 'visible' : 'hidden'}`}>
+        {/* Custom Controls Overlay - hidden on mouse inactivity during playback */}
+        <div className={`custom-controls ${isControlsVisible
+          ? 'visible opacity-100 pointer-events-auto transition-opacity duration-300'
+          : 'hidden opacity-0 pointer-events-none transition-opacity duration-300'}`}>
           {/* Top gradient header */}
           <div className="controls-top-mask">
           </div>
@@ -1462,6 +1569,34 @@ const VideoPlayer = ({ video, onClose }) => {
                   ⁝
                 </button>
 
+                {/* Channel zapping (IPTV) */}
+                {isZapping && (
+                  <>
+                    <span
+                      className="channel-badge"
+                      title="Current channel"
+                    >
+                      {Number.isInteger(channelIndex) ? channelIndex + 1 : 1}/{channelList ? channelList.length : 0}
+                    </span>
+                    <button
+                      className="control-btn"
+                      onClick={() => zap(-1)}
+                      aria-label="Channel down"
+                      title="Channel down"
+                    >
+                      Ch −
+                    </button>
+                    <button
+                      className="control-btn"
+                      onClick={() => zap(1)}
+                      aria-label="Channel up"
+                      title="Channel up"
+                    >
+                      Ch +
+                    </button>
+                  </>
+                )}
+
                 {/* Fullscreen */}
                 <button 
                   className="control-btn" 
@@ -1474,6 +1609,8 @@ const VideoPlayer = ({ video, onClose }) => {
             </div>
           </div>
         </div>
+
+        {osdBanner}
 
         {/* Always-visible absolute close button (top-right) */}
         <button 

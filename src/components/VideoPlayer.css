@@ -30,6 +30,12 @@
   cursor: default;
 }
 
+/* Fullscreen inactivity: hide the cursor with the controls so the mouse
+   vanishes once it stops moving during playback. */
+.video-player-container.cursor-none {
+  cursor: none;
+}
+
 .video-player-container video {
   width: 100%;
   height: 100%;
@@ -56,7 +62,7 @@
   flex-direction: column;
   justify-content: space-between;
   pointer-events: none;
-  transition: opacity 0.35s ease;
+  transition: opacity 0.3s ease;
   z-index: 10;
 }
 
@@ -652,4 +658,89 @@
   .time-display {
     font-size: 0.72rem;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   IPTV zapping — cable TV OSD banner + channel badge
+   --------------------------------------------------------------------------- */
+.osd-banner {
+  position: absolute;
+  top: 84px;
+  left: 24px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(520px, 80vw);
+  padding: 10px 16px;
+  background: rgba(8, 12, 20, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-left: 3px solid #38bdf8;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  animation: osd-in 0.32s ease;
+}
+
+.osd-number {
+  min-width: 36px;
+  font-size: 26px;
+  font-weight: 800;
+  color: #38bdf8;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.osd-logo {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.12);
+  object-fit: contain;
+  font-size: 18px;
+}
+
+.osd-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.osd-group {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.14);
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+@keyframes osd-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.channel-badge {
+  min-width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #38bdf8;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }

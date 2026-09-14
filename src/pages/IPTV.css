@@ -205,3 +205,58 @@
 }
 
 .iptv-toast.err { background: #dc2626; }
+
+.iptv-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 6px;
+}
+
+.iptv-tab {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.iptv-tab:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.iptv-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.iptv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 2px;
+  flex-wrap: wrap;
+}
+
+.iptv-search {
+  flex: 1 1 260px;
+}
+
+.iptv-sort {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 9px;
+  padding: 11px 14px;
+  font-size: 0.86rem;
+  outline: none;
+  cursor: pointer;
+}
+
+.iptv-sort:focus { border-color: var(--accent); }

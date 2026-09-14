@@ -15,6 +15,7 @@ const Navbar = forwardRef((props, ref) => {
   const navigate = useNavigate();
 
   const isVideoPlayerPage = location.pathname.startsWith('/video/');
+  const isLibraryPage = location.pathname === '/library';
 
   // Forward the ref to the menu wrapper
   const menuWrapperRef = useRef(null);
@@ -120,8 +121,9 @@ const Navbar = forwardRef((props, ref) => {
           <span className="logo-text">Nekofal</span>
         </NavLink>
 
-        {/* Search Bar */}
-        <div className={`search-container ${isSearchOpen ? 'open' : ''}`}>
+        {/* Search Bar - only on the Library page */}
+        {isLibraryPage && (
+          <div className={`search-container ${isSearchOpen ? 'open' : ''}`}>
           <div 
             className="search-input-wrapper"
             onClick={() => setIsSearchOpen(true)}
@@ -157,7 +159,8 @@ const Navbar = forwardRef((props, ref) => {
               <li className="search-placeholder">Showing results for "{searchQuery}"</li>
             </ul>
           )}
-        </div>
+          </div>
+        )}
 
         {/* Sync Scrapers Button */}
         {!isVideoPlayerPage && (
