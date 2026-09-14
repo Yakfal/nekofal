@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import VideoPlayer from '../components/VideoPlayer.jsx';
 import { usePlaylists } from './PlaylistsContext.jsx';
 import { installMediaKeyBridge } from '../utils/mediaKeys.js';
 import './Playback.css';
@@ -8,8 +7,11 @@ const SUPPORTED_EXT = ['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v', '.mp3', 
 
 const PlaybackContext = createContext({
   activeVideo: null,
+  activeChannels: null,
+  activeChannelIndex: null,
   open: () => {},
-  close: () => {}
+  close: () => {},
+  zapTo: () => {}
 });
 
 export const PlaybackProvider = ({ children }) => {
@@ -158,21 +160,14 @@ export const PlaybackProvider = ({ children }) => {
     }
   };
 
-  const value = useMemo(() => ({ activeVideo, open, close }), [activeVideo, open, close]);
+  const value = useMemo(
+    () => ({ activeVideo, activeChannels, activeChannelIndex, open, close, zapTo }),
+    [activeVideo, activeChannels, activeChannelIndex, open, close, zapTo]
+  );
 
   return (
     <PlaybackContext.Provider value={value}>
       {children}
-
-      {activeVideo && (
-        <VideoPlayer
-          video={activeVideo}
-          onClose={close}
-          channelList={activeChannels}
-          channelIndex={activeChannelIndex}
-          onZapTo={zapTo}
-        />
-      )}
 
       {dragActive && (
         <div className="drop-overlay">

@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import AppLayout from './components/AppLayout.jsx';
 import MediaLibrary from './pages/MediaLibrary.jsx';
 import VideoPlayer from './components/VideoPlayer.jsx';
+import PlaybackOverlay from './components/PlaybackOverlay.jsx';
 import Favorites from './pages/Favorites.jsx';
 import Settings from './pages/Settings.jsx';
 import Discover from './pages/Discover.jsx';
@@ -25,6 +26,7 @@ export default function App() {
         <SearchProvider>
           <PlaylistsProvider>
             <PlaybackProvider>
+              <PlaybackOverlay />
               <Routes>
                 <Route path="/miniplayer" element={<MiniPlayer />} />
                 <Route path="/" element={<AppLayout />}>
