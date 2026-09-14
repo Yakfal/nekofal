@@ -58,8 +58,6 @@
     "files": [
       "build/**/*",
       "electron/**/*",
-      "!electron/main2.js",
-      "!electron/main_new.js",
       "db/**/*",
       "backends/**/*",
       "lib/**/*",
