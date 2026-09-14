@@ -14,7 +14,7 @@ const PlaybackContext = createContext({
   zapTo: () => {}
 });
 
-export const PlaybackProvider = ({ children }) => {
+export function PlaybackProvider({ children }) {
   const [activeVideo, setActiveVideo] = useState(null);
   const [activeChannels, setActiveChannels] = useState(null);
   const [activeChannelIndex, setActiveChannelIndex] = useState(null);
@@ -204,8 +204,8 @@ export const PlaybackProvider = ({ children }) => {
       )}
     </PlaybackContext.Provider>
   );
-};
+}
 
-export const usePlayback = () => useContext(PlaybackContext);
+export function usePlayback() { return useContext(PlaybackContext); }
 
 export default PlaybackContext;

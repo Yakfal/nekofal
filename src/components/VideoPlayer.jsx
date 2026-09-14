@@ -7,7 +7,7 @@ import './VideoPlayer.css';
 // Local video server port (from electron main.js). Defaults to 5001 but can be
 // dynamic if the preferred ports were busy — refresh via getVideoServerInfo().
 let videoProxyPort = 5001;
-const proxyOrigin = () => `http://localhost:${videoProxyPort}`;
+function proxyOrigin() { return `http://localhost:${videoProxyPort}`; }
 const EXTRACTION_TIMEOUT_MS = 30000;
 
 // Playback preferences persisted to localStorage (shared with Settings page)
@@ -32,7 +32,7 @@ const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const MAX_PLAYBACK_RETRIES = 5;
 const RETRY_BACKOFF_MS = [800, 1600, 3200, 6400, 12800];
 
-const VideoPlayer = ({ video, onClose, channelList, channelIndex, onZapTo }) => {
+function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const streamHlsRef = useRef(false);
@@ -1623,6 +1623,6 @@ const VideoPlayer = ({ video, onClose, channelList, channelIndex, onZapTo }) => 
       </div>
     </div>
   );
-};
+}
 
 export default VideoPlayer;

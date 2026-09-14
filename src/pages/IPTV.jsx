@@ -6,27 +6,29 @@ import { autoSync, getMediaId } from '../services/dbAdapter.js';
 import isAdultMedia from '../utils/contentSafety.js';
 import './IPTV.css';
 
-const getApi = () => window.api || window.electronAPI;
+function getApi() { return window.api || window.electronAPI; }
 
-const toCard = (item) => ({
-  id: item.id,
-  videoTitle: item.title,
-  title: item.title,
-  category: item.category || 'Uncategorized',
-  thumbnailUrl: item.thumbnailUrl,
-  videoUrl: item.videoUrl,
-  duration: item.duration || 0,
-  isHLS: !!item.httpHeaders || /(\.m3u8|m3u8)/i.test(item.videoUrl || ''),
-  sourceSite: 'IPTV',
-  type: 'Web TV',
-  groupTitle: item.category,
-  httpHeaders: item.httpHeaders,
-  lastPosition: item.lastPosition || 0,
-  isAdult: item.isAdult || 0
-});
+function toCard(item) {
+  return {
+    id: item.id,
+    videoTitle: item.title,
+    title: item.title,
+    category: item.category || 'Uncategorized',
+    thumbnailUrl: item.thumbnailUrl,
+    videoUrl: item.videoUrl,
+    duration: item.duration || 0,
+    isHLS: !!item.httpHeaders || /(\.m3u8|m3u8)/i.test(item.videoUrl || ''),
+    sourceSite: 'IPTV',
+    type: 'Web TV',
+    groupTitle: item.category,
+    httpHeaders: item.httpHeaders,
+    lastPosition: item.lastPosition || 0,
+    isAdult: item.isAdult || 0
+  };
+}
 
 // Channels are HLS streams masquerading as random extensions; always treat as direct/stream
-const IPTV = () => {
+function IPTV() {
   const { settings } = useAppSettings();
   const familyMode = settings.familyMode;
   const [sources, setSources] = useState([]);
@@ -337,6 +339,6 @@ const IPTV = () => {
       {toast && <div className={`iptv-toast ${toast.type === 'err' ? 'err' : ''}`}>{toast.msg}</div>}
     </div>
   );
-};
+}
 
 export default IPTV;

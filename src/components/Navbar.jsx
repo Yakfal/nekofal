@@ -5,7 +5,7 @@ import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
 import logoUrl from '../assets/logo.svg';
 import './Navbar.css';
 
-const Navbar = forwardRef((props, ref) => {
+const Navbar = forwardRef(function Navbar(props, ref) {
   const { searchQuery, setSearchQuery } = useSearchContext();
   const { settings, setTheme } = useAppSettings();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
