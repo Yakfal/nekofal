@@ -43,7 +43,11 @@ execSync('npm run build', { cwd: root, stdio: 'inherit' });
 console.log(`[dist] ${publish ? 'packaging + publishing to GitHub' : 'packaging (no publish)'}…`);
 const builderArgs = ['electron-builder', '--win'];
 if (publish) builderArgs.push('--publish', 'always');
-const res = spawnSync('npx', builderArgs, { cwd: root, stdio: 'inherit' });
+const res = spawnSync('npx', builderArgs, {
+  cwd: root,
+  stdio: 'inherit',
+  shell: process.platform === 'win32'
+});
 if (res.error) {
   console.error('[dist] electron-builder failed to start:', res.error.message);
   process.exit(1);
