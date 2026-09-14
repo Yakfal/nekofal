@@ -6,9 +6,17 @@ export default defineConfig({
   plugins: [react()],
   base: './',
   esbuild: {
-    keepNames: true
+    keepNames: true,
+    tsconfigRaw: {
+      compilerOptions: {
+        useDefineForClassFields: true,
+      },
+    },
   },
   build: {
+    target: 'es2020',
+    cssTarget: 'chrome61',
+    minify: 'esbuild',
     outDir: 'build',
     emptyOutDir: true,
     rollupOptions: {

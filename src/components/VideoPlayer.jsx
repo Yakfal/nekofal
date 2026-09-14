@@ -4,33 +4,35 @@ import { bindMediaKey, unbindMediaKey } from '../utils/mediaKeys.js';
 import { pickBestStream } from '../services/customScraper.js';
 import './VideoPlayer.css';
 
-// Local video server port (from electron main.js). Defaults to 5001 but can be
-// dynamic if the preferred ports were busy — refresh via getVideoServerInfo().
-let videoProxyPort = 5001;
-function proxyOrigin() { return `http://localhost:${videoProxyPort}`; }
+// ---- Static configuration (hoisted above the component to avoid TDZ) ----
 const EXTRACTION_TIMEOUT_MS = 30000;
-
-// Playback preferences persisted to localStorage (shared with Settings page)
 const PREF_KEY = 'pmh-preferences';
-const readPrefs = () => {
-  try {
-    return JSON.parse(localStorage.getItem(PREF_KEY)) || {};
-  } catch {
-    return {};
-  }
-};
-const writePref = (key, value) => {
-  const prefs = readPrefs();
-  prefs[key] = value;
-  localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
-};
-
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
 // Playback blip recovery: how many times to retry a stream that hiccups on the
 // network, with exponential backoff between attempts.
 const MAX_PLAYBACK_RETRIES = 5;
 const RETRY_BACKOFF_MS = [800, 1600, 3200, 6400, 12800];
+
+// Local video server port (from electron main.js). Defaults to 5001 but can be
+// dynamic if the preferred ports were busy — refresh via getVideoServerInfo().
+let videoProxyPort = 5001;
+
+function proxyOrigin() { return `http://localhost:${videoProxyPort}`; }
+
+function readPrefs() {
+  try {
+    return JSON.parse(localStorage.getItem(PREF_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function writePref(key, value) {
+  const prefs = readPrefs();
+  prefs[key] = value;
+  localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+}
 
 function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const videoRef = useRef(null);
