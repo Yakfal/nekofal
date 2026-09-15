@@ -2,9 +2,54 @@ import React, { createContext, useContext, useCallback, useEffect, useMemo, useR
 import { usePlaylists } from './PlaylistsContext.jsx';
 import { installMediaKeyBridge } from '../utils/mediaKeys.js';
 import { isPageUrl, isDirectMediaUrl } from '../services/dbAdapter.js';
+import { isYouTubeUrl, getYouTubeVideoId, canonicalYouTubePageUrl } from '../services/customScraper.js';
 import './Playback.css';
 
 const SUPPORTED_EXT = ['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v', '.mp3', '.m4a', '.flac', '.wav', '.ogg', '.aac', '.m3u8'];
+
+// ---- Canonical media normalization ------------------------------------------
+// YouTube watch URLs rotate between /watch?v=, youtu.be/ID and googlevideo CDN
+// streams. Favorites/history persist a canonical page URL so the item stays
+// re-extractable forever. Every video that reaches the player guarantees
+// { title, thumbnail, provider, pageUrl }.
+const YT_WATCH_RE = /youtube\.com\/watch\?/i;
+
+function isYouTubeMedia(media) {
+  if (!media) return false;
+  return isYouTubeUrl(
+    String(media.pageUrl || media.webUrl || media.videoUrl || media.url || media.streamUrl || '')
+  );
+}
+
+function normalizePlaybackMedia(media) {
+  if (!media) return null;
+  const isYT = isYouTubeMedia(media);
+  let pageUrl = String(media.pageUrl || media.webUrl || '').trim();
+  const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
+  if (isYT && pageUrl && !YT_WATCH_RE.test(pageUrl)) {
+    const id = getYouTubeVideoId(pageUrl) || getYouTubeVideoId(raw);
+    if (id) pageUrl = canonicalYouTubePageUrl(`https://www.youtube.com/watch?v=${id}`);
+  } else if (isYT && !pageUrl) {
+    const id = getYouTubeVideoId(raw);
+    pageUrl = id ? `https://www.youtube.com/watch?v=${id}` : raw;
+  }
+  const title = media.videoTitle || media.title || 'Unknown Video';
+  const thumbnail = media.thumbnailUrl || media.poster || media.thumbnail || '';
+  const provider = isYT
+    ? 'youtube'
+    : (media.provider
+        ? String(media.provider)
+        : (media.sourceSite ? String(media.sourceSite).split('.')[0].toLowerCase() : ''));
+  return {
+    ...media,
+    title,
+    videoTitle: media.videoTitle || media.title || 'Unknown Video',
+    thumbnail,
+    thumbnailUrl: thumbnail || media.thumbnailUrl || '',
+    provider,
+    pageUrl
+  };
+}
 
 const PlaybackContext = createContext({
   activeVideo: null,
@@ -155,14 +200,15 @@ export function PlaybackProvider({ children }) {
   }, []);
 
   const open = useCallback((video, opts = {}) => {
-    if (!video) return;
-    setActiveVideo(video);
+    const normed = normalizePlaybackMedia(video);
+    if (!normed) return;
+    setActiveVideo(normed);
     if (Array.isArray(opts.channels) && opts.channels.length > 0) {
       setActiveChannels(opts.channels);
       const fromIndex = Number.isInteger(opts.channelIndex)
         ? opts.channelIndex
         : opts.channels.findIndex(
-            (c) => c && (c.id === video.id || (c.videoUrl && c.videoUrl === video.videoUrl))
+            (c) => c && (c.id === normed.id || (c.videoUrl && c.videoUrl === normed.videoUrl))
           );
       setActiveChannelIndex(fromIndex >= 0 ? fromIndex : 0);
     } else {
@@ -170,7 +216,7 @@ export function PlaybackProvider({ children }) {
       setActiveChannelIndex(null);
     }
     if (opts.viaDrop) {
-      setSaveMenuVideo(video);
+      setSaveMenuVideo(normed);
       setNewPlaylistName('');
     } else {
       setSaveMenuVideo(null);
@@ -185,10 +231,11 @@ export function PlaybackProvider({ children }) {
   // media (files, IPTV, radio) and page-URL items play exactly as before —
   // VideoPlayer does its own extraction for plain web pages.
   const playVideo = useCallback(async (video, opts = {}) => {
-    if (!video) return;
+    const media = normalizePlaybackMedia(video);
+    if (!media) return;
     const api = window.api || window.electronAPI;
-    const raw = String(video.videoUrl || video.url || video.streamUrl || '').trim();
-    const explicitPage = String(video.pageUrl || video.webUrl || '').trim();
+    const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
+    const explicitPage = String(media.pageUrl || media.webUrl || '').trim();
     const pageUrl = explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
     // Re-extract only when a page is known AND the stream is absent, or when an
     // explicit page is paired with a (possibly stale) direct stream URL.
@@ -196,11 +243,11 @@ export function PlaybackProvider({ children }) {
 
     if (!needsReextract) {
       setResolving(null);
-      open(video, opts);
+      open(media, opts);
       return;
     }
 
-    setResolving({ title: video.videoTitle || video.title || 'video' });
+    setResolving({ title: media.videoTitle || media.title || 'video' });
     try {
       const result = await api.extractStream(String(pageUrl));
       const extraction = result && result.success && (result.data?.videoUrl || result.streamUrl)
@@ -208,10 +255,12 @@ export function PlaybackProvider({ children }) {
         : null;
       if (extraction && extraction.videoUrl) {
         open({
-          ...video,
+          ...media,
           videoUrl: extraction.videoUrl,
-          isHLS: extraction.isHLS || video.isHLS || false,
-          httpHeaders: extraction.httpHeaders || video.httpHeaders || null
+          isHLS: extraction.isHLS || media.isHLS || false,
+          httpHeaders: extraction.httpHeaders || media.httpHeaders || null,
+          formats: (Array.isArray(extraction.formats) && extraction.formats.length) ? extraction.formats : media.formats,
+          qualityLevels: (Array.isArray(extraction.qualityLevels) && extraction.qualityLevels.length) ? extraction.qualityLevels : media.qualityLevels
         }, opts);
         return;
       }
@@ -222,7 +271,7 @@ export function PlaybackProvider({ children }) {
     } finally {
       setResolving(null);
     }
-    open(video, opts);
+    open(media, opts);
   }, [open]);
 
   // Restore from the floating mini player: resume full playback in the main

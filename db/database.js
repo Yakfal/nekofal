@@ -552,18 +552,21 @@ async function getFavorites() {
 // A favorite is keyed by its own id (PK) or the canonical media_id alias used
 // by the cloud payload — covers both paths listed in the IPC: the canonical
 // { media_id, title, url, thumbnail, type, isAdult } shape and legacy rows.
+// NOTE: sql.js getAsObject() returns a truthy {} on an EMPTY result set, so the
+// probe must check a real column value (aliased here as `found`), not truthiness
+// of the row object, or every lookup would falsely report a favorite.
 function findFavorite(videoId, mediaId) {
   if (videoId) {
-    const stmt = db.prepare('SELECT 1 FROM favorites WHERE id = ? LIMIT 1');
+    const stmt = db.prepare('SELECT 1 AS found FROM favorites WHERE id = ? LIMIT 1');
     const hit = stmt.getAsObject([videoId]);
     stmt.free();
-    if (hit) return true;
+    if (hit && hit.found) return true;
   }
   if (mediaId) {
-    const stmt = db.prepare('SELECT 1 FROM favorites WHERE media_id = ? LIMIT 1');
+    const stmt = db.prepare('SELECT 1 AS found FROM favorites WHERE media_id = ? LIMIT 1');
     const hit = stmt.getAsObject([mediaId]);
     stmt.free();
-    if (hit) return true;
+    if (hit && hit.found) return true;
   }
   return false;
 }

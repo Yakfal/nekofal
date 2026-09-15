@@ -158,6 +158,7 @@ export function favoritePayloadFor(item) {
     url,
     pageUrl,
     type: item.type || item.sourceSite || (item.streamUrl ? 'Radio' : 'video'),
+    provider: item.provider || '',
     thumbnail: item.thumbnailUrl || item.favicon || item.poster || '',
     isAdult: !!item.isAdult,
     duration: item.duration || 0,

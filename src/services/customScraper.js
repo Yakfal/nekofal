@@ -45,6 +45,29 @@ export function cleanupSniffListener() {
   }
 }
 
+// ---- YouTube canonical metadata helpers ---------------------------------------
+// YouTube URLs arrive in several shapes (youtube.com/watch?v=, youtu.be/ID,
+// /shorts|embed|live/ID, and raw googlevideo CDN streams). Favorites/history
+// persist a canonical watch page URL so a saved item stays re-extractable long
+// after its CDN stream URL rotates. These helpers mirror the canonicalization
+// used at playback time (PlaybackContext) so every search surface agrees.
+const YT_URL_RE = /(youtube\.com|youtu\.be|googlevideo\.com)/i;
+const YT_VIDEO_ID_RE = /(?:youtube\.com\/(?:watch\?(?:[^#]*&)?v=|shorts\/|embed\/|live\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{6,})/i;
+
+export function isYouTubeUrl(input) {
+  return YT_URL_RE.test(String(input || ''));
+}
+
+export function getYouTubeVideoId(input) {
+  const m = String(input || '').match(YT_VIDEO_ID_RE);
+  return m ? m[1] : '';
+}
+
+export function canonicalYouTubePageUrl(input) {
+  const id = getYouTubeVideoId(input);
+  return id ? `https://www.youtube.com/watch?v=${id}` : String(input || '');
+}
+
 // ---- Pornhub strict result sanitizer ---------------------------------------
 // Mirror of the main-process strict filter (electron/main.js): a valid pornhub
 // search hit MUST be a viewkey video page, must NOT point at a /language/

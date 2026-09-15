@@ -1613,14 +1613,15 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
     let ytDlpArgs;
     if (isYouTube) {
       // YouTube: request ADAPTIVE HLS/DASH manifests up to 2160p instead of a
-      // single 720p progressive MP4. --dump-json returns every format so the
-      // player menu can list 1080p/1440p/2160p tiers, and — when the player
-      // client serves HLS — a master .m3u8 that hls.js renders with all levels.
+      // single 720p progressive MP4. `-j` (--dump-json) --no-playlist returns
+      // every format with its direct URL/headers so the player menu can list
+      // 144p…2160p tiers, the master .m3u8 renders in hls.js when available,
+      // and non-HLS formats can be hot-swapped by their raw URL.
       ytDlpArgs = [
         url,
-        '--dump-json',
-        '-f', 'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best',
+        '-j',
         '--no-playlist',
+        '-f', 'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best',
         '--extractor-args', 'youtube:player_client=web_embedded,android,web'
       ];
     } else {
@@ -1629,7 +1630,8 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
       // when the platform serves them separately).
       ytDlpArgs = [
         url,
-        '--dump-json',
+        '-j',
+        '--no-playlist',
         '-f', 'b',
         '--extractor-args', 'generic:impersonate'
       ];
@@ -1668,6 +1670,36 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
         if (!label || seenRes.has(key)) continue;
         seenRes.add(key);
         qualityLevels.push({ formatId: f.format_id, label, height: f.height || 0, width: f.width || 0 });
+      }
+
+      // Direct-URL format list for instant, no-re-extraction quality switching:
+      // one entry per height, preferring a progressive (audio-bearing) format
+      // so native playback never turns silent when the user drops a tier.
+      const menuFormats = [];
+      const byHeightBest = new Map();
+      for (const f of formats) {
+        const url = f.url || f.manifest_url || '';
+        if (!url || !f.vcodec || f.vcodec === 'none') continue;
+        const key = f.height || f.format_id;
+        if (!key) continue;
+        const candidate = {
+          formatId: f.format_id,
+          label: f.format_note || (f.height ? `${f.height}p` : null) || f.format || f.format_id,
+          height: f.height || 0,
+          width: f.width || 0,
+          url,
+          protocol: f.protocol || '',
+          httpHeaders: f.http_headers || null,
+          hasAudio: !!(f.acodec && f.acodec !== 'none'),
+          tbr: f.tbr || 0
+        };
+        const prev = byHeightBest.get(key);
+        if (!prev || (candidate.hasAudio && !prev.hasAudio) || (candidate.hasAudio === prev.hasAudio && (candidate.tbr || 0) > (prev.tbr || 0))) {
+          byHeightBest.set(key, candidate);
+        }
+      }
+      for (const f of [...byHeightBest.values()].sort(byResDesc)) {
+        menuFormats.push({ label: f.label, height: f.height, url: f.url, httpHeaders: f.httpHeaders, hasAudio: f.hasAudio, formatId: f.formatId });
       }
 
       // A specific format was requested (manual quality switch in the player).
@@ -1803,6 +1835,38 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
         });
       }
 
+      // Direct-URL format list (one per height) so the player can hot-swap
+      // without re-running yt-dlp; progressive formats (with audio) preferred.
+      const menuFormats = [];
+      const byHeightBest = new Map();
+      for (const f of videoFormats) {
+        const url = f.url || f.manifest_url || '';
+        if (!url) continue;
+        const key = f.height || f.format_id;
+        if (!key) continue;
+        const candidate = {
+          formatId: f.format_id,
+          label: f.format_note || (f.height ? `${f.height}p` : null) || f.format || f.format_id,
+          height: f.height || 0,
+          url,
+          protocol: f.protocol || '',
+          httpHeaders: f.http_headers || null,
+          hasAudio: !!(f.acodec && f.acodec !== 'none'),
+          tbr: f.tbr || 0
+        };
+        const prev = byHeightBest.get(key);
+        if (!prev || (candidate.hasAudio && !prev.hasAudio) || (candidate.hasAudio === prev.hasAudio && (candidate.tbr || 0) > (prev.tbr || 0))) {
+          byHeightBest.set(key, candidate);
+        }
+      }
+      for (const f of [...byHeightBest.values()].sort((a, b) => {
+        const aRes = (a.height || 0);
+        const bRes = (b.height || 0);
+        return bRes - aRes;
+      })) {
+        menuFormats.push({ label: f.label, height: f.height, url: f.url, httpHeaders: f.httpHeaders, hasAudio: f.hasAudio, formatId: f.formatId });
+      }
+
       // If a specific format was requested, re-resolve the stream with that format
       if (formatId) {
         try {
@@ -1865,23 +1929,29 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
         qualityLevels: isYouTube ? [] : qualityLevels,
         // Include http_headers from yt-dlp for CDN compatibility
         httpHeaders: httpHeaders,
-        formats: isYouTube ? null : {
-          video: bestVideo ? {
-            url: bestVideo.url,
-            format: bestVideo.format,
-            resolution: bestVideo.resolution,
-            width: bestVideo.width,
-            height: bestVideo.height,
-            vcodec: bestVideo.vcodec,
-            tbr: bestVideo.tbr
-          } : null,
-          audio: bestAudio ? {
-            url: bestAudio.url,
-            format: bestAudio.format,
-            acodec: bestAudio.acodec,
-            abr: bestAudio.abr
-          } : null
-        }
+        // Direct-URL quality list ({ label, height, url }) for instant format
+        // switching in the player; per-format best picks, progressive-first.
+        formats: (typeof menuFormats !== 'undefined' && menuFormats.length > 0)
+          ? menuFormats
+          : isYouTube
+            ? null
+            : {
+                video: bestVideo ? {
+                  url: bestVideo.url,
+                  format: bestVideo.format,
+                  resolution: bestVideo.resolution,
+                  width: bestVideo.width,
+                  height: bestVideo.height,
+                  vcodec: bestVideo.vcodec,
+                  tbr: bestVideo.tbr
+                } : null,
+                audio: bestAudio ? {
+                  url: bestAudio.url,
+                  format: bestAudio.format,
+                  acodec: bestAudio.acodec,
+                  abr: bestAudio.abr
+                } : null
+              }
       }
     };
     

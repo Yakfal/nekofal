@@ -130,6 +130,10 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     return typeof p.defaultRate === 'number' ? p.defaultRate : 1;
   });
   const [qualityLevels, setQualityLevels] = useState([]);
+  // Dual-engine fallback: direct-URL format list ({ label, height, url })
+  // from extraction when hls.js has no levels (non-HLS playback). Used to
+  // hot-swap quality by re-pointing <video> without re-running yt-dlp.
+  const [directFormats, setDirectFormats] = useState([]);
   const [selectedQuality, setSelectedQuality] = useState('auto');
   const [menuOpen, setMenuOpen] = useState(null);
   const [downloadStarted, setDownloadStarted] = useState(false);
@@ -673,7 +677,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
   }, []);
 
-  // Switch the active yt-dlp stream to a specific format (non-HLS videos)
+  // Switch the active yt-dlp stream to a specific format (non-HLS videos) by
+  // re-extracting that exact format from the source page.
   const switchYtQuality = useCallback(async (level) => {
     if (!level || !level.formatId) return;
     const api = window.api || window.electronAPI;
@@ -704,10 +709,30 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
   }, [video, getProxiedUrl]);
 
-  // Quality selection (HLS levels or yt-dlp formats)
+  // Instant format hot-swap: point <video> straight at the chosen format's URL
+  // (no re-extraction). The stream-URL state change re-initializes the media
+  // element through the standard pipeline, which resumes at the saved position.
+  const switchDirectFormat = useCallback((fmt) => {
+    if (!fmt || !fmt.url) return;
+    const videoEl = videoRef.current;
+    const pos = videoEl ? videoEl.currentTime || 0 : 0;
+    // Convert off the HLS engine for this stream so playback re-enters via the
+    // native path with the raw URL (the re-init effect reads this ref).
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+    streamHlsRef.current = false;
+    pendingSeekRef.current = pos;
+    const proxied = getProxiedUrl(fmt.url, fmt.httpHeaders || null);
+    setStreamUrl(proxied);
+    setSelectedQuality(fmt.label || qualityLabel(fmt.height) || 'Auto');
+  }, [getProxiedUrl]);
+
+  // Quality selection (HLS levels → direct formats → yt-dlp re-extraction)
   const handleQualityChange = useCallback(async (val) => {
     const hls = hlsRef.current;
-    // HLS path
+    // 1) HLS path (master .m3u8 in hls.js): switch levels in-place.
     if (hls && hls.levels && hls.levels.length) {
       setSelectedQuality(val);
       if (typeof val === 'number') {
@@ -720,13 +745,22 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       hls.currentLevel = typeof val === 'number' ? val : -1;
       return;
     }
-    // yt-dlp format path (non-HLS)
-    if (typeof val === 'number' && qualityLevels[val]?.formatId) {
-      await switchYtQuality(qualityLevels[val]);
-      return;
+    // 2/3) Non-HLS: direct-URL format swap first, yt-dlp re-extraction fallback.
+    if (typeof val === 'number') {
+      const fmt = directFormats[val] || qualityLevels[val];
+      if (fmt) {
+        if (fmt.url) {
+          await switchDirectFormat(fmt);
+          return;
+        }
+        if (fmt.formatId) {
+          await switchYtQuality(fmt);
+          return;
+        }
+      }
     }
     setSelectedQuality(val);
-  }, [qualityLevels, switchYtQuality]);
+  }, [directFormats, qualityLevels, switchDirectFormat, switchYtQuality]);
 
   // Playback speed selection
   const handleRateChange = useCallback((rate) => {
@@ -824,49 +858,52 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   }, [handleFloatToMini]);
 
   // ---------- Quality quick presets (dynamic from HLS/yt-dlp levels) ----------
-  // Unique resolved heights from available levels, sorted high→low.
+  // The active engine: hls.js levels when a master manifest is in charge,
+  // otherwise the extraction's direct-URL format list.
+  const engineItems = qualityLevels.length > 0 ? qualityLevels : directFormats;
+  // Unique resolved heights from the active engine, sorted high→low.
   const availableQualityHeights = Array.from(
-    new Set(qualityLevels.map((l) => l.height).filter((h) => h > 0))
+    new Set(engineItems.map((l) => l.height).filter((h) => h > 0))
   ).sort((a, b) => b - a);
   const hasQualityLevels = availableQualityHeights.length > 0;
-  const selectHlsLevelByHeight = useCallback((targetH) => {
-    const hls = hlsRef.current;
-    // Use resolved qualityLevels array (which maps each hls.levels entry to the
-    // real height) to avoid the raw-height=0 problem.
-    const levels = (qualityLevels.length > 0 ? qualityLevels : (hls && hls.levels) || []);
-    let exactIdx = -1;
-    let bestLowerIdx = -1;
-    let bestLowerH = 0;
-    for (let i = 0; i < levels.length; i++) {
-      const h = levels[i].height || 0;
-      if (h === targetH && exactIdx === -1) exactIdx = i;
-      if (h < targetH && h > bestLowerH) { bestLowerH = h; bestLowerIdx = i; }
-    }
-    const idx = exactIdx !== -1 ? exactIdx : (bestLowerIdx !== -1 ? bestLowerIdx : levels.length - 1);
-    if (hls && hls.currentLevel != null) {
-      hls.currentLevel = idx;
-    }
-    setSelectedQuality(idx);
-    writePref('preferredQuality', idx);
-  }, [qualityLevels]);
 
+  // Map a chosen chip height to the ACTIVE engine's item index (HLS levels or
+  // direct formats) and route through the shared quality handler.
   const handlePresetChange = useCallback((preset) => {
     if (preset === 'auto') {
       handleQualityChange('auto');
-    } else {
-      selectHlsLevelByHeight(preset);
+      return;
     }
-  }, [handleQualityChange, selectHlsLevelByHeight]);
+    const items = engineItems;
+    const hit = items.findIndex((l) => (l.height || 0) === preset);
+    if (hit !== -1) {
+      handleQualityChange(hit);
+    } else {
+      setSelectedQuality(preset);
+    }
+  }, [engineItems, handleQualityChange]);
 
-  // Resolved height of the currently selected level (for chip active state).
+  // Resolved height of the currently selected item (for chip active state).
   const currentQualityHeight = useCallback(() => {
     if (selectedQuality === 'auto') return null;
     if (typeof selectedQuality === 'number') {
-      const lvl = qualityLevels[selectedQuality];
+      const lvl = engineItems[selectedQuality];
       return lvl ? lvl.height : null;
     }
-    return null;
-  }, [selectedQuality, qualityLevels]);
+    // String selection (e.g. a yt-dlp format label): resolve to its height.
+    const lvl = engineItems.find((l) => String(l.label) === String(selectedQuality));
+    return lvl ? (lvl.height || null) : null;
+  }, [selectedQuality, engineItems]);
+
+  // Label shown on the quality trigger button.
+  const qualityTriggerLabel = useCallback(() => {
+    if (selectedQuality === 'auto') return 'Auto';
+    if (typeof selectedQuality === 'number') {
+      const lvl = engineItems[selectedQuality];
+      return (lvl && (lvl.label || qualityLabel(lvl.height))) || `Quality ${selectedQuality + 1}`;
+    }
+    return selectedQuality;
+  }, [selectedQuality, engineItems]);
 
   // ---------- Hardware media-key bindings ----------
   useEffect(() => {
@@ -941,6 +978,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     setDrmWebUrl(null);
     setQualityLevels([]);
     setSelectedQuality('auto');
+    setDirectFormats(Array.isArray(video.formats) && video.formats.length ? video.formats.map((f) => ({ ...f })) : []);
     streamHlsRef.current = false;
     sourceUrlRef.current = video.pageUrl || video.webUrl || video.videoUrl || video.url;
     networkRetryRef.current = 0;
@@ -1026,6 +1064,11 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             httpHeaders = extraction.httpHeaders || null;
             isHLS = extraction.isHLS || false;
             streamHlsRef.current = !!extraction.isHLS;
+
+            // yt-dlp direct-URL format list (non-HLS quality switching)
+            if (Array.isArray(extraction.formats)) {
+              setDirectFormats(extraction.formats.map((f) => ({ ...f })));
+            }
 
             // yt-dlp non-HLS quality options (format switching)
             if (Array.isArray(extraction.qualityLevels)) {
@@ -1617,8 +1660,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
           {/* Bottom Controls */}
           <div className="controls-bottom-bar">
-            {/* Quality menu */}
-            {menuOpen === 'quality' && qualityLevels.length > 0 && (
+            {/* Quality menu (HLS levels or direct-URL formats) */}
+            {menuOpen === 'quality' && engineItems.length > 0 && (
               <div className="popup-menu quality-menu">
                 <button 
                   className={`menu-item ${selectedQuality === 'auto' ? 'active' : ''}`}
@@ -1626,15 +1669,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 >
                   Auto
                 </button>
-                {qualityLevels.map((lvl, i) => (
+                {engineItems.map((lvl, i) => (
                   <button 
                     key={lvl.formatId || lvl.index || i} 
                     className={`menu-item ${String(selectedQuality) === String(lvl.index) || selectedQuality === lvl.label ? 'active' : ''}`}
                     onClick={() => { handleQualityChange(i); setMenuOpen(null); }}
                   >
-                    {lvl.label || (lvl.height ? `${lvl.height}p` : (lvl.width ? `${lvl.width}px` : `Quality ${i}`))}
+                    {lvl.label || (lvl.height ? `${lvl.height}p` : (lvl.width ? `${lvl.width}px` : qualityLabel(lvl.height) || `Quality ${i}`))}
                     {lvl.bitrate ? ` · ${Math.round(lvl.bitrate / 1000)}kbps` : ''}
                     {!lvl.bitrate && lvl.label && lvl.height ? ` · ${lvl.height}p` : ''}
+                    {lvl.url && lvl.hasAudio === false ? ' · audio-less' : ''}
                   </button>
                 ))}
               </div>
@@ -1736,19 +1780,15 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                   {playbackRate}x
                 </button>
 
-                {/* Quality */}
-                {qualityLevels.length > 0 && (
+                {/* Quality (engine-aware: HLS master → direct formats → hidden) */}
+                {engineItems.length > 0 && (
                   <button 
                     className="control-btn"
                     onClick={(e) => { e.stopPropagation(); setMenuOpen(menuOpen === 'quality' ? null : 'quality'); }}
                     aria-label="Quality settings"
                     title="Quality"
                   >
-                    {selectedQuality === 'auto'
-                      ? 'Auto'
-                      : typeof selectedQuality === 'number'
-                        ? (qualityLevels[selectedQuality]?.label || qualityLabel(qualityLevels[selectedQuality]?.height) || `Quality ${selectedQuality + 1}`)
-                        : selectedQuality}
+                    {qualityTriggerLabel()}
                   </button>
                 )}
 
