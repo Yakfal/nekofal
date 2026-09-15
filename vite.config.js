@@ -7,6 +7,11 @@ export default defineConfig({
   base: './',
   esbuild: {
     keepNames: true,
+    // NEVER let esbuild mangle identifiers: renamed bindings that get captured
+    // in earlier closures/deps (e.g. useCallback chains) can collide and throw
+    // "Cannot access 'X' before initialization" at runtime in the minified
+    // bundle. Keeping real names makes a mangled-TDZ class impossible.
+    minifyIdentifiers: false,
     tsconfigRaw: {
       compilerOptions: {
         useDefineForClassFields: true,

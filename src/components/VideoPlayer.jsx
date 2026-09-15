@@ -314,6 +314,27 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   });
 
+  // ------------- Mouse inactivity controls auto-hide -------------
+  // Controls stay on screen while the cursor is active (or paused) and fade
+  // out after 2.5s of no movement during playback (Netflix-style).
+  const clearControlsTimer = useCallback(() => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+  }, []);
+
+  const hideControlsSoon = useCallback(() => {
+    clearControlsTimer();
+    controlsTimeoutRef.current = setTimeout(() => setIsControlsVisible(false), 2500);
+  }, [clearControlsTimer]);
+
+  const resetControlsTimeout = useCallback(() => {
+    setIsControlsVisible(true);
+    clearControlsTimer();
+    if (!isPaused) hideControlsSoon();
+  }, [isPaused, clearControlsTimer, hideControlsSoon]);
+
   // Seek relative
   const seekRelative = useCallback((seconds) => {
     const videoEl = videoRef.current;
@@ -347,27 +368,6 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       }
     }
   }, []);
-
-  // ------------- Mouse inactivity controls auto-hide -------------
-  // Controls stay on screen while the cursor is active (or paused) and fade
-  // out after 2.5s of no movement during playback (Netflix-style).
-  const clearControlsTimer = useCallback(() => {
-    if (controlsTimeoutRef.current) {
-      clearTimeout(controlsTimeoutRef.current);
-      controlsTimeoutRef.current = null;
-    }
-  }, []);
-
-  const hideControlsSoon = useCallback(() => {
-    clearControlsTimer();
-    controlsTimeoutRef.current = setTimeout(() => setIsControlsVisible(false), 2500);
-  }, [clearControlsTimer]);
-
-  const resetControlsTimeout = useCallback(() => {
-    setIsControlsVisible(true);
-    clearControlsTimer();
-    if (!isPaused) hideControlsSoon();
-  }, [isPaused, clearControlsTimer, hideControlsSoon]);
 
   // Pause guard: while paused, controls must stay visible regardless of mouse
   // activity — clear any pending hide timer and force them on.
