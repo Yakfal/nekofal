@@ -721,7 +721,10 @@ async function loadInStealth(url, opts = {}) {
 
     const hardTimer = setTimeout(() => done({ error: 'load timeout' }), timeoutMs);
 
-    win.loadURL(url, { userAgent: STEALTH_UA }).catch(err => done({ error: err.message }));
+    win.loadURL(url, {
+      userAgent: STEALTH_UA,
+      ...(opts.extraHeaders ? { extraHeaders: opts.extraHeaders } : {})
+    }).catch(err => done({ error: err.message }));
   });
 }
 
@@ -787,7 +790,7 @@ function pickUsableStreams(captured) {
 // itself). The offscreen window is destroyed immediately on resolution, and
 // cf_clearance/__cf_bm cookies persist in session.defaultSession for the
 // next (challenge-free) load.
-async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoadMs = 1500, match, probe } = {}) {
+async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoadMs = 1500, match, probe, extraHeaders } = {}) {
   const pageUrl$ = String(pageUrl || '').trim();
   if (!/^https?:\/\//i.test(pageUrl$)) return { success: false, error: 'Invalid URL' };
   const win = ensureStealthWindow();
@@ -847,7 +850,7 @@ async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoad
     }, pauseAfterLoadMs);
   };
 
-  loadInStealth(pageUrl$, { pauseAfterLoadMs, challengeTimeoutMs: 20000, timeoutMs: Math.max(timeoutMs, 25000) })
+  loadInStealth(pageUrl$, { pauseAfterLoadMs, challengeTimeoutMs: 20000, timeoutMs: Math.max(timeoutMs, 25000), extraHeaders })
     .then(scheduleProbe)
     .catch(() => { /* load failure handled by loadInStealth's own timeout */ });
 
@@ -3214,6 +3217,21 @@ function normalizeSearchEntry(entry, fallbackSite) {
 // standard browser headers, so cookies/TLS look like a normal browser session.
 const HANIME_API = 'https://hanime.tv/api/v8';
 
+// Cloudflare-bypass header block for the offscreen webview sniff fallback.
+// Presenting a full desktop-browser header set on the initial page load (plus
+// the stored cf_clearance/__cf_bm cookies in defaultSession) makes the
+// challenge resolve without an interactive visit, so the JS-driven HLS player
+// can fire its v2.hanime.tv / .m3u8 requests that the sniffer intercepts.
+const HANIME_SNIFF_HEADERS =
+  'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n' +
+  'Accept-Language: en-US,en;q=0.9\r\n' +
+  'Upgrade-Insecure-Requests: 1\r\n' +
+  'Sec-Fetch-Dest: document\r\n' +
+  'Sec-Fetch-Mode: navigate\r\n' +
+  'Sec-Fetch-Site: none\r\n' +
+  'Sec-Fetch-User: ?1\r\n' +
+  'DNT: 1\r\n';
+
 function hanimeHeaders(cookieHeader, browser = false) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -3310,7 +3328,10 @@ async function resolveHanimeStream(pageUrl) {
   // video load on this machine skips the challenge entirely.
   const sniff = await sniffWithEarlyReturn(pageUrl, {
     timeoutMs: 20000,
-    match: (e) => /\.m3u8/i.test(String(e.url || '')) || /hanime\.tv\/api\/v8\/video/i.test(String(e.url || ''))
+    extraHeaders: HANIME_SNIFF_HEADERS,
+    match: (e) => /\.m3u8/i.test(String(e.url || ''))
+      || /hanime\.tv\/api\/v8\/video/i.test(String(e.url || ''))
+      || /v2\.hanime\.tv/i.test(String(e.url || ''))
   });
   const m3u8 = sniff.matchedUrl || (sniff.streams && sniff.streams.find(s => /\.m3u8/i.test(String(s || '')))) || null;
   if (!m3u8) throw new Error('No .m3u8 manifest found for ' + slug);
@@ -3557,7 +3578,7 @@ async function xvideosStealthSearch(searchUrl, count = 25) {
 const PH_ALLOWED_CARDS = 'ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component';
 const PH_VIDEO_LINK = 'a[href*="view_video.php"], a[href*="watch"], a[href*="/videos/"]';
 const PH_IGNORED_ANCESTRY = 'nav, header, #header, .topNav, .mainNav, .subMenu, .filter-wrapper, .languageTop, .languageBar, .ph-sidebar';
-const PH_LANG_TEXT = /^(All|All Languages|English|French|German|Italian|Spanish|Portuguese|Japanese|Chinese|Korean|Russian|Hindi|Indonesian|Turkish|Polish|Dutch|Arabic|Thai|Vietnamese|Czech|Swedish|Norwegian|Danish|Finnish|Ukrainian|Romanian|Greek|Hungarian|Hebrew)$/i;
+const PH_LANG_TEXT = /^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i;
 
 function pornhubCardDuration(durText) {
   const m = String(durText || '').match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
@@ -3572,6 +3593,9 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
     'Referer': 'https://www.pornhub.com/',
+    // Age-gate cookies: pornhub gates search pages behind an age check; these
+    // three flags plus the desktop Chrome UA let the request through cleanly.
+    'Cookie': 'age_verified=1; platform=pc; has_js=1',
     'Upgrade-Insecure-Requests': '1',
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
@@ -3596,9 +3620,12 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
     const link = card.find(PH_VIDEO_LINK).first();
     if (!link.length) return;
     const href = String(link.attr('href') || '');
-    if (/\/language\//i.test(href)) return;
     const abs = href.startsWith('http') ? href : `https://www.pornhub.com${href}`;
-    if (!abs.startsWith('http') || !/view_video\.php|\/videos\//i.test(abs)) return;
+    // Strict: a real pornhub result MUST be a viewkey video page. This drops
+    // category/pornstar/channel/set links and any /language/ filter links that
+    // can sit inside the result wrapper.
+    if (/\/language\//i.test(abs)) return;
+    if (!/view_video\.php\?viewkey=/i.test(abs)) return;
     const title = (
       card.find('span.title a').attr('title') ||
       link.attr('title') ||
@@ -3641,7 +3668,7 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
 const PH_GRID_SCRIPT = `
 var out = [];
 var ignored = ['nav', 'header', '#header', '.topNav', '.mainNav', '.subMenu', '.filter-wrapper', '.languageTop', '.languageBar', '.ph-sidebar'].join(',');
-var langText = /^(All|All Languages|English|French|German|Italian|Spanish|Portuguese|Japanese|Chinese|Korean|Russian|Hindi|Indonesian|Turkish|Polish|Dutch|Arabic|Thai|Vietnamese|Czech|Swedish|Norwegian|Danish|Finnish|Ukrainian|Romanian|Greek|Hungarian|Hebrew)$/i;
+var langText = /^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i;
 var cards = [].slice.call(document.querySelectorAll('ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component'));
 var seen = {};
 for (var i = 0; i < cards.length; i++) {
@@ -3653,7 +3680,7 @@ for (var i = 0; i < cards.length; i++) {
   var href = link.getAttribute('href') || '';
   if (!href || /\\/language\\//i.test(href)) continue;
   var abs = /^https?:/i.test(href) ? href : 'https://www.pornhub.com' + href;
-  if (!/^https?:/.test(abs) || !/view_video\\.php|\\/videos\\//i.test(abs)) continue;
+  if (!/view_video\\.php\\?viewkey=/i.test(abs)) continue;
   if (seen[abs]) continue;
   var titleLink = c.querySelector('span.title a, .title a');
   var title = (link.getAttribute('title') || (titleLink ? (titleLink.getAttribute('title') || titleLink.textContent) : '') || (c.querySelector('.title') || {}).textContent || (c.querySelector('img') || {}).alt || '').trim();

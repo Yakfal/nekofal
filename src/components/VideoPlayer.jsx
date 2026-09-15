@@ -343,6 +343,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     if (!isPaused) hideControlsSoon();
   }, [isPaused, clearControlsTimer, hideControlsSoon]);
 
+  // Global inactivity listener: ANY cursor movement anywhere in the window
+  // shows the controls and restarts the 2.5s hide timer. A window-level
+  // listener (instead of onMouseMove on the container) keeps working even when
+  // the cursor hovers iframes/webviews or the HTML5 video itself, which swallow
+  // local DOM mousemove events.
+  useEffect(() => {
+    window.addEventListener('mousemove', resetControlsTimeout);
+    return () => window.removeEventListener('mousemove', resetControlsTimeout);
+  }, [resetControlsTimeout]);
+
   // Seek relative
   const seekRelative = useCallback((seconds) => {
     const videoEl = videoRef.current;
@@ -1299,8 +1309,6 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     <div
       className={`video-player-background ${!isControlsVisible && isFullscreen ? 'cursor-none' : ''}`}
       onClick={handleOverlayClick}
-      onMouseMove={resetControlsTimeout}
-      onMouseEnter={resetControlsTimeout}
       onMouseLeave={() => {
         if (!isPaused) {
           clearControlsTimer();
