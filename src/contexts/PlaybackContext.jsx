@@ -14,7 +14,8 @@ const PlaybackContext = createContext({
   playVideo: () => {},
   close: () => {},
   zapTo: () => {},
-  resolving: null
+  resolving: null,
+  setMediaSession: () => {}
 });
 
 export function PlaybackProvider({ children }) {
@@ -26,7 +27,110 @@ export function PlaybackProvider({ children }) {
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [resolving, setResolving] = useState(null);
   const dragDepthRef = useRef(0);
+  const mediaPayloadRef = useRef(null);
   const { playlists, addItem, create } = usePlaylists();
+
+  // ---- Native OS media controls (Web MediaSession) + auto-mini state -------
+  // Windows 10/11 surfaces Chromium's MediaSession as system media flyouts when
+  // the window is backgrounded/minimized. This context owns the session: the
+  // mounted player just reports the current metadata/playback state through
+  // setMediaSession(). Window minimize is handled in the main process, which
+  // forwards the latest payload to float to the MiniPlayer.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return undefined;
+    const ms = navigator.mediaSession;
+    const cmd = (detail, seekTime) => {
+      window.dispatchEvent(new CustomEvent('nek-media-command', {
+        detail: seekTime != null ? { command: detail, seekTime } : { command: detail }
+      }));
+    };
+    const trySet = (name, handler) => {
+      try { ms.setActionHandler(name, handler); } catch (err) { /* unsupported action */ }
+    };
+    trySet('play', () => cmd('play'));
+    trySet('pause', () => cmd('pause'));
+    trySet('seekto', (d) => cmd('seekto', d && typeof d.seekTime === 'number' ? d.seekTime : null));
+    trySet('previoustrack', () => cmd('previous'));
+    trySet('nexttrack', () => cmd('next'));
+    trySet('seekbackward', () => cmd('previous'));
+    trySet('seekforward', () => cmd('next'));
+    return () => {
+      trySet('play', null);
+      trySet('pause', null);
+      trySet('seekto', null);
+      trySet('previoustrack', null);
+      trySet('nexttrack', null);
+      trySet('seekbackward', null);
+      trySet('seekforward', null);
+    };
+  }, []);
+
+  // Publish playback state to navigator.mediaSession (OS media flyout) AND keep
+  // the main process topped-up with the latest mini-player payload so it can
+  // auto-float on window minimize. info === null clears everything.
+  const setMediaSession = useCallback((info) => {
+    const api = window.api || window.electronAPI;
+    const active = !!(info && info.active);
+    if (active) {
+      const payload = {
+        mode: info.mode === 'audio' ? 'audio' : 'video',
+        title: String(info.title || 'Nekofal'),
+        streamUrl: String(info.streamUrl || ''),
+        streamHls: !!info.streamHls,
+        poster: String(info.poster || ''),
+        currentTime: Math.max(0, Number(info.position) || 0),
+        volume: Number.isFinite(Number(info.volume)) ? Number(info.volume) : 1,
+        muted: !!info.muted,
+        videoId: info.videoId != null ? info.videoId : null,
+        isLocal: !!info.isLocal
+      };
+      const fingerprint = JSON.stringify(payload);
+      if (fingerprint !== mediaPayloadRef.current) {
+        mediaPayloadRef.current = fingerprint;
+        api?.mediaActive?.({ active: true, payload });
+      }
+    } else {
+      if (mediaPayloadRef.current) {
+        mediaPayloadRef.current = null;
+        api?.mediaActive?.({ active: false });
+      }
+    }
+
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    const ms = navigator.mediaSession;
+    try {
+      if (!active) {
+        ms.metadata = null;
+        ms.playbackState = 'none';
+        try { ms.setPositionState && ms.setPositionState({ duration: 0, playbackRate: 1, position: 0 }); } catch (err) {}
+        return;
+      }
+      const artwork = Array.isArray(info.artwork)
+        ? info.artwork.filter((a) => a && a.src)
+        : ([{ src: '', sizes: '512x512', type: 'image/jpeg' }].filter((a) => a.src));
+      try {
+        ms.metadata = new MediaMetadata({
+          title: String(info.title || 'Nekofal'),
+          artist: String(info.artist || ''),
+          album: String(info.album || 'Nekofal'),
+          artwork
+        });
+      } catch (err) { /* some metadata fields unsupported */ }
+      ms.playbackState = info.playing ? 'playing' : 'paused';
+      const dur = Number(info.duration) || 0;
+      if (dur > 0 && typeof ms.setPositionState === 'function') {
+        try {
+          ms.setPositionState({
+            duration: dur,
+            playbackRate: Number(info.rate) || 1,
+            position: Math.min(Math.max(Number(info.position) || 0, 0), dur)
+          });
+        } catch (err) { /* position out of range */ }
+      }
+    } catch (err) {
+      console.warn('[Playback] MediaSession update failed:', err.message);
+    }
+  }, []);
 
   // Forward global media keys to whichever player is currently mounted
   useEffect(() => {
@@ -146,7 +250,18 @@ export function PlaybackProvider({ children }) {
     return () => { if (unsub) unsub(); };
   }, [open]);
 
-  // ---- Local file drag & drop ----
+  // Main process requested an auto-Float (window minimized during playback):
+  // forward to the mounted player, which reports its live stream payload,
+  // opens the MiniPlayer and closes itself (no double audio).
+  useEffect(() => {
+    const api = window.api || window.electronAPI;
+    if (!api?.onRequestMini) return undefined;
+    const unsub = api.onRequestMini(() => {
+      window.dispatchEvent(new CustomEvent('nek-float-to-mini'));
+    });
+    return () => { if (unsub) unsub(); };
+  }, []);
+
   const isSupportedFile = useCallback((file) => {
     const name = (file && file.name) || '';
     const lower = name.toLowerCase();
@@ -238,8 +353,8 @@ export function PlaybackProvider({ children }) {
   };
 
   const value = useMemo(
-    () => ({ activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving }),
-    [activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving]
+    () => ({ activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession }),
+    [activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession]
   );
 
   return (

@@ -96,6 +96,9 @@ let videoServerBaseUrl = 'http://localhost:5001';
 // desktop. Playback payload is stored in main and delivered on load.
 let miniPlayerWindow = null;
 let miniPayload = null;
+// Live playback state pushed by the renderer (mediaActive). Used to auto-float
+// to the MiniPlayer when the main window is minimized during active playback.
+let mediaActiveResume = null;
 
 // Resolve the bundled yt-dlp/ffmpeg binaries.
 // Priority for yt-dlp:
@@ -233,6 +236,19 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+
+  // Auto-mini player: when the main window is minimized during active playback,
+  // ask the renderer to float the current video into the MiniPlayer (it closes
+  // the in-window player so there is no double audio). Nothing happens when no
+  // media is active, or when the mini is already up.
+  mainWindow.on('minimize', () => {
+    if (!mediaActiveResume || !mediaActiveResume.payload) return;
+    if (miniPlayerWindow && !miniPlayerWindow.isDestroyed()) return;
+    const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+    if (wc && !wc.isDestroyed()) {
+      wc.send('minimize-to-mini');
+    }
   });
 }
 
@@ -2566,6 +2582,29 @@ ipcMain.handle('mini:close', () => {
   return { success: true };
 });
 
+// Renderer pushes live playback state so a minimize during playback can auto
+// float to the MiniPlayer. Fire-and-forget (sender only).
+ipcMain.on('media:active', (event, state) => {
+  if (state && state.active && state.payload && state.payload.streamUrl) {
+    mediaActiveResume = {
+      payload: {
+        mode: state.payload.mode === 'audio' ? 'audio' : 'video',
+        title: String(state.payload.title || 'Nekofal Mini Player'),
+        streamUrl: String(state.payload.streamUrl || ''),
+        streamHls: !!state.payload.streamHls,
+        poster: String(state.payload.poster || ''),
+        currentTime: Number(state.payload.currentTime) || 0,
+        volume: Number.isFinite(Number(state.payload.volume)) ? Number(state.payload.volume) : 1,
+        muted: !!state.payload.muted,
+        videoId: state.payload.videoId != null ? state.payload.videoId : null,
+        isLocal: !!state.payload.isLocal
+      }
+    };
+  } else {
+    mediaActiveResume = null;
+  }
+});
+
 ipcMain.handle('mini:restore', (event, payload) => {
   try {
     // The mini player hand-back: push the CURRENT playback state (fresh
@@ -3607,13 +3646,16 @@ async function xvideosStealthSearch(searchUrl, count = 25) {
 // list and a language-filter bar (anchors pointing at /language/ plus "English /
 // French / Spanish …" chips). Generic card walkers grab those and return junk,
 // so pornhub gets its own selector set: match ONLY the real video card nodes
-// (ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component),
-// ignore anything living inside nav/header/filter bars, drop /language/ links,
-// and pull the card's actual title, duration and thumbnail.
-const PH_ALLOWED_CARDS = 'ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component';
+// (#videoSearchResult li.pcVideoListItem, div.videoMaster), ignore anything
+// living inside nav/header/footer/filter bars (.adLink, .sponsored,
+// .language-select, .sub-nav), drop /language/ and /categories/ links, and pull
+// the card's actual title, duration and thumbnail. A valid hit MUST have a
+// thumbnail image AND a viewkey= link.
+const PH_ALLOWED_CARDS = '#videoSearchResult li.pcVideoListItem, div.videoMaster';
 const PH_VIDEO_LINK = 'a[href*="view_video.php"], a[href*="watch"], a[href*="/videos/"]';
-const PH_IGNORED_ANCESTRY = 'nav, header, #header, .topNav, .mainNav, .subMenu, .filter-wrapper, .languageTop, .languageBar, .ph-sidebar';
+const PH_IGNORED_ANCESTRY = 'nav, header, #header, #footer, .topNav, .mainNav, .sub-nav, .subMenu, .filter-wrapper, .languageTop, .languageBar, .language-select, .ph-sidebar, .adLink, .sponsored';
 const PH_LANG_TEXT = /^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i;
+const PH_FILTER_HREF = /\/language\/|\/categories\//i;
 
 function pornhubCardDuration(durText) {
   const m = String(durText || '').match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
@@ -3657,9 +3699,9 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
     const href = String(link.attr('href') || '');
     const abs = href.startsWith('http') ? href : `https://www.pornhub.com${href}`;
     // Strict: a real pornhub result MUST be a viewkey video page. This drops
-    // category/pornstar/channel/set links and any /language/ filter links that
-    // can sit inside the result wrapper.
-    if (/\/language\//i.test(abs)) return;
+    // category/pornstar/channel/set links and any /language/ or /categories/
+    // filter links that can sit inside the result wrapper.
+    if (PH_FILTER_HREF.test(abs)) return;
     if (!/view_video\.php\?viewkey=/i.test(abs)) return;
     const title = (
       card.find('span.title a').attr('title') ||
@@ -3671,6 +3713,8 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
     if (PH_LANG_TEXT.test(title)) return;
     const img = card.find('img').first();
     const thumb = img.attr('data-thumb_url') || img.attr('data-src') || img.attr('src') || '';
+    // A result without a thumbnail image is a filter chip / broken card, not a video.
+    if (!thumb) return;
     const duration = pornhubCardDuration(card.find('.duration, .video-duration, var.duration').first().text());
 
     videos.push({
@@ -3702,9 +3746,10 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
 // its backslashes doubled (\\d survives to \d in the evaluated code).
 const PH_GRID_SCRIPT = `
 var out = [];
-var ignored = ['nav', 'header', '#header', '.topNav', '.mainNav', '.subMenu', '.filter-wrapper', '.languageTop', '.languageBar', '.ph-sidebar'].join(',');
+var ignored = ['nav', 'header', '#header', '#footer', '.topNav', '.mainNav', '.sub-nav', '.subMenu', '.filter-wrapper', '.languageTop', '.languageBar', '.language-select', '.ph-sidebar', '.adLink', '.sponsored'].join(',');
 var langText = /^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i;
-var cards = [].slice.call(document.querySelectorAll('ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component'));
+var filterHref = /\\/language\\/|\\/categories\\//i;
+var cards = [].slice.call(document.querySelectorAll('#videoSearchResult li.pcVideoListItem, div.videoMaster'));
 var seen = {};
 for (var i = 0; i < cards.length; i++) {
   if (out.length >= __LIMIT__) break;
@@ -3713,7 +3758,7 @@ for (var i = 0; i < cards.length; i++) {
   var link = c.querySelector('a[href*="view_video.php"], a[href*="watch"], a[href*="/videos/"]');
   if (!link) continue;
   var href = link.getAttribute('href') || '';
-  if (!href || /\\/language\\//i.test(href)) continue;
+  if (!href || filterHref.test(href)) continue;
   var abs = /^https?:/i.test(href) ? href : 'https://www.pornhub.com' + href;
   if (!/view_video\\.php\\?viewkey=/i.test(abs)) continue;
   if (seen[abs]) continue;
@@ -3722,6 +3767,7 @@ for (var i = 0; i < cards.length; i++) {
   if (!title || langText.test(title)) continue;
   var img = c.querySelector('img');
   var thumb = img ? (img.getAttribute('data-thumb_url') || img.getAttribute('data-src') || img.src || '') : '';
+  if (!thumb) continue;
   var durEl = c.querySelector('.duration') || c.querySelector('.video-duration') || c.querySelector('var.duration');
   var d = (durEl && durEl.textContent) || '';
   var dur = 0;
@@ -3863,9 +3909,9 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
     // walkers. Parse the result grid with pornhub-specific selectors instead —
     // HTML first (net.fetch), then the offscreen (real-browser) DOM engine.
     if (/^https?:\/\//i.test(target) && /(^|\.)pornhub\.com$/i.test(new URL(target).hostname)) {
-      const phSearchUrl = /[?&](?:search|query)=/i.test(target)
-        ? target
-        : 'https://www.pornhub.com/video/search?search=' + encodeURIComponent(q);
+      // Always use the canonical search URL; a stale /search/:slug target or a
+      // bare pornhub.com root behaves differently than the real search page.
+      const phSearchUrl = 'https://www.pornhub.com/video/search?search=' + encodeURIComponent(q);
       let phVideos = [];
       try {
         phVideos = await pornhubSearchHtml(phSearchUrl, count);

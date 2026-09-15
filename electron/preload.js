@@ -100,6 +100,17 @@ const api = {
     return () => ipcRenderer.removeListener('mini:restore-in-main', subscription);
   },
 
+  // Push live playback state to main for auto-float on window minimize.
+  mediaActive: (state) => ipcRenderer.send('media:active', state),
+  // Main tells the renderer to float to MiniPlayer when the window is minimized
+  // during active playback (wire-video float handled by VideoPlayer via the
+  // 'nek-float-to-mini' custom event dispatched here).
+  onRequestMini: (callback) => {
+    const subscription = (_event, data) => callback(data);
+    ipcRenderer.on('minimize-to-mini', subscription);
+    return () => ipcRenderer.removeListener('minimize-to-mini', subscription);
+  },
+
   // Register custom stream headers (referer/UA/cookies) for native injection
   setStreamHeaders: (url, headers) => ipcRenderer.invoke('streams:setHeaders', { url, headers }),
 
@@ -199,6 +210,8 @@ contextBridge.exposeInMainWorld('electronAPI', api);
 if (process.env.NODE_ENV === 'development') {
   const requiredMethods = [
     'initialize', 'listBackends', 'executeScraper', 'executeDefaultScraper',
+    'openMiniPlayer', 'closeMiniPlayer', 'restoreMiniPlayer', 'onMiniPayload',
+    'onMainOpenFromMini', 'mediaActive', 'onRequestMini',
     'runScrapers', 'extractStream',
     'getVideos', 'getVideosCount', 'getVideoCategories',
     'setFavorite', 'getFavorites', 'removeFavorite',

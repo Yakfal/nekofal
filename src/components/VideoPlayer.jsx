@@ -3,6 +3,7 @@ import Hls from 'hls.js';
 import { bindMediaKey, unbindMediaKey } from '../utils/mediaKeys.js';
 import { pickBestStream } from '../services/customScraper.js';
 import { favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
+import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import './VideoPlayer.css';
 
 // ---- Static configuration (hoisted above the component to avoid TDZ) ----
@@ -37,7 +38,55 @@ function writePref(key, value) {
   localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
 }
 
+// ---- HLS / yt-dlp quality helpers ------------------------------------------
+
+// Common bitrate→height mapping (approximate; real-world varies by codec).
+function estimateHeightFromBitrate(bps) {
+  if (bps >= 8000000)  return 4320;
+  if (bps >= 3500000)  return 2160;
+  if (bps >= 2000000)  return 1080;
+  if (bps >= 1000000)  return 720;
+  if (bps >= 500000)   return 480;
+  if (bps >= 250000)   return 360;
+  if (bps >= 120000)   return 240;
+  return 144;
+}
+
+// Resolve height from an HLS level: l.height → attrs.RESOLUTION → bitrate.
+function parseHlsResolution(l) {
+  if (!l) return { width: 0, height: 0 };
+  let h = Number(l.height) || 0;
+  let w = Number(l.width) || 0;
+  if ((!h || !w) && l.attrs && l.attrs.RESOLUTION) {
+    const m = String(l.attrs.RESOLUTION).match(/(\d+)\s*[xX]\s*(\d+)/);
+    if (m) { w = parseInt(m[1], 10); h = parseInt(m[2], 10); }
+  }
+  if (!h && l.bitrate) h = estimateHeightFromBitrate(l.bitrate);
+  return { width: w, height: h };
+}
+
+// Human-readable label for a given height (e.g. 1440 → "1440p (2K)").
+function qualityLabel(h) {
+  if (!h || h <= 0) return '';
+  const tiers = [
+    [4320, '4320p (8K)'],
+    [2160, '2160p (4K)'],
+    [1440, '1440p (2K)'],
+    [1080, '1080p'],
+    [720, '720p'],
+    [480, '480p'],
+    [360, '360p'],
+    [240, '240p'],
+    [144, '144p']
+  ];
+  for (const [tier, name] of tiers) {
+    if (h >= tier) return name;
+  }
+  return `${h}p`;
+}
+
 function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
+  const { setMediaSession } = usePlayback();
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const streamHlsRef = useRef(false);
@@ -316,6 +365,42 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
     if (onClose) onClose();
   }, [onClose, savePosition]);
+
+  // ---- Native OS media controls bridge --------------------------------------
+  // PlaybackContext owns navigator.mediaSession and forwards OS media commands
+  // here as 'nek-media-command' events. Channel zapping takes over next/prev
+  // when live, otherwise they seek like the hardware media keys do.
+
+  // Mirror live playback state into the OS media session (and keep the main
+  // process topped-up with a mini-player payload for auto-float on minimize).
+  useEffect(() => {
+    if (!video) return undefined;
+    const artist = isZapping
+      ? (video.groupTitle || video.sourceSite || 'Live TV')
+      : (video.artistName || video.sourceSite || '');
+    setMediaSession({
+      active: true,
+      title: video.videoTitle || video.title || 'Nekofal',
+      artist,
+      album: isZapping ? 'Live TV' : 'Nekofal',
+      artwork: video.thumbnailUrl ? [{ src: video.thumbnailUrl, sizes: '512x512', type: 'image/jpeg' }] : [],
+      playing: isPlaying,
+      position: currentTime,
+      duration,
+      rate: playbackRate,
+      streamUrl: streamUrlRef.current || streamUrl || video.videoUrl || '',
+      streamHls: !!streamHlsRef.current || !!video.isHLS,
+      poster: video.thumbnailUrl || '',
+      videoId: video.id != null ? video.id : null,
+      isLocal: !!video.isLocal,
+      volume,
+      muted: isMuted,
+      mode: 'video'
+    });
+  }, [video, isZapping, isPlaying, currentTime, duration, playbackRate, streamUrl, volume, isMuted, setMediaSession]);
+
+  // Clear the OS media session when the player unmounts.
+  useEffect(() => () => { setMediaSession(null); }, [setMediaSession]);
 
   // Keyboard handlers - Escape always closes
   useEffect(() => {
@@ -694,29 +779,76 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     if (res?.success) closePlayer();
   }, [video, streamUrl, closePlayer]);
 
-  // ---------- HLS quality quick presets ----------
-  const PRESET_HEIGHTS = [1080, 720, 480, 360];
-  const hasHlsLevels = qualityLevels.length > 1 && qualityLevels.some(l => l.height);
-  const hasLevelFor = useCallback((targetH) => {
-    if (!hasHlsLevels) return false;
-    return true; // selectHlsLevelByHeight picks closest-or-exact
-  }, [hasHlsLevels]);
+  // OS media commands (play/pause/seek) forwarded from navigator.mediaSession.
+  // Channel zapping takes over next/prev while live; otherwise they seek.
+  useEffect(() => {
+    const onCommand = (e) => {
+      const videoEl = videoRef.current;
+      const detail = (e && e.detail) || {};
+      if (!videoEl) return;
+      switch (detail.command) {
+        case 'play':
+          videoEl.play().catch(() => {});
+          break;
+        case 'pause':
+          videoEl.pause();
+          break;
+        case 'seekto':
+          if (typeof detail.seekTime === 'number' && videoEl.duration) {
+            videoEl.currentTime = Math.max(0, Math.min(detail.seekTime, videoEl.duration));
+          }
+          break;
+        case 'previous':
+          if (isZapping) zap(-1);
+          else seekRelative(-10);
+          break;
+        case 'next':
+          if (isZapping) zap(1);
+          else seekRelative(10);
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener('nek-media-command', onCommand);
+    return () => window.removeEventListener('nek-media-command', onCommand);
+  }, [isZapping, zap, seekRelative]);
+
+  // Auto-mini float requested by the main process (window minimized during
+  // playback) — reuse the manual Float-To-Mini handler, which closes this
+  // player once the mini window is playing (no double audio).
+  useEffect(() => {
+    const onFloat = () => { handleFloatToMini(); };
+    window.addEventListener('nek-float-to-mini', onFloat);
+    return () => window.removeEventListener('nek-float-to-mini', onFloat);
+  }, [handleFloatToMini]);
+
+  // ---------- Quality quick presets (dynamic from HLS/yt-dlp levels) ----------
+  // Unique resolved heights from available levels, sorted high→low.
+  const availableQualityHeights = Array.from(
+    new Set(qualityLevels.map((l) => l.height).filter((h) => h > 0))
+  ).sort((a, b) => b - a);
+  const hasQualityLevels = availableQualityHeights.length > 0;
   const selectHlsLevelByHeight = useCallback((targetH) => {
     const hls = hlsRef.current;
-    if (!hls || !hls.levels || !hls.levels.length) return;
+    // Use resolved qualityLevels array (which maps each hls.levels entry to the
+    // real height) to avoid the raw-height=0 problem.
+    const levels = (qualityLevels.length > 0 ? qualityLevels : (hls && hls.levels) || []);
     let exactIdx = -1;
     let bestLowerIdx = -1;
     let bestLowerH = 0;
-    for (let i = 0; i < hls.levels.length; i++) {
-      const h = hls.levels[i].height || 0;
+    for (let i = 0; i < levels.length; i++) {
+      const h = levels[i].height || 0;
       if (h === targetH && exactIdx === -1) exactIdx = i;
       if (h < targetH && h > bestLowerH) { bestLowerH = h; bestLowerIdx = i; }
     }
-    const idx = exactIdx !== -1 ? exactIdx : (bestLowerIdx !== -1 ? bestLowerIdx : hls.levels.length - 1);
-    hls.currentLevel = idx;
+    const idx = exactIdx !== -1 ? exactIdx : (bestLowerIdx !== -1 ? bestLowerIdx : levels.length - 1);
+    if (hls && hls.currentLevel != null) {
+      hls.currentLevel = idx;
+    }
     setSelectedQuality(idx);
     writePref('preferredQuality', idx);
-  }, []);
+  }, [qualityLevels]);
 
   const handlePresetChange = useCallback((preset) => {
     if (preset === 'auto') {
@@ -726,12 +858,15 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
   }, [handleQualityChange, selectHlsLevelByHeight]);
 
-  const currentPresetH = useCallback(() => {
-    const hls = hlsRef.current;
-    if (!hls || !hls.levels || selectedQuality === 'auto') return null;
-    const lvl = hls.levels[selectedQuality];
-    return lvl ? lvl.height : null;
-  }, [selectedQuality]);
+  // Resolved height of the currently selected level (for chip active state).
+  const currentQualityHeight = useCallback(() => {
+    if (selectedQuality === 'auto') return null;
+    if (typeof selectedQuality === 'number') {
+      const lvl = qualityLevels[selectedQuality];
+      return lvl ? lvl.height : null;
+    }
+    return null;
+  }, [selectedQuality, qualityLevels]);
 
   // ---------- Hardware media-key bindings ----------
   useEffect(() => {
@@ -1049,12 +1184,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         networkRetryRef.current = 0;
         stallCountRef.current = 0;
         if (hls.levels && hls.levels.length) {
-          setQualityLevels(hls.levels.map((l, i) => ({
-            index: i,
-            height: l.height,
-            width: l.width,
-            bitrate: l.bitrate
-          })));
+          setQualityLevels(hls.levels.map((l, i) => {
+            const res = parseHlsResolution(l);
+            return {
+              index: i,
+              height: res.height,
+              width: res.width,
+              bitrate: l.bitrate,
+              label: qualityLabel(res.height) || `Quality ${i + 1}`
+            };
+          }));
           // Resolve the saved quality preference (auto | max | <num> | height string)
           const savedPref = readPrefs().preferredQuality;
           let lvl = -1;
@@ -1070,9 +1209,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               let exact = -1;
               let below = -1;
               for (let i = 0; i < hls.levels.length; i++) {
-                const h = hls.levels[i].height || 0;
+                const h = parseHlsResolution(hls.levels[i]).height;
                 if (h === target && exact === -1) exact = i;
-                if (h < target && h > (hls.levels[below]?.height || 0)) below = i;
+                if (h < target && h > (parseHlsResolution(hls.levels[below]).height || 0)) below = i;
               }
               lvl = exact !== -1 ? exact : (below !== -1 ? below : hls.levels.length - 1);
             }
@@ -1516,13 +1655,13 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               </div>
             )}
 
-            {/* Quality quick presets (HLS only) */}
-            {hasHlsLevels && (
+            {/* Quality quick presets (dynamic from available HLS levels) */}
+            {hasQualityLevels && (
               <div className="quality-presets">
                 <button className={`quality-chip ${selectedQuality === 'auto' ? 'active' : ''}`} onClick={() => handlePresetChange('auto')}>Auto</button>
-                {PRESET_HEIGHTS.map(h => (
-                  <button key={h} className={`quality-chip ${currentPresetH() === h ? 'active' : ''}`} onClick={() => handlePresetChange(h)}>
-                    {h}p
+                {availableQualityHeights.map(h => (
+                  <button key={h} className={`quality-chip ${currentQualityHeight() === h ? 'active' : ''}`} onClick={() => handlePresetChange(h)}>
+                    {qualityLabel(h)}
                   </button>
                 ))}
               </div>
@@ -1608,7 +1747,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                     {selectedQuality === 'auto'
                       ? 'Auto'
                       : typeof selectedQuality === 'number'
-                        ? `${qualityLevels[selectedQuality]?.height || selectedQuality}p`
+                        ? (qualityLevels[selectedQuality]?.label || qualityLabel(qualityLevels[selectedQuality]?.height) || `Quality ${selectedQuality + 1}`)
                         : selectedQuality}
                   </button>
                 )}
