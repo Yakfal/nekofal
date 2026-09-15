@@ -95,6 +95,7 @@ async function initializeDatabase() {
         id TEXT PRIMARY KEY,
         videoTitle TEXT NOT NULL,
         videoUrl TEXT,
+        pageUrl TEXT,
         thumbnailUrl TEXT,
         tags TEXT DEFAULT '[]',
         sourceSite TEXT,
@@ -109,6 +110,7 @@ async function initializeDatabase() {
         id TEXT PRIMARY KEY,
         videoTitle TEXT NOT NULL,
         videoUrl TEXT,
+        pageUrl TEXT,
         thumbnailUrl TEXT,
         watchedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -206,6 +208,21 @@ async function initializeDatabase() {
       db.run(`CREATE INDEX IF NOT EXISTS idx_favorites_mediaId ON favorites(media_id);`);
     } catch (migrationErr) {
       console.log('[DB] favorites media_id migration skipped:', migrationErr.message);
+    }
+
+    // Migration: Add 'pageUrl' to favorites and watch_history. The canonical
+    // web page (watch page / search-result page) survives stream rotation so a
+    // saved item can re-extract a fresh CDN URL later instead of pinning an
+    // ephemeral stream.
+    try {
+      db.run(`ALTER TABLE favorites ADD COLUMN pageUrl TEXT;`);
+    } catch (migrationErr) {
+      console.log('[DB] favorites pageUrl migration skipped:', migrationErr.message);
+    }
+    try {
+      db.run(`ALTER TABLE watch_history ADD COLUMN pageUrl TEXT;`);
+    } catch (migrationErr) {
+      console.log('[DB] watch_history pageUrl migration skipped:', migrationErr.message);
     }
 
     // Migration: Backfill isAdult for existing rows so Family Mode works on old data
@@ -456,8 +473,8 @@ async function setFavorite(videoData) {
   try {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO favorites 
-      (id, media_id, videoTitle, videoUrl, thumbnailUrl, tags, sourceSite, externalId, createdAt, description, duration, isAdult)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, media_id, videoTitle, videoUrl, pageUrl, thumbnailUrl, tags, sourceSite, externalId, createdAt, description, duration, isAdult)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const tagsArray = typeof videoData.tags === 'string' 
@@ -473,6 +490,7 @@ async function setFavorite(videoData) {
       mediaId || null,
       videoData.title,
       videoData.videoUrl,
+      videoData.pageUrl || null,
       videoData.thumbnailUrl,
       JSON.stringify(tagsArray),
       videoData.sourceSite,
@@ -504,6 +522,7 @@ async function getFavorites() {
              media_id,
              videoTitle as title, 
              videoUrl, 
+             pageUrl,
              thumbnailUrl, 
              json_extract(tags, '$') as tags,
              sourceSite, 
@@ -613,14 +632,15 @@ async function setWatchHistory(videoData) {
   try {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO watch_history 
-      (id, videoTitle, videoUrl, thumbnailUrl, watchedAt)
-      VALUES (?, ?, ?, ?, ?)
+      (id, videoTitle, videoUrl, pageUrl, thumbnailUrl, watchedAt)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run([
       videoData.id,
       videoData.title,
       videoData.videoUrl,
+      videoData.pageUrl || null,
       videoData.thumbnailUrl,
       new Date().toISOString()
     ]);
@@ -645,6 +665,7 @@ async function getWatchHistory() {
       SELECT id, 
              videoTitle as title, 
              videoUrl, 
+             pageUrl,
              thumbnailUrl, 
              watchedAt
       FROM watch_history
@@ -1162,15 +1183,16 @@ async function importData(data) {
   }
 
   for (const f of (data.favorites || [])) {
-    if (!f || !f.id || !f.videoUrl) continue;
+    if (!f || !f.id || (!f.videoUrl && !f.pageUrl)) continue;
     db.run(
       `INSERT OR IGNORE INTO favorites
-        (id, videoTitle, videoUrl, thumbnailUrl, tags, sourceSite, externalId, createdAt, description, duration, isAdult)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, videoTitle, videoUrl, pageUrl, thumbnailUrl, tags, sourceSite, externalId, createdAt, description, duration, isAdult)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         f.id,
         f.videoTitle || f.title || 'Untitled',
-        f.videoUrl,
+        f.videoUrl || null,
+        f.pageUrl || null,
         f.thumbnailUrl || '',
         JSON.stringify(f.tags || []),
         f.sourceSite || '',

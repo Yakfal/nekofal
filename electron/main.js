@@ -2227,6 +2227,7 @@ function normalizeFavoriteVideo(videoData) {
     title,
     media_id: str(source.media_id || id),
     videoUrl: str(source.videoUrl || source.url),
+    pageUrl: str(source.pageUrl || source.webUrl),
     thumbnailUrl: str(source.thumbnailUrl || source.thumbnail),
     sourceSite: str(source.sourceSite || source.type),
     tags: Array.isArray(source.tags) ? source.tags : typeof source.tags === 'string' ? [source.tags] : [],
@@ -2239,15 +2240,16 @@ function normalizeFavoriteVideo(videoData) {
 }
 
 // Validation for favorite save/toggle: the site+own id must exist (that is
-// what favorites are keyed on), the url should be present, and everything is
-// trimmed/coerced above. Returns { ok, error, video }.
+// what favorites are keyed on), and the item must be playable — either via a
+// direct stream/file url OR a re-extractable page url (streams rotate, pages
+// live long). Everything is trimmed/coerced in normalizeFavoriteVideo.
 function validateFavoritePayload(videoData) {
   const video = normalizeFavoriteVideo(videoData);
   if (!video.id) {
     return { ok: false, video, error: 'Favorite requires a valid video id (missing id/media_id)' };
   }
-  if (!video.videoUrl) {
-    return { ok: false, video, error: 'Favorite requires a playable url for video "' + video.title + '"' };
+  if (!video.videoUrl && !video.pageUrl) {
+    return { ok: false, video, error: 'Favorite requires a playable url or a page url for video "' + video.title + '"' };
   }
   if (!video.title) {
     return { ok: false, video, error: 'Favorite requires a title' };
@@ -2562,6 +2564,39 @@ ipcMain.handle('mini:open', (event, payload) => {
 ipcMain.handle('mini:close', () => {
   closeMiniPlayer();
   return { success: true };
+});
+
+ipcMain.handle('mini:restore', (event, payload) => {
+  try {
+    // The mini player hand-back: push the CURRENT playback state (fresh
+    // time/volume/mute from the mini window) back into the main window so full
+    // playback resumes in place, then close the mini window.
+    const safe = {
+      title: String(payload?.title || 'Nekofal Mini Player'),
+      streamUrl: String(payload?.streamUrl || ''),
+      streamHls: !!payload?.streamHls,
+      poster: String(payload?.poster || ''),
+      currentTime: Number(payload?.currentTime) || 0,
+volume: Number.isFinite(Number(payload?.volume)) ? Number(payload.volume) : 1,
+      muted: !!payload?.muted,
+      videoId: payload?.videoId != null ? payload.videoId : null,
+      isLocal: !!payload?.isLocal
+    };
+    if (!safe.streamUrl) {
+      closeMiniPlayer();
+      return { success: false, error: 'No stream URL to restore' };
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send('mini:restore-in-main', safe);
+    }
+    closeMiniPlayer();
+    return { success: true };
+  } catch (err) {
+    console.error('[Mini] restore error:', err.message);
+    return { success: false, error: err.message };
+  }
 });
 
 // ---------- Backup & Restore ----------

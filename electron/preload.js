@@ -87,10 +87,17 @@ const api = {
   // Floating mini-player (PiP)
   openMiniPlayer: (payload) => ipcRenderer.invoke('mini:open', payload),
   closeMiniPlayer: () => ipcRenderer.invoke('mini:close'),
+  restoreMiniPlayer: (payload) => ipcRenderer.invoke('mini:restore', payload),
   onMiniPayload: (callback) => {
     const subscription = (_event, data) => callback(data);
     ipcRenderer.on('mini:payload', subscription);
     return () => ipcRenderer.removeListener('mini:payload', subscription);
+  },
+  // Full player resumes in the main window after a mini-player Restore/Expand
+  onMainOpenFromMini: (callback) => {
+    const subscription = (_event, data) => callback(data);
+    ipcRenderer.on('mini:restore-in-main', subscription);
+    return () => ipcRenderer.removeListener('mini:restore-in-main', subscription);
   },
 
   // Register custom stream headers (referer/UA/cookies) for native injection

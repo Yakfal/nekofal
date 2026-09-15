@@ -335,6 +335,23 @@
   outline-offset: 2px;
 }
 
+/* Favorite heart — fills red when the item is in the favorites table */
+.fav-btn {
+  font-size: 1.2rem;
+  line-height: 1;
+  color: #cbd5e1;
+}
+
+.fav-btn.active {
+  color: #f43f5e;
+  text-shadow: 0 0 12px rgba(244, 63, 94, 0.6);
+}
+
+.fav-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .rate-btn {
   font-size: 0.82rem;
   font-weight: 600;

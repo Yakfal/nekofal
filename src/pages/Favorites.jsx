@@ -11,7 +11,7 @@ const Favorites = () => {
   const { searchQuery } = useSearchContext();
   const { settings } = useAppSettings();
   const familyMode = settings.familyMode;
-  const { open: openPlayback } = usePlayback();
+  const { playVideo } = usePlayback();
 
   // Get the correct API namespace (api or electronAPI)
   const getApi = () => window.api || window.electronAPI;
@@ -29,13 +29,16 @@ const Favorites = () => {
       if (api?.getFavorites) {
         const result = await api.getFavorites();
         if (result.success && result.data) {
-          // Transform database results to match MediaCard expected format
+          // Transform database results to match MediaCard expected format.
+          // Canonical rows carry a pageUrl (streams rotate) — use it as the
+          // playback source so the fresh-stream pipeline re-extracts on play.
           const formatted = result.data.map(item => ({
             id: item.id,
             videoTitle: item.title || item.videoTitle,
             category: item.category || item.sourceSite || 'Demo',
             thumbnailUrl: item.thumbnailUrl,
-            videoUrl: item.videoUrl,
+            videoUrl: item.videoUrl || item.pageUrl || '',
+            pageUrl: item.pageUrl || '',
             duration: item.duration || 1125,
             isHLS: item.isHLS || false,
             sourceSite: item.sourceSite || 'Demo'
@@ -133,7 +136,7 @@ const Favorites = () => {
               key={video.id}
               video={video}
               initialIsFavorite={true}
-              onSelectVideo={openPlayback}
+              onSelectVideo={playVideo}
               onToggleFavorite={handleToggleFavorite}
               onDeleteVideo={handleDeleteVideo}
             />

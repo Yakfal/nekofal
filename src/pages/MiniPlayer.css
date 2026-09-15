@@ -88,6 +88,11 @@ html, body {
   color: #fff;
 }
 
+.mini-restore:hover {
+  background: var(--mini-accent);
+  color: #04121f;
+}
+
 .mini-quality {
   flex: 1;
   text-align: center;

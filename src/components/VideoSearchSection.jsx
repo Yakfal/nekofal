@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
-import { autoSync, getCloudState, getMediaId, favoritePayloadFor } from '../services/dbAdapter.js';
+import { autoSync, getCloudState, getMediaId, favoritePayloadFor, isPageUrl } from '../services/dbAdapter.js';
 import PlaylistMenu from './PlaylistMenu.jsx';
 import './VideoSearchSection.css';
 
@@ -52,7 +52,7 @@ const VideoSearchSection = ({
   // of defaulting to "filled" — one IPC load per grid, O(1) membership checks.
   const [favoriteSet, setFavoriteSet] = useState(() => new Set());
   const [togglingId, setTogglingId] = useState(null);
-  const { open: openPlayback } = usePlayback();
+  const { playVideo } = usePlayback();
   const [toast, setToast] = useState(null);
   const inputRef = useRef(null);
 
@@ -61,6 +61,7 @@ const VideoSearchSection = ({
     videoTitle: v.title,
     title: v.title,
     videoUrl: v.videoUrl,
+    pageUrl: v.pageUrl || (v.videoUrl && isPageUrl(v.videoUrl) ? v.videoUrl : ''),
     thumbnailUrl: v.thumbnailUrl,
     duration: v.duration,
     isHLS: !!v.isHLS,
@@ -269,7 +270,7 @@ const VideoSearchSection = ({
             const isFav = favoriteSet.has(favKey);
             return (
               <div key={v.id} className="vss-card" data-id={v.id}>
-                <div className="vss-thumb" onClick={() => openPlayback(toPlayerPayload(v))}>
+                <div className="vss-thumb" onClick={() => playVideo(toPlayerPayload(v))}>
                   {v.thumbnailUrl ? (
                     <img src={v.thumbnailUrl} alt={v.title} loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
                   ) : (
@@ -282,9 +283,9 @@ const VideoSearchSection = ({
                   <h3 className="vss-vtitle" title={v.title}>{v.title}</h3>
                   <p className="vss-vsub">{v.sourceSite || (v.extractor ? v.extractor : urlHost(v.videoUrl))}</p>
                   <div className="vss-actions">
-                    <button className="vss-btn play" onClick={() => openPlayback(toPlayerPayload(v))}>Play</button>
+                    <button className="vss-btn play" onClick={() => playVideo(toPlayerPayload(v))}>Play</button>
                     <button className="vss-btn add" onClick={() => handleAddOne(v)} disabled={added}>
-                      {added ? '✓ Saved' : '+ Save'}
+                      {added ? '✔ Saved' : '+ Save'}
                     </button>
                     <PlaylistMenu
                       video={{

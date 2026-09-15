@@ -112,16 +112,53 @@ export function getMediaId(item) {
   ).trim();
 }
 
+// Media-request heuristic: a native-playable URL is a media file extension
+// (before any query string), a local path, a localhost video-proxy route, or a
+// known rotation-CDN host. Everything else over http(s) is a "page" that must
+// be re-extracted on play.
+const MEDIA_REQUEST_RE = /\.(mp4|webm|mkv|m4v|mov|avi|mp3|m4a|flac|wav|ogg|aac|ts|mpd|m3u8)([?#].*)?$/i;
+
+/** True for anything <video> can grab directly without scraping. */
+export function isDirectMediaUrl(url) {
+  const u = String(url || '').trim();
+  if (!u) return false;
+  if (/^file:\/\//i.test(u) || /^[a-zA-Z]:[\\\/]/.test(u)) return true;
+  if (/^(srt|rtmp|rtsp):\/\//i.test(u)) return true;
+  if (/^https?:\/\//i.test(u)) {
+    const hostAndPath = u.replace(/^https?:\/\//i, '').toLowerCase();
+    if (hostAndPath.startsWith('localhost:') && hostAndPath.includes('/video/proxy/stream')) return true;
+    if (hostAndPath.includes('googlevideo.com') || hostAndPath.includes('videoplayback')) return true;
+    return MEDIA_REQUEST_RE.test(String(u.split('#')[0] || u).split('?')[0] || u);
+  }
+  return false;
+}
+
+/** A URL that points at a web page rather than an already-playable stream. */
+export function isPageUrl(url) {
+  const u = String(url || '');
+  if (!/^https?:\/\//i.test(u)) return false;
+  return !isDirectMediaUrl(u);
+}
+
 /** Canonical favorite payload shared by every surface (MediaCard, Discover
  *  search results, IPTV, Classic Cinema, Live Radio) so all of them hit the
- *  same db:toggleFavorite path and cloud sync sees identical fields. */
+ *  same db:toggleFavorite path and cloud sync sees identical fields.
+ *  A re-extractable page URL is authoritative over an ephemeral CDN stream:
+ *  streams rotate, pages live long. Direct media files (no page) are kept
+ *  verbatim as the play source. */
 export function favoritePayloadFor(item) {
+  const raw = String(item.videoUrl || item.url || item.streamUrl || '').trim();
+  const explicitPage = String(item.pageUrl || item.webUrl || '').trim();
+  const pageUrl = explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
+  const url = pageUrl ? '' : raw;
   return {
     id: getMediaId(item),
+    media_id: item.media_id || item.mediaId || '',
     title: item.videoTitle || item.title || item.name || item.streamName || 'Untitled Video',
-    url: item.videoUrl || item.url || item.streamUrl || '',
+    url,
+    pageUrl,
     type: item.type || item.sourceSite || (item.streamUrl ? 'Radio' : 'video'),
-    thumbnail: item.thumbnailUrl || item.favicon || '',
+    thumbnail: item.thumbnailUrl || item.favicon || item.poster || '',
     isAdult: !!item.isAdult,
     duration: item.duration || 0,
     category: item.category || ''
@@ -284,7 +321,9 @@ async function syncFavorites(api, report) {
       const key = favKey(v);
       if (!key || remoteByKey.has(key)) continue;
       const mediaId = String(v.id || v.media_id || v.externalId || '').trim();
-      const url = String(v.videoUrl || '').trim();
+      // Canonical play source: a page URL outlives rotating CDN streams, so
+      // page-only favorites (videoUrl empty) still push their page to the cloud.
+      const url = String(v.videoUrl || v.pageUrl || '').trim();
       // A cloud row needs the site+own id and a playable url. Rows without them
       // are invalid and must not silently disappear — count them as skipped so
       // the sync report surfaces it.

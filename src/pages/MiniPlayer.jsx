@@ -136,6 +136,27 @@ const MiniPlayer = () => {
     if (api?.closeMiniPlayer) api.closeMiniPlayer();
   };
 
+  // Restore/Expand back into the full player: report the CURRENT playback
+  // state (fresh position/volume/mute) to the main process, which resumes the
+  // video in the main window's overlay and closes this floating window.
+  const restore = () => {
+    const videoEl = videoRef.current;
+    const api = getApi();
+    const state = {
+      title: payload?.title || '',
+      streamUrl: videoEl?.currentSrc || videoEl?.src || payload?.streamUrl || '',
+      streamHls: !!(payload?.streamHls && videoEl?.src?.includes('.m3u8')),
+      poster: payload?.poster || '',
+      currentTime: videoEl ? videoEl.currentTime || 0 : (payload?.currentTime || 0),
+      volume: videoEl ? videoEl.volume : (Number.isFinite(Number(payload?.volume)) ? payload.volume : 1),
+      muted: videoEl ? videoEl.muted : !!payload?.muted,
+      videoId: payload?.videoId ?? null,
+      isLocal: !!payload?.isLocal
+    };
+    if (api?.restoreMiniPlayer) api.restoreMiniPlayer(state);
+    else if (api?.closeMiniPlayer) api.closeMiniPlayer();
+  };
+
   useEffect(() => {
     bindMediaKey('playpause', () => togglePlay());
     bindMediaKey('stop', () => close());
@@ -175,6 +196,14 @@ const MiniPlayer = () => {
             {manifestMeta.qualLevel ? `${manifestMeta.qualLevel}p` : 'auto'} · {manifestMeta.levelCount} levels
           </span>
         )}
+        <button className="mini-btn mini-restore" onClick={restore} title="Restore to full player">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="15 3 21 3 21 9" />
+            <polyline points="9 21 3 21 3 15" />
+            <line x1="21" y1="3" x2="14" y2="10" />
+            <line x1="3" y1="21" x2="10" y2="14" />
+          </svg>
+        </button>
         <button className="mini-btn mini-close" onClick={close} title="Stop and close">
           ✕
         </button>

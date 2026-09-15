@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Hls from 'hls.js';
 import { bindMediaKey, unbindMediaKey } from '../utils/mediaKeys.js';
 import { pickBestStream } from '../services/customScraper.js';
+import { favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
 import './VideoPlayer.css';
 
 // ---- Static configuration (hoisted above the component to avoid TDZ) ----
@@ -61,10 +62,17 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const [isDRM, setIsDRM] = useState(false);
   const [drmWebUrl, setDrmWebUrl] = useState(null);
   const [volume, setVolume] = useState(() => {
+    if (typeof video?.startVolume === 'number') return video.startVolume;
     const p = readPrefs();
     return typeof p.defaultVolume === 'number' ? p.defaultVolume : 1;
   });
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMuted, setIsMuted] = useState(() => {
+    if (typeof video?.startMuted === 'boolean') return video.startMuted;
+    return false;
+  });
+  const [isFav, setIsFav] = useState(false);
+  const [favChecking, setFavChecking] = useState(true);
+  const [favToggling, setFavToggling] = useState(false);
   const [volumeOpen, setVolumeOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -203,6 +211,49 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   useEffect(() => {
     streamUrlRef.current = streamUrl;
   }, [streamUrl]);
+
+  // Favorite state: seed from the real favorites table (a heart toggle in the
+  // player must reflect the same DB rows the card grid shows).
+  useEffect(() => {
+    let alive = true;
+    const api = window.api || window.electronAPI;
+    const favKey = getMediaId(video);
+    if (!api?.checkIsFavorite || !favKey) {
+      setFavChecking(false);
+      return undefined;
+    }
+    setFavChecking(true);
+    api.checkIsFavorite(favKey).then((res) => {
+      if (!alive) return;
+      setIsFav(!!(res && res.success && res.favorited));
+    }).catch(() => {}).finally(() => {
+      if (alive) setFavChecking(false);
+    });
+    return () => { alive = false; };
+  }, [video]);
+
+  // Favorite heart toggle (shared payload + cloud-sync path as every card).
+  const toggleFavorite = useCallback(async (e) => {
+    if (e && e.stopPropagation) e.stopPropagation();
+    if (e && e.preventDefault) e.preventDefault();
+    if (favToggling) return;
+    const api = window.api || window.electronAPI;
+    const payload = favoritePayloadFor(video);
+    if (!api?.toggleFavorite || !payload.id) return;
+    setFavToggling(true);
+    try {
+      const result = await api.toggleFavorite(payload);
+      if (result && result.success) {
+        const favorited = result.data ? result.data.favorited : result.favorited;
+        setIsFav(!!favorited);
+        window.dispatchEvent(new Event('favorites-synced'));
+      }
+    } catch (err) {
+      console.warn('[VideoPlayer] Favorite toggle failed:', err);
+    } finally {
+      setFavToggling(false);
+    }
+  }, [video, favToggling]);
 
   // Utility: Promise with timeout
   const withTimeout = useCallback((promise, ms, timeoutError) => {
@@ -756,7 +807,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     setQualityLevels([]);
     setSelectedQuality('auto');
     streamHlsRef.current = false;
-    sourceUrlRef.current = video.videoUrl || video.url;
+    sourceUrlRef.current = video.pageUrl || video.webUrl || video.videoUrl || video.url;
     networkRetryRef.current = 0;
     stallCountRef.current = 0;
 
@@ -767,7 +818,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     try {
       const api = window.api || window.electronAPI;
       
-      let streamUrl = video.videoUrl;
+      // Canonical extraction source: a saved item carries a page URL (pageUrl)
+      // that outlives rotating CDN streams; direct media uses the stream itself.
+      let streamUrl = video.pageUrl || video.webUrl || video.videoUrl;
       let httpHeaders = video.httpHeaders || null;
       let isHLS = video.isHLS || false;
 
@@ -1147,6 +1200,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       id: video.id,
       title: video.videoTitle,
       videoUrl: video.videoUrl,
+      pageUrl: video.pageUrl || video.webUrl || '',
       watchedAt: new Date().toISOString()
     });
   }, [video, savePosition]);
@@ -1173,6 +1227,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         id: video.id,
         title: video.videoTitle,
         videoUrl: video.videoUrl,
+        pageUrl: video.pageUrl || video.webUrl || '',
         watchedAt: new Date().toISOString()
       });
     }
@@ -1200,7 +1255,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       // Code 2 (MEDIA_ERR_NETWORK): temporary network blip on a native source —
       // reload with backoff a few times before surfacing the error.
       if (error.code === 2 && !hlsRef.current && networkRetryRef.current < MAX_PLAYBACK_RETRIES) {
-        if (scheduleRetry(streamUrlRef.current || video.videoUrl || video.url, 'native')) {
+        if (scheduleRetry(streamUrlRef.current || video.pageUrl || video.videoUrl || video.url, 'native')) {
           setStreamError(null);
           setHasError(false);
           return;
@@ -1509,6 +1564,18 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 </div>
 
                 <div className="controls-spacer" />
+
+                {/* Favorite heart */}
+                <button 
+                  className={`control-btn fav-btn ${isFav ? 'active' : ''}`}
+                  onClick={toggleFavorite}
+                  disabled={favToggling || favChecking}
+                  aria-label={isFav ? 'Remove from favorites' : 'Add to favorites'}
+                  aria-pressed={isFav}
+                  title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+                >
+                  {isFav ? '♥' : '♡'}
+                </button>
 
                 {/* Download */}
                 <button 

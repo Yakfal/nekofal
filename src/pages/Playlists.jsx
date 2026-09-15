@@ -31,7 +31,7 @@ const Playlists = () => {
   const [activePlaylist, setActivePlaylist] = useState(null);
   const [items, setItems] = useState([]);
   const [itemsLoading, setItemsLoading] = useState(false);
-  const { open: openPlayback } = usePlayback();
+  const { playVideo } = usePlayback();
   const [toast, setToast] = useState(null);
 
   const showToast = useCallback((msg, type = 'ok') => {
@@ -157,7 +157,7 @@ const Playlists = () => {
                   >✕</button>
                   <MediaCard
                     video={card}
-                    onSelectVideo={openPlayback}
+                    onSelectVideo={playVideo}
                   />
                 </div>
               ))}

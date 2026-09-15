@@ -26,7 +26,7 @@ const MediaLibrary = () => {
   const { searchQuery } = useSearchContext();
   const { settings } = useAppSettings();
   const familyMode = settings.familyMode;
-  const { open: openPlayback } = usePlayback();
+  const { playVideo } = usePlayback();
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [usingMock, setUsingMock] = useState(false);
@@ -112,7 +112,7 @@ const MediaLibrary = () => {
   };
 
   const handleVideoSelect = (video) => {
-    openPlayback(video);
+    playVideo(video);
   };
 
   const loadVideos = async () => {
