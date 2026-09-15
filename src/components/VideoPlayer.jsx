@@ -5,18 +5,20 @@ import { pickBestStream } from '../services/customScraper.js';
 import './VideoPlayer.css';
 
 // ---- Static configuration (hoisted above the component to avoid TDZ) ----
-const EXTRACTION_TIMEOUT_MS = 30000;
-const PREF_KEY = 'pmh-preferences';
-const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// Declared with `var` so the output has no block-scoped bindings at module
+// level, which is what makes Temporal Dead Zone errors impossible at runtime.
+var EXTRACTION_TIMEOUT_MS = 30000;
+var PREF_KEY = 'pmh-preferences';
+var SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
 // Playback blip recovery: how many times to retry a stream that hiccups on the
 // network, with exponential backoff between attempts.
-const MAX_PLAYBACK_RETRIES = 5;
-const RETRY_BACKOFF_MS = [800, 1600, 3200, 6400, 12800];
+var MAX_PLAYBACK_RETRIES = 5;
+var RETRY_BACKOFF_MS = [800, 1600, 3200, 6400, 12800];
 
 // Local video server port (from electron main.js). Defaults to 5001 but can be
 // dynamic if the preferred ports were busy — refresh via getVideoServerInfo().
-let videoProxyPort = 5001;
+var videoProxyPort = 5001;
 
 function proxyOrigin() { return `http://localhost:${videoProxyPort}`; }
 

@@ -14,7 +14,7 @@ export default defineConfig({
     },
   },
   build: {
-    target: 'es2020',
+    target: 'es2015',
     cssTarget: 'chrome61',
     minify: 'esbuild',
     outDir: 'build',
