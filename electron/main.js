@@ -1502,11 +1502,6 @@ return `http://localhost:5001/video/proxy/stream?src=${encodeURIComponent(url)}`
 // yt-dlp stream extraction IPC handler
 ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
   try {
-    const binaryAvailable = await ensureYtDlpBinary();
-    if (!binaryAvailable) {
-      return { success: false, error: 'yt-dlp binary is not available', details: 'run the app once more to download it automatically' };
-    }
-    
     // Fast-path: bypass yt-dlp for direct media URLs - validate first
     if (isValidMediaStreamUrl(url)) {
       return { 
@@ -1578,6 +1573,14 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
       }
     }
     
+    // yt-dlp binary gate: everything below this point needs the binary; all
+    // fast-paths above (direct media, hanime stealth, pornhub resolve) run
+    // without it.
+    const binaryAvailable = await ensureYtDlpBinary();
+    if (!binaryAvailable) {
+      return { success: false, error: 'yt-dlp binary is not available', details: 'run the app once more to download it automatically' };
+    }
+
     console.log(`[yt-dlp] Extracting stream info for: ${url}`);
     
     // Detect YouTube URLs for special handling
@@ -3543,6 +3546,154 @@ async function xvideosStealthSearch(searchUrl, count = 25) {
   }));
 }
 
+// ---- Pornhub search --------------------------------------------------------
+// Pornhub's search page mixes the result grid with a top nav, a sidebar filter
+// list and a language-filter bar (anchors pointing at /language/ plus "English /
+// French / Spanish …" chips). Generic card walkers grab those and return junk,
+// so pornhub gets its own selector set: match ONLY the real video card nodes
+// (ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component),
+// ignore anything living inside nav/header/filter bars, drop /language/ links,
+// and pull the card's actual title, duration and thumbnail.
+const PH_ALLOWED_CARDS = 'ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component';
+const PH_VIDEO_LINK = 'a[href*="view_video.php"], a[href*="watch"], a[href*="/videos/"]';
+const PH_IGNORED_ANCESTRY = 'nav, header, #header, .topNav, .mainNav, .subMenu, .filter-wrapper, .languageTop, .languageBar, .ph-sidebar';
+const PH_LANG_TEXT = /^(All|All Languages|English|French|German|Italian|Spanish|Portuguese|Japanese|Chinese|Korean|Russian|Hindi|Indonesian|Turkish|Polish|Dutch|Arabic|Thai|Vietnamese|Czech|Swedish|Norwegian|Danish|Finnish|Ukrainian|Romanian|Greek|Hungarian|Hebrew)$/i;
+
+function pornhubCardDuration(durText) {
+  const m = String(durText || '').match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
+  if (!m) return 0;
+  return (m[1] ? parseInt(m[1], 10) * 3600 : 0) + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+}
+
+async function pornhubSearchHtml(searchUrl, count = 25) {
+  const cheerio = require('cheerio');
+  const browserHeaders = {
+    'User-Agent': PH_UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+    'Referer': 'https://www.pornhub.com/',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-site',
+    'DNT': '1'
+  };
+
+  const res = await net.fetch(searchUrl, {
+    method: 'GET',
+    headers: browserHeaders,
+    signal: AbortSignal.timeout(20000),
+    redirect: 'follow'
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  const videos = [];
+
+  $(PH_ALLOWED_CARDS).each((_i, el) => {
+    const card = $(el);
+    if (card.closest(PH_IGNORED_ANCESTRY).length) return;
+    const link = card.find(PH_VIDEO_LINK).first();
+    if (!link.length) return;
+    const href = String(link.attr('href') || '');
+    if (/\/language\//i.test(href)) return;
+    const abs = href.startsWith('http') ? href : `https://www.pornhub.com${href}`;
+    if (!abs.startsWith('http') || !/view_video\.php|\/videos\//i.test(abs)) return;
+    const title = (
+      card.find('span.title a').attr('title') ||
+      link.attr('title') ||
+      card.find('.title').first().text().trim() ||
+      card.find('img').first().attr('alt') ||
+      'Untitled'
+    ).trim().substring(0, 200);
+    if (PH_LANG_TEXT.test(title)) return;
+    const img = card.find('img').first();
+    const thumb = img.attr('data-thumb_url') || img.attr('data-src') || img.attr('src') || '';
+    const duration = pornhubCardDuration(card.find('.duration, .video-duration, var.duration').first().text());
+
+    videos.push({
+      id: `pornhub-${Buffer.from(abs).toString('hex').substring(0, 16)}`,
+      title,
+      thumbnailUrl: thumb,
+      videoUrl: abs,
+      duration,
+      category: 'Pornhub',
+      sourceSite: 'pornhub.com',
+      extractor: 'pornhub-html'
+    });
+  });
+
+  const seen = new Set();
+  return videos
+    .filter(v => {
+      if (seen.has(v.videoUrl)) return false;
+      seen.add(v.videoUrl);
+      return true;
+    })
+    .slice(0, count || 25);
+}
+
+// Pornhub offscreen-DOM engine: render the search page in the stealth browser
+// window and read the rendered cards with the same pornhub-only selectors (a
+// real browser fingerprint passes the bot checks net.fetch sometimes trips).
+// NOTE: this is a JS template literal AND a script string — every regex needs
+// its backslashes doubled (\\d survives to \d in the evaluated code).
+const PH_GRID_SCRIPT = `
+var out = [];
+var ignored = ['nav', 'header', '#header', '.topNav', '.mainNav', '.subMenu', '.filter-wrapper', '.languageTop', '.languageBar', '.ph-sidebar'].join(',');
+var langText = /^(All|All Languages|English|French|German|Italian|Spanish|Portuguese|Japanese|Chinese|Korean|Russian|Hindi|Indonesian|Turkish|Polish|Dutch|Arabic|Thai|Vietnamese|Czech|Swedish|Norwegian|Danish|Finnish|Ukrainian|Romanian|Greek|Hungarian|Hebrew)$/i;
+var cards = [].slice.call(document.querySelectorAll('ul#videoSearchResult li, li.pcVideoListItem, div.ph-thumbnail-component'));
+var seen = {};
+for (var i = 0; i < cards.length; i++) {
+  if (out.length >= __LIMIT__) break;
+  var c = cards[i];
+  if (c.closest && c.closest(ignored)) continue;
+  var link = c.querySelector('a[href*="view_video.php"], a[href*="watch"], a[href*="/videos/"]');
+  if (!link) continue;
+  var href = link.getAttribute('href') || '';
+  if (!href || /\\/language\\//i.test(href)) continue;
+  var abs = /^https?:/i.test(href) ? href : 'https://www.pornhub.com' + href;
+  if (!/^https?:/.test(abs) || !/view_video\\.php|\\/videos\\//i.test(abs)) continue;
+  if (seen[abs]) continue;
+  var titleLink = c.querySelector('span.title a, .title a');
+  var title = (link.getAttribute('title') || (titleLink ? (titleLink.getAttribute('title') || titleLink.textContent) : '') || (c.querySelector('.title') || {}).textContent || (c.querySelector('img') || {}).alt || '').trim();
+  if (!title || langText.test(title)) continue;
+  var img = c.querySelector('img');
+  var thumb = img ? (img.getAttribute('data-thumb_url') || img.getAttribute('data-src') || img.src || '') : '';
+  var durEl = c.querySelector('.duration') || c.querySelector('.video-duration') || c.querySelector('var.duration');
+  var d = (durEl && durEl.textContent) || '';
+  var dur = 0;
+  var dm = d.match(/(?:(\\d+)h\\s*)?(\\d+):(\\d+)/);
+  if (dm) dur = (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
+  seen[abs] = true;
+  out.push({ title: title.slice(0, 200), thumb: thumb, url: abs, duration: dur });
+}
+return { out: out, href: location.href };
+`;
+
+async function pornhubStealthSearch(searchUrl, count = 25) {
+  const win = ensureStealthWindow();
+  const load = await loadInStealth(searchUrl, { pauseAfterLoadMs: 1500, challengeTimeoutMs: 20000 });
+  if (!load.success) throw new Error('Pornhub stealth load failed: ' + load.error);
+  await sleep(7000);
+  const code = PH_GRID_SCRIPT.replace('__LIMIT__', String(count || 25));
+  const extracted = await evalInStealth(code, 9000);
+  const list = (extracted && Array.isArray(extracted.out)) ? extracted.out : [];
+  if (extracted && extracted.__stealthError) {
+    throw new Error('Pornhub DOM extraction failed: ' + extracted.__stealthError);
+  }
+  return list.map((r) => ({
+    id: `pornhub-${Buffer.from(r.url).toString('hex').substring(0, 16)}`,
+    title: r.title || 'Untitled',
+    thumbnailUrl: r.thumb || '',
+    videoUrl: r.url,
+    duration: r.duration || 0,
+    category: 'Pornhub',
+    sourceSite: 'pornhub.com',
+    extractor: 'pornhub-stealth'
+  })).slice(0, count || 25);
+}
+
 // Base URL of the self-hosted Express gateway (same server as PocketBase,
 // default port 3000). Used as the server-side search fallback when the local
 // yt-dlp binary is missing/broken or returns no results.
@@ -3642,6 +3793,34 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       if (hanimeVideos.length > 0) {
         console.log(`[web:search] hanime v8 API returned ${hanimeVideos.length} results`);
         return { success: true, source: 'hanime-v8', videos: hanimeVideos };
+      }
+    }
+
+    // Pornhub: the search page's top nav / sidebar filters / language bar
+    // (/language/ + "English / French / Spanish" chips) confuse generic card
+    // walkers. Parse the result grid with pornhub-specific selectors instead —
+    // HTML first (net.fetch), then the offscreen (real-browser) DOM engine.
+    if (/^https?:\/\//i.test(target) && /(^|\.)pornhub\.com$/i.test(new URL(target).hostname)) {
+      const phSearchUrl = /[?&](?:search|query)=/i.test(target)
+        ? target
+        : 'https://www.pornhub.com/video/search?search=' + encodeURIComponent(q);
+      let phVideos = [];
+      try {
+        phVideos = await pornhubSearchHtml(phSearchUrl, count);
+      } catch (phErr) {
+        console.warn(`[web:search] pornhub HTML search failed: ${phErr.message}`);
+      }
+      if (phVideos.length === 0) {
+        try {
+          phVideos = await pornhubStealthSearch(phSearchUrl, count);
+          console.log('[web:search] pornhub stealth DOM fallback engaged');
+        } catch (phErr) {
+          console.warn(`[web:search] pornhub stealth search failed: ${phErr.message}`);
+        }
+      }
+      if (phVideos.length > 0) {
+        console.log(`[web:search] pornhub search returned ${phVideos.length} results`);
+        return { success: true, source: 'pornhub', videos: phVideos };
       }
     }
 

@@ -326,7 +326,15 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
   const hideControlsSoon = useCallback(() => {
     clearControlsTimer();
-    controlsTimeoutRef.current = setTimeout(() => setIsControlsVisible(false), 2500);
+    controlsTimeoutRef.current = setTimeout(() => {
+      // Pause guard: never hide the controls while the video is paused. The
+      // pause-guard effect below also forces them visible on pause, but this
+      // ref check closes the race where the 2.5s timer fires right after a
+      // pause click (before React has re-rendered with isPaused=true).
+      const el = videoRef.current;
+      if (el && el.paused) return;
+      setIsControlsVisible(false);
+    }, 2500);
   }, [clearControlsTimer]);
 
   const resetControlsTimeout = useCallback(() => {
@@ -1101,7 +1109,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     if (e.target.closest('video')) return;
     if (e.target.closest('button')) return;
     if (e.target.closest('webview')) return;
-    if (e.target.closest('.player-controls')) return;
+    if (e.target.closest('.player-controls-overlay')) return;
     if (e.target.closest('.progress-track')) return;
     if (e.target.closest('.volume-slider')) return;
     if (e.target.closest('.popup-menu')) return;
@@ -1288,18 +1296,19 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   }
 
   return (
-    <div className="video-player-background" onClick={handleOverlayClick}>
-      <div
-        className={`video-player-container ${!isControlsVisible && isFullscreen ? 'cursor-none' : ''}`}
-        onMouseMove={resetControlsTimeout}
-        onMouseEnter={resetControlsTimeout}
-        onMouseLeave={() => {
-          if (!isPaused) {
-            clearControlsTimer();
-            setIsControlsVisible(false);
-          }
-        }}
-      >
+    <div
+      className={`video-player-background ${!isControlsVisible && isFullscreen ? 'cursor-none' : ''}`}
+      onClick={handleOverlayClick}
+      onMouseMove={resetControlsTimeout}
+      onMouseEnter={resetControlsTimeout}
+      onMouseLeave={() => {
+        if (!isPaused) {
+          clearControlsTimer();
+          setIsControlsVisible(false);
+        }
+      }}
+    >
+      <div className="video-player-container">
         {/* DRM Protected Content - WebView Fallback */}
         {isDRM && drmWebUrl && (
           <webview
@@ -1352,7 +1361,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         )}
 
         {/* Custom Controls Overlay - hidden on mouse inactivity during playback */}
-        <div className={`custom-controls ${isControlsVisible
+        <div className={`player-controls-overlay ${isControlsVisible
           ? 'visible opacity-100 pointer-events-auto transition-opacity duration-300'
           : 'hidden opacity-0 pointer-events-none transition-opacity duration-300'}`}>
           {/* Top gradient header */}

@@ -36,6 +36,10 @@
   cursor: none;
 }
 
+.video-player-background.cursor-none {
+  cursor: none;
+}
+
 .video-player-container video {
   width: 100%;
   height: 100%;
@@ -55,7 +59,7 @@
 /* ---------------------------------------------------------------------------
    Custom controls overlay
    --------------------------------------------------------------------------- */
-.custom-controls {
+.player-controls-overlay {
   position: absolute;
   inset: 0;
   display: flex;
@@ -66,18 +70,18 @@
   z-index: 10;
 }
 
-.custom-controls.visible {
+.player-controls-overlay.visible {
   opacity: 1;
 }
 
-.custom-controls.hidden {
+.player-controls-overlay.hidden {
   opacity: 0;
   pointer-events: none;
 }
 
 /* Top + bottom cinematic gradient masks */
-.custom-controls::before,
-.custom-controls::after {
+.player-controls-overlay::before,
+.player-controls-overlay::after {
   content: '';
   position: absolute;
   left: 0;
@@ -85,22 +89,22 @@
   pointer-events: none;
 }
 
-.custom-controls::before {
+.player-controls-overlay::before {
   top: 0;
   height: 26%;
   background: linear-gradient(180deg, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 55%, transparent 100%);
 }
 
-.custom-controls::after {
+.player-controls-overlay::after {
   bottom: 0;
   height: 34%;
   background: linear-gradient(0deg, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.5) 55%, transparent 100%);
 }
 
-.custom-controls > .controls-top-bar,
-.custom-controls > .controls-bottom-bar,
-.custom-controls.visible > .controls-top-bar,
-.custom-controls.visible > .controls-bottom-bar {
+.player-controls-overlay > .controls-top-bar,
+.player-controls-overlay > .controls-bottom-bar,
+.player-controls-overlay.visible > .controls-top-bar,
+.player-controls-overlay.visible > .controls-bottom-bar {
   z-index: 2;
 }
 
