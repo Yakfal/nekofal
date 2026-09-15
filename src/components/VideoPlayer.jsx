@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Hls from 'hls.js';
 import { bindMediaKey, unbindMediaKey } from '../utils/mediaKeys.js';
-import { pickBestStream } from '../services/customScraper.js';
+import { pickBestStream, isYouTubeUrl } from '../services/customScraper.js';
 import { favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import './VideoPlayer.css';
@@ -12,6 +12,16 @@ import './VideoPlayer.css';
 var EXTRACTION_TIMEOUT_MS = 30000;
 var PREF_KEY = 'pmh-preferences';
 var SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+// Standard resolution tiers shown in the quality menu for YouTube/direct
+// streams whose extraction did not enumerate per-height formats. Selecting one
+// re-extracts the stream capped at that height (fresh CDN signature included).
+var QUALITY_FALLBACKS = [
+  { label: '1080p', height: 1080 },
+  { label: '720p', height: 720 },
+  { label: '480p', height: 480 },
+  { label: '360p', height: 360 }
+];
 
 // Playback blip recovery: how many times to retry a stream that hiccups on the
 // network, with exponential backoff between attempts.
@@ -285,28 +295,49 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     return () => { alive = false; };
   }, [video]);
 
-  // Favorite heart toggle (shared payload + cloud-sync path as every card).
+  // Favorite heart toggle. Bidirectional and optimistic: when the item is not
+  // favorited we add it, when it is we remove it — the red filled heart (♥)
+  // flips to hollow (♡) instantly, then we reconcile against the DB result.
   const toggleFavorite = useCallback(async (e) => {
     if (e && e.stopPropagation) e.stopPropagation();
     if (e && e.preventDefault) e.preventDefault();
     if (favToggling) return;
     const api = window.api || window.electronAPI;
     const payload = favoritePayloadFor(video);
-    if (!api?.toggleFavorite || !payload.id) return;
+    if (!payload.id) return;
+    const nextFav = !isFav;
     setFavToggling(true);
+    setIsFav(nextFav);
     try {
-      const result = await api.toggleFavorite(payload);
-      if (result && result.success) {
-        const favorited = result.data ? result.data.favorited : result.favorited;
-        setIsFav(!!favorited);
-        window.dispatchEvent(new Event('favorites-synced'));
+      if (nextFav) {
+        // Favorite: add via the canonical payload (id + pageUrl + provider).
+        if (api?.setFavorite) {
+          const res = await api.setFavorite(payload);
+          if (res && res.success === false) setIsFav(!nextFav);
+        } else if (api?.toggleFavorite) {
+          const res = await api.toggleFavorite(payload);
+          if (res && res.success) setIsFav(!!(res.data ? res.data.favorited : res.favorited));
+        }
+      } else {
+        // Unfavorite: remove by the canonical media id (favorites rows are
+        // keyed on `id = media_id`; pageUrl is kept as a legacy fallback).
+        const removeKey = payload.media_id || payload.id || payload.pageUrl;
+        if (api?.removeFavorite) {
+          const res = await api.removeFavorite(removeKey);
+          if (res && res.success === false) setIsFav(!nextFav);
+        } else if (api?.toggleFavorite) {
+          const res = await api.toggleFavorite(payload);
+          if (res && res.success) setIsFav(!!(res.data ? res.data.favorited : res.favorited));
+        }
       }
+      window.dispatchEvent(new Event('favorites-synced'));
     } catch (err) {
       console.warn('[VideoPlayer] Favorite toggle failed:', err);
+      setIsFav(!nextFav);
     } finally {
       setFavToggling(false);
     }
-  }, [video, favToggling]);
+  }, [video, favToggling, isFav]);
 
   // Utility: Promise with timeout
   const withTimeout = useCallback((promise, ms, timeoutError) => {
@@ -678,9 +709,10 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   }, []);
 
   // Switch the active yt-dlp stream to a specific format (non-HLS videos) by
-  // re-extracting that exact format from the source page.
+  // re-extracting that exact format from the source page. Accepts a format_id
+  // (exact format) or a { height } resolution cap (standard-quality fallback).
   const switchYtQuality = useCallback(async (level) => {
-    if (!level || !level.formatId) return;
+    if (!level || (!level.formatId && !level.height)) return;
     const api = window.api || window.electronAPI;
     const videoEl = videoRef.current;
     const pos = videoEl ? videoEl.currentTime || 0 : 0;
@@ -691,11 +723,17 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       setIsExtracting(true);
       setStreamError(null);
       setHasError(false);
-      const res = await api.extractStream(sourceUrlRef.current || video.videoUrl, level.formatId);
+      const opts = level.formatId ? { formatId: level.formatId } : { height: level.height };
+      const res = await api.extractStream(sourceUrlRef.current || video.videoUrl, opts);
       if (res?.success && res.data?.videoUrl) {
         pendingSeekRef.current = pos;
         const proxied = getProxiedUrl(res.data.videoUrl, res.data.httpHeaders || null);
         setStreamUrl(proxied);
+        // Refresh the direct-format menu with whatever tiers the re-extraction
+        // returned so switching again is instant (no second yt-dlp round trip).
+        if (Array.isArray(res.data.formats) && res.data.formats.length) {
+          setDirectFormats(res.data.formats.map((f) => ({ ...f })));
+        }
         setSelectedQuality(level.label);
       } else {
         setSelectedQuality('auto');
@@ -747,13 +785,13 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
     // 2/3) Non-HLS: direct-URL format swap first, yt-dlp re-extraction fallback.
     if (typeof val === 'number') {
-      const fmt = directFormats[val] || qualityLevels[val];
+      const fmt = directFormats[val] || qualityLevels[val] || QUALITY_FALLBACKS[val];
       if (fmt) {
         if (fmt.url) {
           await switchDirectFormat(fmt);
           return;
         }
-        if (fmt.formatId) {
+        if (fmt.formatId || fmt.height) {
           await switchYtQuality(fmt);
           return;
         }
@@ -866,6 +904,27 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     new Set(engineItems.map((l) => l.height).filter((h) => h > 0))
   ).sort((a, b) => b - a);
   const hasQualityLevels = availableQualityHeights.length > 0;
+
+  // Quality menu rows: the active engine items when present, otherwise the
+  // standard resolution tiers for YouTube/direct streams whose extraction did
+  // not enumerate per-height formats (each row re-extracts on selection).
+  const qualityMenuItems = engineItems.length > 0 ? engineItems : QUALITY_FALLBACKS;
+
+  // Stream identity for the quality affordance: a YouTube watch page or an
+  // already-direct media file always has quality options even before (or when)
+  // extraction yields no explicit format list.
+  const rawSource = String(video?.pageUrl || video?.webUrl || video?.videoUrl || video?.url || video?.streamUrl || '');
+  const isYouTube = isYouTubeUrl(rawSource);
+  const isDirectVideo = /\.(mp4|webm|m3u8|ts|m4s|mkv|m4v|mov|avi)(\?|$)/i.test(rawSource)
+    || /^(srt|rtmp|rtsp|mms):\/\//i.test(rawSource);
+
+  // The control-bar Quality button is visible whenever quality is a real option:
+  // HLS master levels, a direct-format list, or a YouTube/direct source that can
+  // still be re-extracted at a standard resolution.
+  const hasQualityOptions = (qualityLevels && qualityLevels.length > 0)
+    || (directFormats && directFormats.length > 0)
+    || isYouTube
+    || isDirectVideo;
 
   // Map a chosen chip height to the ACTIVE engine's item index (HLS levels or
   // direct formats) and route through the shared quality handler.
@@ -1660,8 +1719,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
           {/* Bottom Controls */}
           <div className="controls-bottom-bar">
-            {/* Quality menu (HLS levels or direct-URL formats) */}
-            {menuOpen === 'quality' && engineItems.length > 0 && (
+            {/* Quality menu (HLS levels | direct-URL formats | standard fallbacks) */}
+            {menuOpen === 'quality' && qualityMenuItems.length > 0 && (
               <div className="popup-menu quality-menu">
                 <button 
                   className={`menu-item ${selectedQuality === 'auto' ? 'active' : ''}`}
@@ -1669,7 +1728,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 >
                   Auto
                 </button>
-                {engineItems.map((lvl, i) => (
+                {qualityMenuItems.map((lvl, i) => (
                   <button 
                     key={lvl.formatId || lvl.index || i} 
                     className={`menu-item ${String(selectedQuality) === String(lvl.index) || selectedQuality === lvl.label ? 'active' : ''}`}
@@ -1679,6 +1738,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                     {lvl.bitrate ? ` · ${Math.round(lvl.bitrate / 1000)}kbps` : ''}
                     {!lvl.bitrate && lvl.label && lvl.height ? ` · ${lvl.height}p` : ''}
                     {lvl.url && lvl.hasAudio === false ? ' · audio-less' : ''}
+                    {!lvl.url && !lvl.formatId && lvl.height ? ' · re-extract' : ''}
                   </button>
                 ))}
               </div>
@@ -1780,8 +1840,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                   {playbackRate}x
                 </button>
 
-                {/* Quality (engine-aware: HLS master → direct formats → hidden) */}
-                {engineItems.length > 0 && (
+                {/* Quality (engine-aware: HLS master | direct formats | standard tiers) */}
+                {hasQualityOptions && (
                   <button 
                     className="control-btn"
                     onClick={(e) => { e.stopPropagation(); setMenuOpen(menuOpen === 'quality' ? null : 'quality'); }}

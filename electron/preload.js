@@ -20,8 +20,11 @@ const api = {
   // Scraper: Run all configured scrapers and store in database
   runScrapers: (urls) => ipcRenderer.invoke('scrapers:run', urls || []),
   
-  // Scraper: Extract stream URL from any URL using yt-dlp (optional formatId for quality switch)
-  extractStream: (url, formatId) => ipcRenderer.invoke('scrapers:extractStream', { url, formatId }),
+  // Scraper: Extract stream URL from any URL using yt-dlp. formatId gives a
+  // specific format; a { height } opts object caps the re-extraction at a
+  // resolution tier (used by the standard-quality fallback menu items).
+  extractStream: (url, formatIdOrOpts) => ipcRenderer.invoke('scrapers:extractStream',
+    (typeof formatIdOrOpts === 'object' && formatIdOrOpts) ? { url, ...formatIdOrOpts } : { url, formatId: formatIdOrOpts }),
 
   // Web search / aggregation (YouTube search, or any URL/category/search page)
   webSearch: (params) => ipcRenderer.invoke('web:search', params),

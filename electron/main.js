@@ -1519,7 +1519,7 @@ return `http://localhost:5001/video/proxy/stream?src=${encodeURIComponent(url)}`
 }
     
 // yt-dlp stream extraction IPC handler
-ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
+ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }) => {
   try {
     // Fast-path: bypass yt-dlp for direct media URLs - validate first
     if (isValidMediaStreamUrl(url)) {
@@ -1709,6 +1709,30 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId }) => {
           streamUrl = fmt.manifest_url || fmt.url;
           isHLS = fmt.protocol === 'm3u8' || fmt.protocol === 'm3u8_native' || /\.m3u8/i.test(streamUrl);
           httpHeaders = fmt.http_headers || httpHeaders;
+        }
+      } else if (height) {
+        // A specific resolution tier was requested (standard-quality fallback
+        // used when the extraction could not enumerate per-height formats):
+        // re-resolve the stream capped at that height so the player can still
+        // offer 360p..1080p without a format_id. The URL is re-capped against
+        // the page itself, so the CDN signature is always fresh.
+        try {
+          const capArgs = [
+            url,
+            '-j',
+            '--no-playlist',
+            '-f', `bestvideo[height<=${height}]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best`,
+            '--extractor-args', 'youtube:player_client=web_embedded,android,web'
+          ];
+          const capOutput = await ytDlp.execPromise(withFFmpegArgs(capArgs));
+          const capInfo = JSON.parse(capOutput);
+          if (capInfo && capInfo.url) {
+            streamUrl = capInfo.url;
+            isHLS = capInfo.url.includes('.m3u8') || capInfo.protocol === 'm3u8_native';
+            httpHeaders = capInfo.http_headers || httpHeaders;
+          }
+        } catch (capErr) {
+          console.warn('[yt-dlp] Height-capped re-extraction failed, keeping default:', capErr.message);
         }
       } else {
         // 1) Adaptive HLS master playlist — every resolution tier (1080p/1440p/
