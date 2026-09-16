@@ -1156,7 +1156,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               const sniffed = await trySniffFallback();
               if (sniffed) {
                 streamUrl = sniffed;
-                isHLS = /m3u8/i.test(streamUrl);
+                isHLS = /m3u8|hls_variant|\/api\/manifest\//i.test(streamUrl);
                 streamHlsRef.current = isHLS;
                 httpHeaders = null;
                 console.log('[VideoPlayer] Sniff fallback adopted stream:', streamUrl);
@@ -1174,7 +1174,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             const sniffed = await trySniffFallback();
             if (sniffed) {
               streamUrl = sniffed;
-              isHLS = /m3u8/i.test(streamUrl);
+              isHLS = /m3u8|hls_variant|\/api\/manifest\//i.test(streamUrl);
               streamHlsRef.current = isHLS;
               httpHeaders = null;
               console.log('[VideoPlayer] Sniff fallback adopted stream:', streamUrl);
@@ -1215,8 +1215,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
     // Check original video URL for HLS (proxy URL won't have .m3u8)
     const looksHls = streamHlsRef.current || video.isHLS ||
-      (typeof video.videoUrl === 'string' && (video.videoUrl.includes('.m3u8') || video.videoUrl.includes('m3u8'))) ||
-      (typeof streamUrl === 'string' && streamUrl.includes('m3u8'));
+      (typeof video.videoUrl === 'string' && (video.videoUrl.includes('m3u8') || video.videoUrl.includes('hls_variant') || video.videoUrl.includes('/api/manifest/'))) ||
+      (typeof streamUrl === 'string' && (streamUrl.includes('m3u8') || streamUrl.includes('hls_variant') || streamUrl.includes('/api/manifest/')));
     // IPTV / Web TV channels are practically always HLS, even when the source
     // URL doesn't advertise .m3u8 — force hls.js, then fall back to native if
     // the manifest turns out to be invalid.

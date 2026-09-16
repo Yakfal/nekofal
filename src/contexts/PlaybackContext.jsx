@@ -2,7 +2,7 @@ import React, { createContext, useContext, useCallback, useEffect, useMemo, useR
 import { usePlaylists } from './PlaylistsContext.jsx';
 import { installMediaKeyBridge } from '../utils/mediaKeys.js';
 import { isPageUrl, isDirectMediaUrl } from '../services/dbAdapter.js';
-import { isYouTubeUrl, getYouTubeVideoId, canonicalYouTubePageUrl } from '../services/customScraper.js';
+import { isYouTubeUrl, getYouTubeVideoId, canonicalYouTubePageUrl, recoveredYouTubeWatchUrl } from '../services/customScraper.js';
 import './Playback.css';
 
 const SUPPORTED_EXT = ['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v', '.mp3', '.m4a', '.flac', '.wav', '.ogg', '.aac', '.m3u8'];
@@ -23,9 +23,15 @@ function isYouTubeMedia(media) {
 
 function normalizePlaybackMedia(media) {
   if (!media) return null;
-  const isYT = isYouTubeMedia(media);
-  let pageUrl = String(media.pageUrl || media.webUrl || '').trim();
   const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
+  let pageUrl = String(media.pageUrl || media.webUrl || '').trim();
+  // Legacy CDN recovery: old versions stored googlevideo CDN links as the page
+  // or the stream. Rebuild the canonical watch page from docid/id so the item
+  // re-extracts cleanly instead of throwing a media format error at the dead
+  // signed URL.
+  const recovered = recoveredYouTubeWatchUrl(pageUrl) || recoveredYouTubeWatchUrl(raw);
+  if (recovered) pageUrl = recovered;
+  const isYT = isYouTubeMedia(media) || !!recovered;
   if (isYT && pageUrl && !YT_WATCH_RE.test(pageUrl)) {
     const id = getYouTubeVideoId(pageUrl) || getYouTubeVideoId(raw);
     if (id) pageUrl = canonicalYouTubePageUrl(`https://www.youtube.com/watch?v=${id}`);
@@ -237,9 +243,13 @@ export function PlaybackProvider({ children }) {
     const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
     const explicitPage = String(media.pageUrl || media.webUrl || '').trim();
     const pageUrl = explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
-    // Re-extract only when a page is known AND the stream is absent, or when an
-    // explicit page is paired with a (possibly stale) direct stream URL.
-    const needsReextract = !!pageUrl && (!raw || (isDirectMediaUrl(raw) && explicitPage));
+    // Re-extract only when a page is known AND the stream is absent, when an
+    // explicit page is paired with a (possibly stale) direct stream URL, or
+    // when the stored stream is a legacy googlevideo CDN link that was just
+    // rebuilt into a canonical watch page (stale signed URLs must never be
+    // played as-is — they reject with a media format error).
+    const legacyCdnStream = /googlevideo\.com/i.test(raw);
+    const needsReextract = !!pageUrl && (legacyCdnStream || !raw || (isDirectMediaUrl(raw) && explicitPage));
 
     if (!needsReextract) {
       setResolving(null);

@@ -4,7 +4,7 @@ const STORAGE_KEY = 'yakfal-hub-preferences';
 
 const DEFAULT_SETTINGS = {
   theme: 'dark-cyber',
-  familyMode: false,
+  familyMode: true,
   familyPasscodeHash: '',
 };
 

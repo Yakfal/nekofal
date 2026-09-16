@@ -241,6 +241,73 @@ async function initializeDatabase() {
       console.log('[DB] isAdult backfill migration skipped:', migrationErr.message);
     }
 
+    // Migration: Legacy CDN link sanitizer. Old app versions persisted
+    // googlevideo CDN stream URLs (or redirected pages) as favorites/history/
+    // library rows. Signed CDN links rotate and die, so every stored
+    // googlevideo.com URL is rebuilt into its canonical youtube.com/watch?v=
+    // page (from the docid/id query parameter) — the item then re-extracts a
+    // fresh stream on play instead of throwing a media format error.
+    // Favorites/watch_history may hold it in pageUrl or videoUrl; the videos
+    // (library) table has only videoUrl, with externalId backfilled when empty.
+    try {
+      let fixed = 0;
+      const sanCdn = (value) => {
+        const s = String(value || '');
+        if (!/googlevideo\.com/i.test(s)) return null;
+        const vid = s.match(/[?&]docid=([A-Za-z0-9_-]{6,32})/)
+          || s.match(/[?&]id=([A-Za-z0-9_-]{6,32})/);
+        return vid ? `https://www.youtube.com/watch?v=${vid[1]}` : null;
+      };
+      const fixRow = (row) => {
+        const watch = sanCdn(row.pageUrl) || sanCdn(row.videoUrl);
+        return watch;
+      };
+      const favScan = db.prepare(`SELECT rowid, id, pageUrl, videoUrl FROM favorites WHERE pageUrl LIKE '%googlevideo.com%' OR videoUrl LIKE '%googlevideo.com%'`);
+      const favUpd = db.prepare(`UPDATE favorites SET pageUrl = COALESCE(?, pageUrl), videoUrl = ? WHERE rowid = ?`);
+      while (favScan.step()) {
+        const row = favScan.getAsObject();
+        const watch = fixRow(row);
+        if (!watch) continue;
+        const keepPage = /youtube\.com|youtu\.be/i.test(String(row.pageUrl || '')) ? row.pageUrl : watch;
+        favUpd.run([keepPage, null, row.rowid]);
+        fixed++;
+      }
+      favScan.free();
+      favUpd.free();
+
+      const histScan = db.prepare(`SELECT rowid, id, pageUrl, videoUrl FROM watch_history WHERE pageUrl LIKE '%googlevideo.com%' OR videoUrl LIKE '%googlevideo.com%'`);
+      const histUpd = db.prepare(`UPDATE watch_history SET pageUrl = COALESCE(?, pageUrl), videoUrl = ? WHERE rowid = ?`);
+      while (histScan.step()) {
+        const row = histScan.getAsObject();
+        const watch = fixRow(row);
+        if (!watch) continue;
+        const keepPage = /youtube\.com|youtu\.be/i.test(String(row.pageUrl || '')) ? row.pageUrl : watch;
+        histUpd.run([keepPage, null, row.rowid]);
+        fixed++;
+      }
+      histScan.free();
+      histUpd.free();
+
+      const libScan = db.prepare(`SELECT id, videoUrl, externalId FROM videos WHERE videoUrl LIKE '%googlevideo.com%'`);
+      const libUpd = db.prepare(`UPDATE videos SET videoUrl = ?, externalId = COALESCE(?, externalId) WHERE id = ?`);
+      while (libScan.step()) {
+        const row = libScan.getAsObject();
+        const watch = sanCdn(row.videoUrl);
+        if (!watch) continue;
+        libUpd.run([watch, row.externalId || row.id.split('|')[0] || null, row.id]);
+        fixed++;
+      }
+      libScan.free();
+      libUpd.free();
+
+      if (fixed > 0) {
+        saveDatabase();
+        console.log(`[DB] Legacy CDN link sanitizer: ${fixed} googlevideo row(s) rebuilt into canonical YouTube watch pages`);
+      }
+    } catch (migrationErr) {
+      console.log('[DB] Legacy CDN link sanitizer migration skipped:', migrationErr.message);
+    }
+
     isInitialized = true;
     initError = null;
     console.log('Database initialized successfully at:', DB_FILE);

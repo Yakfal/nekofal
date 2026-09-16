@@ -68,6 +68,20 @@ export function canonicalYouTubePageUrl(input) {
   return id ? `https://www.youtube.com/watch?v=${id}` : String(input || '');
 }
 
+// Legacy CDN recovery: old app versions persisted googlevideo CDN stream URLs
+// (or pages) as an item's pageUrl/videoUrl. Those links die (rotating signed
+// URLs) and yt-dlp refuses them with MEDIA_ELEMENT_ERROR_FORMAT_ERROR-style
+// failures. When a URL came from googlevideo.com we rebuild the canonical
+// youtube.com/watch?v= page from its docid (preferred, YouTube's own field)
+// or id param so the item re-extracts cleanly forever.
+export function recoveredYouTubeWatchUrl(input) {
+  const s = String(input || '');
+  if (!/googlevideo\.com/i.test(s) && !/redirector\.googlevideo\.com/i.test(s)) return '';
+  const vid = s.match(/[?&]docid=([A-Za-z0-9_-]{6,32})/)
+    || s.match(/[?&]id=([A-Za-z0-9_-]{6,32})/);
+  return vid ? `https://www.youtube.com/watch?v=${vid[1]}` : '';
+}
+
 // ---- Pornhub strict result sanitizer ---------------------------------------
 // Mirror of the main-process strict filter (electron/main.js): a valid pornhub
 // search hit MUST be a viewkey video page, must NOT point at a /language/

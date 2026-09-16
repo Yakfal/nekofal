@@ -10,7 +10,7 @@ if (typeof global.File === 'undefined') {
   };
 }
 
-const { app, BrowserWindow, ipcMain, session, dialog, shell, globalShortcut, net } = require('electron');
+const { app, BrowserWindow, ipcMain, session, dialog, shell, globalShortcut, net, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
@@ -149,6 +149,36 @@ function withFFmpegArgs(args) {
   return args;
 }
 
+// True for yt-dlp formats that resolve to an HLS (m3u8) master playlist.
+// The <video> element + hls.js plays these directly, and YouTube's per-tier
+// HLS variants carry BOTH video and audio at every level — so a 4K/1440p
+// "video-only" m3u8 format still plays with sound (unlike raw DASH splits).
+function isHlsFormat(f) {
+  if (!f) return false;
+  const proto = String(f.protocol || '').toLowerCase();
+  const url = String(f.manifest_url || f.url || '');
+  return proto === 'm3u8' || proto === 'm3u8_native'
+    || /\.m3u8/i.test(url)
+    || /\/manifest\/hls_variant\//i.test(url) || /\/api\/manifest\//i.test(url);
+}
+
+// Readable quality label for a yt-dlp format: adds (2K)/(4K) suffixes so the
+// player menu clearly shows the high-resolution tiers.
+function ytQualityLabel(f) {
+  if (f && f.format_note && String(f.format_note).trim()) {
+    const note = String(f.format_note).trim();
+    if (note.includes('2160p') && !note.includes('4K')) return `${note} (4K)`;
+    if (note.includes('1440p') && !note.includes('2K')) return `${note} (2K)`;
+    return note;
+  }
+  const h = f && f.height;
+  if (h >= 4320) return '8K';
+  if (h === 2160) return '2160p (4K)';
+  if (h === 1440) return '1440p (2K)';
+  if (h) return `${h}p`;
+  return (f && (f.format || f.format_id)) || 'auto';
+}
+
 let ytDlp = null;
 
 async function ensureYtDlpBinary() {
@@ -210,7 +240,8 @@ function createWindow() {
     icon: appIconPath(),
     show: false,
     frame: true,
-    titleBarStyle: 'default'
+    titleBarStyle: 'default',
+    autoHideMenuBar: true
   });
 
   mainWindow.on('ready-to-show', () => {
@@ -298,7 +329,8 @@ function openMiniPlayer(payload) {
       sandbox: false
     },
     icon: appIconPath(),
-    show: false
+    show: false,
+    autoHideMenuBar: true
   });
 
   miniPlayerWindow.setAlwaysOnTop(true, 'floating');
@@ -1612,17 +1644,17 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
     
     let ytDlpArgs;
     if (isYouTube) {
-      // YouTube: request ADAPTIVE HLS/DASH manifests up to 2160p instead of a
-      // single 720p progressive MP4. `-j` (--dump-json) --no-playlist returns
-      // every format with its direct URL/headers so the player menu can list
-      // 144p…2160p tiers, the master .m3u8 renders in hls.js when available,
-      // and non-HLS formats can be hot-swapped by their raw URL.
+      // YouTube: dump ALL formats (DASH + per-tier HLS) up to 2160p with the
+      // default client so the player menu lists every resolution tier (incl.
+      // 1440p (2K) / 2160p (4K)). Calling with a restrictive `-f` expression
+      // or a restricted player_client roster reduces the manifest to a single
+      // low-res progressive format, so we deliberately omit both and consume
+      // info.formats directly. The per-tier m3u8 (m3u8_native) formats carry
+      // video+audio at every height, so 4K/2K play with sound via hls.js.
       ytDlpArgs = [
         url,
         '-j',
-        '--no-playlist',
-        '-f', 'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best',
-        '--extractor-args', 'youtube:player_client=web_embedded,android,web'
+        '--no-playlist'
       ];
     } else {
       // Other sites: use JSON output with impersonate for Cloudflare bypass.
@@ -1673,24 +1705,29 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
       }
 
       // Direct-URL format list for instant, no-re-extraction quality switching:
-      // one entry per height, preferring a progressive (audio-bearing) format
-      // so native playback never turns silent when the user drops a tier.
+      // one entry per height, preferring a form that carries audio so playback
+      // never turns silent mid-switch. YouTube's per-tier HLS (m3u8_native)
+      // formats are the ONLY ≥1080p sources with audio at that tier — hls.js
+      // renders the manifest directly, so we treat any .m3u8 format as
+      // audio-capable and use its manifest_url as the playable URL.
       const menuFormats = [];
       const byHeightBest = new Map();
       for (const f of formats) {
-        const url = f.url || f.manifest_url || '';
-        if (!url || !f.vcodec || f.vcodec === 'none') continue;
+        if (!f.vcodec || f.vcodec === 'none') continue;
+        const hlsLike = isHlsFormat(f);
+        const url = f.manifest_url || f.url || '';
+        if (!url) continue;
         const key = f.height || f.format_id;
         if (!key) continue;
         const candidate = {
           formatId: f.format_id,
-          label: f.format_note || (f.height ? `${f.height}p` : null) || f.format || f.format_id,
+          label: ytQualityLabel(f),
           height: f.height || 0,
           width: f.width || 0,
           url,
           protocol: f.protocol || '',
           httpHeaders: f.http_headers || null,
-          hasAudio: !!(f.acodec && f.acodec !== 'none'),
+          hasAudio: hlsLike || !!(f.acodec && f.acodec !== 'none'),
           tbr: f.tbr || 0
         };
         const prev = byHeightBest.get(key);
@@ -1699,50 +1736,66 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
         }
       }
       for (const f of [...byHeightBest.values()].sort(byResDesc)) {
-        menuFormats.push({ label: f.label, height: f.height, url: f.url, httpHeaders: f.httpHeaders, hasAudio: f.hasAudio, formatId: f.formatId });
+        menuFormats.push({ label: f.label, height: f.height, url: f.url, httpHeaders: f.httpHeaders, hasAudio: f.hasAudio, formatId: f.formatId, protocol: f.protocol });
       }
 
       // A specific format was requested (manual quality switch in the player).
       if (formatId) {
         const fmt = formats.find(f => f.format_id === formatId);
         if (fmt && (fmt.url || fmt.manifest_url)) {
-          streamUrl = fmt.manifest_url || fmt.url;
-          isHLS = fmt.protocol === 'm3u8' || fmt.protocol === 'm3u8_native' || /\.m3u8/i.test(streamUrl);
+          const fmtHls = isHlsFormat(fmt);
+          // HLS tiers: manifest_url is the master playlist (with audio).
+          // Progressive/DASH: the raw .url may include a limiting query.
+          streamUrl = fmtHls ? (fmt.manifest_url || fmt.url) : (fmt.url || fmt.manifest_url);
+          isHLS = fmtHls;
           httpHeaders = fmt.http_headers || httpHeaders;
         }
       } else if (height) {
         // A specific resolution tier was requested (standard-quality fallback
-        // used when the extraction could not enumerate per-height formats):
-        // re-resolve the stream capped at that height so the player can still
-        // offer 360p..1080p without a format_id. The URL is re-capped against
-        // the page itself, so the CDN signature is always fresh.
-        try {
-          const capArgs = [
-            url,
-            '-j',
-            '--no-playlist',
-            '-f', `bestvideo[height<=${height}]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best`,
-            '--extractor-args', 'youtube:player_client=web_embedded,android,web'
-          ];
-          const capOutput = await ytDlp.execPromise(withFFmpegArgs(capArgs));
-          const capInfo = JSON.parse(capOutput);
-          if (capInfo && capInfo.url) {
-            streamUrl = capInfo.url;
-            isHLS = capInfo.url.includes('.m3u8') || capInfo.protocol === 'm3u8_native';
-            httpHeaders = capInfo.http_headers || httpHeaders;
+        // used when the extraction could not enumerate per-height formats).
+        //
+        // 1) Prefer an already-scraped menu tier at or below the cap — zero
+        //    extra yt-dlp round-trips and the CDN signatures are fresh from
+        //    the same manifest. HLS tiers carry audio, so sound is preserved.
+        // 2) Only as a last resort re-resolve against the page itself.
+        const heightTier = [...byHeightBest.values()]
+          .filter(f => f.height <= height && f.url)
+          .sort(byResDesc)[0];
+        if (heightTier) {
+          streamUrl = heightTier.url;
+          isHLS = /\.m3u8|\/manifest\/hls_variant\//i.test(streamUrl) || heightTier.protocol === 'm3u8'
+            || heightTier.protocol === 'm3u8_native';
+          httpHeaders = heightTier.httpHeaders || httpHeaders;
+        } else {
+          try {
+            const capArgs = [
+              url,
+              '-j',
+              '--no-playlist',
+              '-f', `best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`
+            ];
+            const capOutput = await ytDlp.execPromise(withFFmpegArgs(capArgs));
+            const capInfo = JSON.parse(capOutput);
+            if (capInfo && capInfo.url) {
+              streamUrl = capInfo.url;
+              isHLS = capInfo.url.includes('.m3u8') || capInfo.protocol === 'm3u8_native'
+                || capInfo.protocol === 'm3u8';
+              httpHeaders = capInfo.http_headers || httpHeaders;
+            }
+          } catch (capErr) {
+            console.warn('[yt-dlp] Height-capped re-extraction failed, keeping default:', capErr.message);
           }
-        } catch (capErr) {
-          console.warn('[yt-dlp] Height-capped re-extraction failed, keeping default:', capErr.message);
         }
       } else {
-        // 1) Adaptive HLS master playlist — every resolution tier (1080p/1440p/
-        //    2160p) in one manifest; hls.js exposes them to the quality menu.
-        const hlsMaster = sortedFormats.find(f =>
-          (f.manifest_url && /\.m3u8/i.test(f.manifest_url)) || /\.m3u8/i.test(f.url || '')
-        );
+        // 1) Highest HLS master playlist — every resolution tier (1080p/1440p/2160p)
+        //    in one manifest (with audio at each level); hls.js exposes the
+        //    tiers to the quality menu. YouTube serves these as m3u8_native
+        //    formats whose manifest_url is the master.
+        const hlsMaster = sortedFormats.find(f => isHlsFormat(f) && (f.manifest_url || f.url));
         if (hlsMaster) {
           streamUrl = hlsMaster.manifest_url || hlsMaster.url;
-          isHLS = true;
+          isHLS = isHlsFormat({ protocol: hlsMaster.protocol, manifest_url: streamUrl })
+            || /\/manifest\/hls_variant\//i.test(streamUrl);
         } else {
           // 2) Highest progressive stream that also carries the audio track so
           //    native playback is never silent.
@@ -4241,6 +4294,9 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
 
   // Initialize database FIRST, then create window
   app.whenReady().then(async () => {
+    // Hide the native application menu (File/Edit/View/Window/Help) entirely —
+    // the app is a kiosk-style media hub and its controls live in the web UI.
+    Menu.setApplicationMenu(null);
     await initializeAppDatabase();
     await ensureYtDlpBinary();
     

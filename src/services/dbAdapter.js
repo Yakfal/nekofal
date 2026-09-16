@@ -9,6 +9,8 @@
  * Local records stay the source of truth; online mutations are pushed to
  * PocketBase and remote records are pulled back in (merge by content key).
  */
+import { recoveredYouTubeWatchUrl } from './customScraper.js';
+
 const STORAGE_KEY = 'yakfal-cloud';
 const DEFAULT_STATE = { version: 1, enabled: false, url: '', token: '', user: null };
 const MAX_PAGES = 10;
@@ -149,7 +151,11 @@ export function isPageUrl(url) {
 export function favoritePayloadFor(item) {
   const raw = String(item.videoUrl || item.url || item.streamUrl || '').trim();
   const explicitPage = String(item.pageUrl || item.webUrl || '').trim();
-  const pageUrl = explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
+  // Legacy CDN recovery: rebuild the canonical watch page from a googlevideo
+  // docid/id so old favorites/history re-extract instead of pinning a dead
+  // signed stream URL.
+  const recovered = recoveredYouTubeWatchUrl(explicitPage) || recoveredYouTubeWatchUrl(raw);
+  const pageUrl = recovered || explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
   const url = pageUrl ? '' : raw;
   return {
     id: getMediaId(item),
