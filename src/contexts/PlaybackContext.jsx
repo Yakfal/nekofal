@@ -2,17 +2,17 @@ import React, { createContext, useContext, useCallback, useEffect, useMemo, useR
 import { usePlaylists } from './PlaylistsContext.jsx';
 import { installMediaKeyBridge } from '../utils/mediaKeys.js';
 import { isPageUrl, isDirectMediaUrl } from '../services/dbAdapter.js';
-import { isYouTubeUrl, getYouTubeVideoId, canonicalYouTubePageUrl, recoveredYouTubeWatchUrl } from '../services/customScraper.js';
+import { isYouTubeUrl, getYouTubeVideoId, recoveredYouTubeWatchUrl } from '../services/customScraper.js';
 import './Playback.css';
 
 const SUPPORTED_EXT = ['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v', '.mp3', '.m4a', '.flac', '.wav', '.ogg', '.aac', '.m3u8'];
 
 // ---- Canonical media normalization ------------------------------------------
 // YouTube watch URLs rotate between /watch?v=, youtu.be/ID and googlevideo CDN
-// streams. Favorites/history persist a canonical page URL so the item stays
-// re-extractable forever. Every video that reaches the player guarantees
-// { title, thumbnail, provider, pageUrl }.
-const YT_WATCH_RE = /youtube\.com\/watch\?/i;
+// streams. Favorites/history persist a canonical watch?v=<11-char-id> page URL
+// (no query tokens/params) so the item stays re-extractable forever. Every
+// video that reaches the player guarantees { title, thumbnail, provider,
+// pageUrl }.
 
 function isYouTubeMedia(media) {
   if (!media) return false;
@@ -25,19 +25,18 @@ function normalizePlaybackMedia(media) {
   if (!media) return null;
   const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
   let pageUrl = String(media.pageUrl || media.webUrl || '').trim();
-  // Legacy CDN recovery: old versions stored googlevideo CDN links as the page
-  // or the stream. Rebuild the canonical watch page from docid/id so the item
-  // re-extracts cleanly instead of throwing a media format error at the dead
-  // signed URL.
+  // Legacy CDN recovery + strict 11-char canonicalization: any YouTube media
+  // yields the exact https://www.youtube.com/watch?v=<11_char_id> form — CDN
+  // hashes recover via docid/id, and appended query tokens/params (&t=, &list=,
+  // youtu.be redirects…) are stripped — so the stored page survives stream
+  // rotation and re-extracts cleanly forever.
   const recovered = recoveredYouTubeWatchUrl(pageUrl) || recoveredYouTubeWatchUrl(raw);
   if (recovered) pageUrl = recovered;
   const isYT = isYouTubeMedia(media) || !!recovered;
-  if (isYT && pageUrl && !YT_WATCH_RE.test(pageUrl)) {
+  if (isYT) {
     const id = getYouTubeVideoId(pageUrl) || getYouTubeVideoId(raw);
-    if (id) pageUrl = canonicalYouTubePageUrl(`https://www.youtube.com/watch?v=${id}`);
-  } else if (isYT && !pageUrl) {
-    const id = getYouTubeVideoId(raw);
-    pageUrl = id ? `https://www.youtube.com/watch?v=${id}` : raw;
+    if (id) pageUrl = `https://www.youtube.com/watch?v=${id}`;
+    else if (!recovered && !pageUrl) pageUrl = raw;
   }
   const title = media.videoTitle || media.title || 'Unknown Video';
   const thumbnail = media.thumbnailUrl || media.poster || media.thumbnail || '';

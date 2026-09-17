@@ -9,7 +9,7 @@
  * Local records stay the source of truth; online mutations are pushed to
  * PocketBase and remote records are pulled back in (merge by content key).
  */
-import { recoveredYouTubeWatchUrl } from './customScraper.js';
+import { recoveredYouTubeWatchUrl, getYouTubeVideoId } from './customScraper.js';
 
 const STORAGE_KEY = 'yakfal-cloud';
 const DEFAULT_STATE = { version: 1, enabled: false, url: '', token: '', user: null };
@@ -151,11 +151,16 @@ export function isPageUrl(url) {
 export function favoritePayloadFor(item) {
   const raw = String(item.videoUrl || item.url || item.streamUrl || '').trim();
   const explicitPage = String(item.pageUrl || item.webUrl || '').trim();
-  // Legacy CDN recovery: rebuild the canonical watch page from a googlevideo
-  // docid/id so old favorites/history re-extract instead of pinning a dead
-  // signed stream URL.
+  // Legacy CDN recovery + strict 11-char canonicalization: rebuild the watch
+  // page from a googlevideo docid/id, otherwise strip any query tokens/params
+  // (&t=, &list=, youtu.be redirects) so saved items keep one clean page URL
+  // and never pin a dead signed stream.
   const recovered = recoveredYouTubeWatchUrl(explicitPage) || recoveredYouTubeWatchUrl(raw);
-  const pageUrl = recovered || explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
+  let pageUrl = recovered || explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
+  if (!recovered && /youtube\.com|youtu\.be/i.test(pageUrl)) {
+    const vid = getYouTubeVideoId(pageUrl);
+    if (vid) pageUrl = `https://www.youtube.com/watch?v=${vid}`;
+  }
   const url = pageUrl ? '' : raw;
   return {
     id: getMediaId(item),

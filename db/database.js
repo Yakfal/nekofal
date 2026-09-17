@@ -254,9 +254,19 @@ async function initializeDatabase() {
       const sanCdn = (value) => {
         const s = String(value || '');
         if (!/googlevideo\.com/i.test(s)) return null;
-        const vid = s.match(/[?&]docid=([A-Za-z0-9_-]{6,32})/)
-          || s.match(/[?&]id=([A-Za-z0-9_-]{6,32})/);
+        // Strict 11-char video ID only — long CDN hash ids (o-…, base64) are
+        // not video IDs and must not be recovered into a bogus watch page.
+        const vid = s.match(/[?&]docid=([a-zA-Z0-9_-]{11})(?![\w-])/)
+          || s.match(/[?&]id=(?!o-)([a-zA-Z0-9_-]{11})(?![\w-])/);
         return vid ? `https://www.youtube.com/watch?v=${vid[1]}` : null;
+      };
+      // Strip appended query tokens from canonical watch pages so stored rows
+      // keep exactly https://www.youtube.com/watch?v=<11_char_id>.
+      const sanWatch = (value) => {
+        const s = String(value || '');
+        if (!/youtube\.com\/watch\?/i.test(s)) return s;
+        const vid = s.match(/[?&]v=([a-zA-Z0-9_-]{11})(?![\w-])/);
+        return vid ? `https://www.youtube.com/watch?v=${vid[1]}` : s;
       };
       const fixRow = (row) => {
         const watch = sanCdn(row.pageUrl) || sanCdn(row.videoUrl);
@@ -300,9 +310,29 @@ async function initializeDatabase() {
       libScan.free();
       libUpd.free();
 
+      // Canonical-page pass (non-CDN rows): strip appended query tokens/params
+      // from stored YouTube watch pages. pageUrl is rebuilt to exactly
+      // https://www.youtube.com/watch?v=<11_char_id>; videoUrl is left alone —
+      // non-CDN rows can hold live stream URLs that must not be nulled.
+      const stripQueryTokens = (table) => {
+        const scan = db.prepare(`SELECT rowid, pageUrl FROM ${table} WHERE pageUrl LIKE '%youtube.com/watch%' AND pageUrl NOT LIKE '%googlevideo.com%'`);
+        const upd = db.prepare(`UPDATE ${table} SET pageUrl = ? WHERE rowid = ?`);
+        while (scan.step()) {
+          const row = scan.getAsObject();
+          const clean = sanWatch(row.pageUrl);
+          if (!clean || clean === row.pageUrl) continue;
+          upd.run([clean, row.rowid]);
+          fixed++;
+        }
+        scan.free();
+        upd.free();
+      };
+      stripQueryTokens('favorites');
+      stripQueryTokens('watch_history');
+
       if (fixed > 0) {
         saveDatabase();
-        console.log(`[DB] Legacy CDN link sanitizer: ${fixed} googlevideo row(s) rebuilt into canonical YouTube watch pages`);
+        console.log(`[DB] Legacy CDN link & YouTube URL sanitizer: ${fixed} row(s) rebuilt into canonical youtube.com/watch?v=<11-char-id> pages`);
       }
     } catch (migrationErr) {
       console.log('[DB] Legacy CDN link sanitizer migration skipped:', migrationErr.message);

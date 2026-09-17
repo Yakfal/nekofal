@@ -17,7 +17,7 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const ytDlpWrap = require('yt-dlp-wrap').default;
 
 // Electron auto-updater (periodic GitHub-based updates). Loaded lazily so a
@@ -147,6 +147,41 @@ function withFFmpegArgs(args) {
     return [...args, '--ffmpeg-location', path.dirname(ffmpegPath)];
   }
   return args;
+}
+
+// Node.js availability probe for yt-dlp's --js-runtimes. YouTube now requires
+// a JS runtime to evaluate its player JavaScript (EJS). yt-dlp tolerates a
+// missing/unusable runtime gracefully, but passing the flag with no node on
+// PATH still logs EJS warnings for nothing — so it is added only when a real
+// node binary is probed (once, cached). Child processes get a fresh PATH so
+// 'node' resolves to the standalone binary even inside packaged Electron.
+let jsRuntimeAvailable = null;
+function isJsRuntimeAvailable() {
+  if (jsRuntimeAvailable !== null) return jsRuntimeAvailable;
+  try {
+    const probe = spawnSync('node', ['--version'], {
+      windowsHide: true,
+      timeout: 10000,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }
+    });
+    jsRuntimeAvailable = probe.status === 0 && /^v\d+\./.test(String(probe.stdout || ''));
+  } catch {
+    jsRuntimeAvailable = false;
+  }
+  if (!jsRuntimeAvailable) {
+    console.log('node not found on PATH; omitting --js-runtimes node for yt-dlp.');
+  }
+  return jsRuntimeAvailable;
+}
+
+function withJsRuntimeArgs(args) {
+  if (!isJsRuntimeAvailable()) return args;
+  return [...args, '--js-runtimes', 'node'];
+}
+
+// All yt-dlp invocations: ffmpeg + optional JS runtime in one wrapper.
+function withYtDlpArgs(args) {
+  return withJsRuntimeArgs(withFFmpegArgs(args));
 }
 
 // True for yt-dlp formats that resolve to an HLS (m3u8) master playlist.
@@ -614,6 +649,7 @@ function ensureStealthWindow() {
     show: false,
     frame: false,
     skipTaskbar: true,
+    autoHideMenuBar: true,
     backgroundColor: '#0B0F17',
     webPreferences: {
       offscreen: true,
@@ -1669,7 +1705,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
       ];
     }
     
-    const rawOutput = await ytDlp.execPromise(withFFmpegArgs(ytDlpArgs));
+    const rawOutput = await ytDlp.execPromise(withYtDlpArgs(ytDlpArgs));
 
     let info;
     let streamUrl = null;
@@ -1774,7 +1810,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
               '--no-playlist',
               '-f', `best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`
             ];
-            const capOutput = await ytDlp.execPromise(withFFmpegArgs(capArgs));
+            const capOutput = await ytDlp.execPromise(withYtDlpArgs(capArgs));
             const capInfo = JSON.parse(capOutput);
             if (capInfo && capInfo.url) {
               streamUrl = capInfo.url;
@@ -1947,7 +1983,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
       // If a specific format was requested, re-resolve the stream with that format
       if (formatId) {
         try {
-          const fmtOutput = await ytDlp.execPromise(withFFmpegArgs([
+          const fmtOutput = await ytDlp.execPromise(withYtDlpArgs([
             url,
             '--dump-json',
             '-f', formatId,
@@ -2233,7 +2269,7 @@ ipcMain.handle('video:download', async (event, video) => {
 
     const fs = require('fs');
     const ytDlpPath = getYtDlpPath();
-    const args = withFFmpegArgs([
+    const args = withYtDlpArgs([
       targetUrl,
       ...(targetUrl !== url ? ['--referer', /hanime\.tv/i.test(url) ? 'https://hanime.tv/' : 'https://www.pornhub.com/'] : []),
       '-o', filePath,
@@ -3571,7 +3607,7 @@ const PH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 async function resolvePornhubStream(pageUrl) {
   let ytError = null;
   try {
-    const rawJson = await ytDlp.execPromise(withFFmpegArgs([
+    const rawJson = await ytDlp.execPromise(withYtDlpArgs([
       pageUrl,
       '--dump-json',
       '-f', 'best[height<=2160]/best',
@@ -3984,7 +4020,7 @@ async function gatewayVideoSearch(baseUrl, params) {
 async function runFlatPlaylist(searchUrlOrQuery, count = 25) {
   const isTextSearch = !/^https?:\/\//i.test(searchUrlOrQuery);
   const target = isTextSearch ? `ytsearch${count}:${searchUrlOrQuery}` : searchUrlOrQuery;
-  const rawJson = await ytDlp.execPromise(withFFmpegArgs([
+  const rawJson = await ytDlp.execPromise(withYtDlpArgs([
     target,
     '--flat-playlist',
     '--dump-single-json',
@@ -4251,7 +4287,7 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
           inserted++;
           continue;
         }
-        const rawJson = await ytDlp.execPromise(withFFmpegArgs([
+        const rawJson = await ytDlp.execPromise(withYtDlpArgs([
           url, '--dump-json', '-f', 'b',
           '--extractor-args', 'generic:impersonate'
         ]));
