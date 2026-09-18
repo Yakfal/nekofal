@@ -41,6 +41,7 @@ const Favorites = () => {
             pageUrl: item.pageUrl || '',
             duration: item.duration || 1125,
             isHLS: item.isHLS || false,
+            isAdult: item.isAdult || 0,
             sourceSite: item.sourceSite || 'Demo'
           }));
           setFavorites(formatted);

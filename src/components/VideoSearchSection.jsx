@@ -48,9 +48,10 @@ const VideoSearchSection = ({
   const [searchInfo, setSearchInfo] = useState(null);
   const [searchError, setSearchError] = useState(null);
   const [addedIds, setAddedIds] = useState(() => new Set());
-  // Favorite ids as a Set so the star reflects the REAL local DB state instead
-  // of defaulting to "filled" — one IPC load per grid, O(1) membership checks.
-  const [favoriteSet, setFavoriteSet] = useState(() => new Set());
+  // Favorite ROWS from the DB (not a shared id Set). Each card verifies its OWN
+  // canonical pageUrl/id against this list, so a single card's star can never
+  // bleed into the rest of the grid.
+  const [favorites, setFavorites] = useState([]);
   const [togglingId, setTogglingId] = useState(null);
   const { playVideo } = usePlayback();
   const [toast, setToast] = useState(null);
@@ -78,29 +79,35 @@ const VideoSearchSection = ({
 
   // Seed the star state from the real favorites table once; also re-sync after
   // a cloud pull or another page favorites/unfavorites something.
-  useEffect(() => {
+  const reloadFavorites = useCallback(() => {
     const api = getApi();
-    if (!api?.getFavorites) return undefined;
-    let alive = true;
-    const reload = () => {
-      api.getFavorites()
-        .then((res) => {
-          if (!alive) return;
-          if (res?.success && Array.isArray(res.data)) {
-            setFavoriteSet(new Set(res.data.map(r => getMediaId(r)).filter(Boolean)));
-          }
-        })
-        .catch(() => {});
-    };
-    reload();
-    window.addEventListener('favorites-synced', reload);
-    window.addEventListener('scrapers-synced', reload);
-    return () => {
-      alive = false;
-      window.removeEventListener('favorites-synced', reload);
-      window.removeEventListener('scrapers-synced', reload);
-    };
+    if (!api?.getFavorites) return Promise.resolve();
+    return api.getFavorites()
+      .then((res) => {
+        if (res?.success && Array.isArray(res.data)) setFavorites(res.data);
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    reloadFavorites();
+    window.addEventListener('favorites-synced', reloadFavorites);
+    window.addEventListener('scrapers-synced', reloadFavorites);
+    return () => {
+      window.removeEventListener('favorites-synced', reloadFavorites);
+      window.removeEventListener('scrapers-synced', reloadFavorites);
+    };
+  }, [reloadFavorites]);
+
+  // Strict per-card match: a card is favorited only when a stored row shares
+  // THIS card's canonical pageUrl or its own unique id.
+  const isCardFavorited = useCallback((v) => {
+    return favorites.some((f) => {
+      if (v.pageUrl && f.pageUrl && String(f.pageUrl) === String(v.pageUrl)) return true;
+      if (v.id && f.id && String(f.id) === String(v.id)) return true;
+      return false;
+    });
+  }, [favorites]);
 
   const handleSearch = async (e) => {
     e?.preventDefault();
@@ -188,8 +195,9 @@ const VideoSearchSection = ({
   };
 
   const handleToggleFavorite = async (v) => {
-    const key = getMediaId(v);
-    if (!key) { showToast('Cannot favorite this item', 'err'); return; }
+    const key = v.id || getMediaId(v);
+    const identifiable = Boolean((v.pageUrl && String(v.pageUrl).trim()) || (v.id && String(v.id).trim()));
+    if (!identifiable || !key) { showToast('Cannot favorite this item', 'err'); return; }
     setTogglingId(key);
     try {
       const api = getApi();
@@ -199,12 +207,7 @@ const VideoSearchSection = ({
       const res = await api.toggleFavorite(payload);
       if (res?.success) {
         const favorited = res.data ? res.data.favorited : res.favorited;
-        setFavoriteSet((prev) => {
-          const next = new Set(prev);
-          if (favorited) next.add(key);
-          else next.delete(key);
-          return next;
-        });
+        await reloadFavorites();
         showToast(favorited ? 'Added to favorites' : 'Removed from favorites');
         autoSync();
       } else {
@@ -266,10 +269,10 @@ const VideoSearchSection = ({
         <div className="vss-grid">
           {results.map((v) => {
             const added = addedIds.has(v.id);
-            const favKey = getMediaId(v);
-            const isFav = favoriteSet.has(favKey);
+            const favKey = v.id || getMediaId(v);
+            const isFav = isCardFavorited(v);
             return (
-              <div key={v.id} className="vss-card" data-id={v.id}>
+              <div key={favKey} className="vss-card" data-id={favKey}>
                 <div className="vss-thumb" onClick={() => playVideo(toPlayerPayload(v))}>
                   {v.thumbnailUrl ? (
                     <img src={v.thumbnailUrl} alt={v.title} loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none'; }} />

@@ -1061,11 +1061,12 @@ async function stealthAutoSearch(baseUrl, query, count = 25) {
   const host = (() => {
     try { return new URL(base).hostname.replace('www.', ''); } catch { return ''; }
   })();
-  return list.map((r, idx) => ({
-    id: `custom-${host}-${idx}-${Buffer.from(r.url).toString('hex').substring(0, 8)}`,
+  return list.map((r) => ({
+    id: scrapeVideoId(`custom_${host || 'site'}`, r.url),
     title: r.title || 'Untitled',
     thumbnailUrl: r.thumb || '',
     videoUrl: r.url,
+    pageUrl: r.url,
     duration: 0,
     category: host || 'Custom Site',
     sourceSite: host || 'Custom Site',
@@ -3452,14 +3453,43 @@ ipcMain.handle('db:getVideosBySource', async (event, sourceSite) => {
 // URL/category/search page) using yt-dlp flat-playlist enumeration, with a
 // generic HTML scraper fallback for sites yt-dlp cannot flatten.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Scraper identity: every search result MUST carry a non-empty, collision-free
+// id so per-card state (star/save) can never leak across the grid. The original
+// ids hashed the URL with Buffer.from(url).toString('hex').substring(0, N),
+// which only encodes the leading "https://" — identical for every card, so one
+// favorite lit the whole grid. Prefer a stable provider key (xVideos video key /
+// Pornhub viewkey / Hanime slug) and fall back to a SHA-1 of the page URL.
+// ---------------------------------------------------------------------------
+const crypto = require('crypto');
+
+function hashUrl(u) {
+  return crypto.createHash('sha1').update(String(u || '')).digest('hex').substring(0, 16);
+}
+
+function scrapeVideoId(prefix, pageUrl, rawKey) {
+  const key = String(rawKey || '').trim() || hashUrl(pageUrl);
+  return `${prefix}_${key}`;
+}
+
+function xvideosVideoKey(u) {
+  const m = String(u || '').match(/\/video[./]?([A-Za-z0-9]+)/i);
+  return m ? m[1] : '';
+}
+
+function pornhubViewkey(u) {
+  const m = String(u || '').match(/viewkey=([A-Za-z0-9_-]+)/i);
+  return m ? m[1] : '';
+}
+
 function normalizeSearchEntry(entry, fallbackSite) {
-  const crypto = require('crypto');
   const url = entry.webpage_url || entry.url || '';
   return {
-    id: entry.id ? `${(entry.extractor || 'web')}-${entry.id}` : `web-${crypto.createHash('sha1').update(url).digest('hex').substring(0, 16)}`,
+    id: entry.id ? `${(entry.extractor || 'web')}_${entry.id}` : `web_${hashUrl(url)}`,
     title: (entry.title || entry.fulltitle || 'Untitled').substring(0, 200),
     thumbnailUrl: entry.thumbnail || (entry.thumbnails && entry.thumbnails[0] && entry.thumbnails[0].url) || '',
     videoUrl: url,
+    pageUrl: url,
     duration: entry.duration || 0,
     category: entry.channel || entry.playlist_title || 'Video',
     sourceSite: entry.extractor || entry.ie_key || entry.playlist_title || fallbackSite || 'Web',
@@ -3524,11 +3554,13 @@ async function hanimeV8Search(query, count = 25) {
     const src = h && h._source ? h._source : (h || {});
     const slug = h && h._source ? h._source.slug : (h.slug || '');
     if (!slug) continue;
+    const pageUrl = `https://hanime.tv/videos/hentai/${slug}`;
     videos.push({
-      id: `hanime-${slug}`,
+      id: scrapeVideoId('hanime', pageUrl, slug),
       title: (src.name || 'Untitled').trim(),
       thumbnailUrl: src.poster_url || src.cover_url || src.thumb_url || '',
-      videoUrl: `https://hanime.tv/videos/hentai/${slug}`,
+      videoUrl: pageUrl,
+      pageUrl,
       duration: src.duration_in_ms ? Math.floor(Number(src.duration_in_ms) / 1000) : 0,
       category: 'Hanime',
       sourceSite: 'hanime.tv',
@@ -3748,10 +3780,11 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
     if (!abs.startsWith('http')) return;
 
     videos.push({
-      id: `xvideos-${Buffer.from(abs).toString('hex').substring(0, 16)}`,
+      id: scrapeVideoId('xvideos', abs, xvideosVideoKey(abs)),
       title,
       thumbnailUrl: thumb,
       videoUrl: abs,
+      pageUrl: abs,
       duration,
       category: profile || 'XVideos',
       sourceSite: 'xvideos.com',
@@ -3813,10 +3846,11 @@ async function xvideosStealthSearch(searchUrl, count = 25) {
     throw new Error('XVideos DOM extraction failed: ' + extracted.__stealthError);
   }
   return list.map((r) => ({
-    id: `xvideos-${Buffer.from(r.url).toString('hex').substring(0, 16)}`,
+    id: scrapeVideoId('xvideos', r.url, xvideosVideoKey(r.url)),
     title: r.title || 'Untitled',
     thumbnailUrl: r.thumb || '',
     videoUrl: r.url,
+    pageUrl: r.url,
     duration: r.duration || 0,
     category: r.profile || 'XVideos',
     sourceSite: 'xvideos.com',
@@ -3901,10 +3935,11 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
     const duration = pornhubCardDuration(card.find('.duration, .video-duration, var.duration').first().text());
 
     videos.push({
-      id: `pornhub-${Buffer.from(abs).toString('hex').substring(0, 16)}`,
+      id: scrapeVideoId('pornhub', abs, pornhubViewkey(abs)),
       title,
       thumbnailUrl: thumb,
       videoUrl: abs,
+      pageUrl: abs,
       duration,
       category: 'Pornhub',
       sourceSite: 'pornhub.com',
@@ -3974,10 +4009,11 @@ async function pornhubStealthSearch(searchUrl, count = 25) {
     throw new Error('Pornhub DOM extraction failed: ' + extracted.__stealthError);
   }
   return list.map((r) => ({
-    id: `pornhub-${Buffer.from(r.url).toString('hex').substring(0, 16)}`,
+    id: scrapeVideoId('pornhub', r.url, pornhubViewkey(r.url)),
     title: r.title || 'Untitled',
     thumbnailUrl: r.thumb || '',
     videoUrl: r.url,
+    pageUrl: r.url,
     duration: r.duration || 0,
     category: 'Pornhub',
     sourceSite: 'pornhub.com',
@@ -4007,7 +4043,17 @@ async function gatewayVideoSearch(baseUrl, params) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
     if (json && json.success && Array.isArray(json.videos) && json.videos.length > 0) {
-      return { success: true, source: json.source || 'gateway', videos: json.videos, fallback: true };
+      // Server rows may arrive without an id/pageUrl; give each one a stable,
+      // collision-free identity so per-card favorite state stays isolated.
+      const videos = json.videos.map((v) => {
+        const pageUrl = String(v.pageUrl || v.videoUrl || v.url || '').trim();
+        return {
+          ...v,
+          id: v.id || scrapeVideoId('gateway', pageUrl),
+          pageUrl: v.pageUrl || pageUrl
+        };
+      });
+      return { success: true, source: json.source || 'gateway', videos, fallback: true };
     }
     const msg = (json && json.error && typeof json.error === 'string') ? json.error : 'Gateway fallback found nothing';
     return { success: false, error: msg, source: json && json.source, fallback: true };
@@ -4183,16 +4229,20 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       sourceSite: getDomain(target)
     });
     const scrapedVideos = (Array.isArray(scraped) ? scraped : (scraped?.videos || []))
-      .map(v => ({
-        id: v.id || `scraped-${Buffer.from(v.videoUrl || v.url || target).toString('hex').substring(0, 12)}`,
-        title: v.title || 'Untitled',
-        thumbnailUrl: v.thumbnail || v.thumbnailUrl || '',
-        videoUrl: v.videoUrl || v.url || '',
-        duration: v.duration || 0,
-        category: v.category || 'Video',
-        sourceSite: v.sourceSite || getDomain(target),
-        extractor: 'html-scraper'
-      }))
+      .map(v => {
+        const pageUrl = String(v.pageUrl || v.videoUrl || v.url || '').trim();
+        return {
+          id: v.id || scrapeVideoId('scraped', pageUrl),
+          title: v.title || 'Untitled',
+          thumbnailUrl: v.thumbnail || v.thumbnailUrl || '',
+          videoUrl: v.videoUrl || v.url || '',
+          pageUrl,
+          duration: v.duration || 0,
+          category: v.category || 'Video',
+          sourceSite: v.sourceSite || getDomain(target),
+          extractor: 'html-scraper'
+        };
+      })
       .filter(v => v.videoUrl && v.videoUrl.startsWith('http'))
       .slice(0, count);
 
