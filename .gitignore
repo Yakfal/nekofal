@@ -11,9 +11,6 @@ release/
 dist/
 real-dist/
 
-# Local-only CI workflow (push after granting the token `workflow` scope)
-/.github/workflows/
-
 # Local secrets — never commit
 .env
 .env.local

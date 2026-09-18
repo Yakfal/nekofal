@@ -1,6 +1,6 @@
 {
   "name": "nekofal",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "description": "Nekofal - Desktop media streaming hub",
   "main": "electron/main.js",
   "scripts": {
@@ -18,7 +18,7 @@
     "streaming",
     "scraper"
   ],
-  "author": "",
+  "author": "Nekofal Open Source Team",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
@@ -50,7 +50,7 @@
     "wait-on": "^9.1.0"
   },
   "build": {
-    "appId": "com.nekofal.app",
+    "appId": "com.yakfal.nekofal",
     "productName": "Nekofal",
     "directories": {
       "output": "dist"
@@ -80,14 +80,21 @@
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "publisherName": "Nekofal Open Source Team",
+      "legalTrademarks": "Nekofal",
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "differentialPackage": true,
-      "artifactName": "Nekofal-Setup-${version}.${ext}"
+      "artifactName": "Nekofal-Setup-${version}.${ext}",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nekofal",
+      "uninstallDisplayName": "Nekofal Media Suite"
     },
     "publish": [
       {
