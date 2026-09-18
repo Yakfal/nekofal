@@ -257,3 +257,7 @@
 .vss-toast.err {
   background: #dc2626;
 }
+
+.vss-shelves {
+  margin-top: 10px;
+}

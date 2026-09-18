@@ -1,0 +1,46 @@
+.home-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 14px 0 4px;
+}
+
+.home-tile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--tile-accent) 24%, var(--surface)),
+      var(--surface));
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.home-tile:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--tile-accent) 55%, var(--border));
+  box-shadow: var(--shadow);
+}
+
+.home-tile:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.home-tile-emoji {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.home-tile-label {
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

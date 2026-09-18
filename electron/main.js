@@ -4273,6 +4273,50 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
   }
 });
 
+// Home feed: YouTube trending. Primary source is yt-dlp flat enumeration of the
+// official trending feed; if the binary is unavailable or the feed is blocked,
+// fall back to a broad popularity search so the Home shelf is never empty.
+ipcMain.handle('web:trending', async (_event, { count = 12 } = {}) => {
+  const limit = Math.min(Math.max(Number(count) || 12, 1), 40);
+  const shape = (entries, source) => {
+    const seen = new Set();
+    return entries
+      .filter(e => e && e._type !== 'playlist' && ((e.webpage_url || e.url)))
+      .map(e => normalizeSearchEntry(e, 'YouTube'))
+      .filter(v => v.videoUrl && /^https?:\/\//i.test(v.videoUrl))
+      .filter(v => {
+        if (seen.has(v.pageUrl || v.videoUrl)) return false;
+        seen.add(v.pageUrl || v.videoUrl);
+        return true;
+      })
+      .slice(0, limit)
+      .map(v => ({ ...v, videoTitle: v.title, source }));
+  };
+  try {
+    const binaryAvailable = await ensureYtDlpBinary();
+    if (!binaryAvailable) {
+      return { success: false, error: 'yt-dlp unavailable' };
+    }
+    // Fire both sources at once: yt-dlp's trending tab is preferred, but it
+    // redirects to the YouTube home page in some regions/accounts, so a broad
+    // popularity search runs in parallel as a guaranteed fallback.
+    const trendingTask = runFlatPlaylist('https://www.youtube.com/feed/trending', limit)
+      .then(entries => shape(entries, 'trending'))
+      .catch(err => { console.warn('[web:trending] trending feed unavailable:', String(err.message || '').split('\n')[0]); return []; });
+    const searchTask = runFlatPlaylist(`ytsearch${limit}:popular music videos this week`, limit)
+      .then(entries => shape(entries, 'popular'))
+      .catch(err => { console.warn('[web:trending] popularity search failed:', err.message); return []; });
+
+    const trending = await trendingTask;
+    if (trending.length > 0) return { success: true, source: 'yt-dlp-trending', videos: trending };
+    const popular = await searchTask;
+    if (popular.length > 0) return { success: true, source: 'yt-dlp-search', videos: popular };
+    return { success: false, error: 'Trending is temporarily unavailable' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('web:addVideos', async (event, { videos, tags }) => {
   try {
     const { db, error } = getDbSafe();

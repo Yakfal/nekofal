@@ -29,6 +29,8 @@ const api = {
   // Web search / aggregation (YouTube search, or any URL/category/search page)
   webSearch: (params) => ipcRenderer.invoke('web:search', params),
   addVideos: (videos, tags) => ipcRenderer.invoke('web:addVideos', { videos, tags }),
+  // Home feed: trending YouTube videos for the default Home shelves
+  getTrending: (count) => ipcRenderer.invoke('web:trending', { count }),
 
   // Database operations for videos (scraped content)
   getVideos: (limit, offset) => ipcRenderer.invoke('db:getVideos', limit, offset),

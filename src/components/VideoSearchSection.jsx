@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import { autoSync, getCloudState, getMediaId, favoritePayloadFor, isPageUrl } from '../services/dbAdapter.js';
 import PlaylistMenu from './PlaylistMenu.jsx';
@@ -33,15 +33,17 @@ const formatDuration = (seconds) => {
   return `${m}:${String(s).padStart(2, '0')}`;
 };
 
-const VideoSearchSection = ({
+const VideoSearchSection = forwardRef(({
   title,
   subtitle,
   placeholder = 'Enter a name or paste a link...',
   tags,
   siteUrl = null,
   hint = '',
-  accent = '#3b82f6'
-}) => {
+  accent = '#3b82f6',
+  belowSearch = null,
+  shelves = null
+}, ref) => {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState([]);
@@ -109,9 +111,11 @@ const VideoSearchSection = ({
     });
   }, [favorites]);
 
-  const handleSearch = async (e) => {
-    e?.preventDefault();
-    const q = (query || '').trim();
+  // Runs a search from either the form or an external trigger (Home topic
+  // tiles). Kept imperative so callers can pre-fill the box and fire at once.
+  const runSearch = useCallback(async (rawOverride) => {
+    const q = String(rawOverride != null ? rawOverride : query || '').trim();
+    setQuery(q);
     if (!q) { showToast('Type a name or paste a link', 'err'); return; }
 
     // Detect: full URL -> enumerate that page
@@ -159,7 +163,18 @@ const VideoSearchSection = ({
     } finally {
       setSearching(false);
     }
+  }, [query, siteUrl, showToast]);
+
+  const handleSearch = (e) => {
+    e?.preventDefault();
+    runSearch();
   };
+
+  useImperativeHandle(ref, () => ({
+    runSearch,
+    setQuery,
+    focus: () => { if (inputRef.current) inputRef.current.focus(); }
+  }), [runSearch]);
 
   const handleAddOne = async (v) => {
     try {
@@ -247,6 +262,12 @@ const VideoSearchSection = ({
       </form>
       {hint && <p className="vss-hint">{hint}</p>}
 
+      {belowSearch}
+
+      {shelves && !searching && results.length === 0 && (
+        <div className="vss-shelves">{shelves}</div>
+      )}
+
       {searchInfo && (
         <div className="vss-meta">
           {searchInfo.count} results · via {searchInfo.source}
@@ -325,6 +346,6 @@ const VideoSearchSection = ({
       )}
     </div>
   );
-};
+});
 
 export default VideoSearchSection;

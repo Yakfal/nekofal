@@ -232,3 +232,44 @@
 .playlists-toast.err {
   background: var(--danger);
 }
+
+.playlist-card.smart {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), var(--surface-2) 62%);
+}
+
+.playlist-card.smart.favorites {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.22), var(--surface-2) 62%);
+}
+
+.playlist-card.smart .playlist-card-name::after {
+  content: 'AUTO';
+  margin-left: 8px;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  vertical-align: middle;
+  color: var(--text-muted);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+}
+
+.playlists-crumb .playlists-btn.primary {
+  margin-left: auto;
+}
+
+.playlists-hint-card {
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.playlists-hint-card .playlists-hint {
+  margin-top: 4px;
+}

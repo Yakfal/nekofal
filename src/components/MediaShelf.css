@@ -1,0 +1,93 @@
+.shelf {
+  margin: 20px 0 24px;
+}
+
+.shelf-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.shelf-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.shelf-sub {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.shelf-nav {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.shelf-nav button {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.15rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.shelf-nav button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border-strong, var(--border));
+}
+
+.shelf-track {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 2px 12px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.shelf-track::-webkit-scrollbar {
+  height: 8px;
+}
+
+.shelf-track::-webkit-scrollbar-thumb {
+  background: var(--border-strong, #374151);
+  border-radius: 8px;
+}
+
+.shelf-track::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.shelf-item {
+  flex: 0 0 240px;
+  width: 240px;
+  scroll-snap-align: start;
+}
+
+.shelf-skeleton {
+  flex: 0 0 240px;
+  width: 240px;
+  height: 150px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  opacity: 0.55;
+}
+
+.shelf-empty {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
