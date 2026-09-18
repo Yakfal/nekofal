@@ -11,6 +11,10 @@ release/
 dist/
 real-dist/
 
+# CI workflows are kept local until the GitHub token gains `workflow` scope
+# (SignPath Foundation signing template in .github/workflows/build.yml)
+/.github/workflows/
+
 # Local secrets — never commit
 .env
 .env.local
