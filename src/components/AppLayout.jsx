@@ -4,12 +4,14 @@ import Sidebar from './Sidebar.jsx';
 import DownloadManager from './DownloadManager.jsx';
 import { Outlet } from 'react-router-dom';
 import { SearchProvider } from '../contexts/SearchContext.jsx';
+import './ScrollFab.css';
 
 const AppLayout = () => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 960);
   const contentRef = useRef(null);
   const menuRef = useRef(null);
   const [updateToast, setUpdateToast] = useState(null);
+  const [showScrollFab, setShowScrollFab] = useState(false);
 
   useEffect(() => {
     const handleResize = () => {
@@ -44,6 +46,42 @@ const AppLayout = () => {
 
   const toggleSidebar = () => setIsSidebarCollapsed(!isSidebarCollapsed);
 
+  // Show the scroll-down affordance only when the routed page actually
+  // overflows the viewport, and hide it once the user reaches the bottom.
+  // Re-evaluates on scroll, resize, and any DOM change (async shelves/images).
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return undefined;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const overflow = el.scrollHeight - el.clientHeight;
+      const nearBottom = el.scrollTop >= overflow - 140;
+      setShowScrollFab(overflow > 160 && !nearBottom);
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
+    update();
+    el.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    const observer = new MutationObserver(schedule);
+    observer.observe(el, { childList: true, subtree: true });
+    const resizeObserver = new ResizeObserver(schedule);
+    resizeObserver.observe(el);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      el.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      observer.disconnect();
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  const scrollToLowerContent = () => {
+    const el = contentRef.current;
+    if (!el) return;
+    el.scrollBy({ top: Math.max(el.clientHeight * 0.85, 320), behavior: 'smooth' });
+  };
+
   const sidebarWidth = isSidebarCollapsed ? '72px' : '240px';
 
   return (
@@ -66,6 +104,19 @@ const AppLayout = () => {
         </div>
         <DownloadManager />
       </div>
+
+      {/* Scroll-down FAB — appears only when the page overflows the viewport */}
+      {showScrollFab && (
+        <button
+          type="button"
+          className="scroll-fab"
+          onClick={scrollToLowerContent}
+          title="Scroll down for more"
+          aria-label="Scroll down for more content"
+        >
+          ↓
+        </button>
+      )}
 
       {/* Update notification toast */}
       {updateToast && (

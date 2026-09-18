@@ -48,7 +48,15 @@ const MediaShelf = ({
       </div>
       <div className="shelf-track" ref={trackRef}>
         {loading
-          ? [...Array(6)].map((_, i) => <div key={i} className="shelf-skeleton" />)
+          ? [...Array(6)].map((_, i) => (
+              <div className="shelf-item" key={`sk-${i}`} aria-hidden="true">
+                <div className="shelf-skeleton-card">
+                  <div className="shelf-skeleton-thumb skeleton" />
+                  <div className="shelf-skeleton-line skeleton" />
+                  <div className="shelf-skeleton-line skeleton short" />
+                </div>
+              </div>
+            ))
           : items.map((v) => (
               <div className="shelf-item" key={v.id || v.pageUrl || v.videoUrl}>
                 <MediaCard

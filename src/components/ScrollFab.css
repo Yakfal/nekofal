@@ -1,0 +1,37 @@
+/* Scroll-down floating action button (bottom-right, above the Downloads FAB). */
+.scroll-fab {
+  position: fixed;
+  right: 26px;
+  bottom: 90px;
+  z-index: 69;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  animation: scroll-fab-in 0.18s ease;
+  transition: background 0.2s ease, transform 0.2s ease, color 0.2s ease;
+}
+
+.scroll-fab:hover {
+  background: var(--accent);
+  color: #fff;
+  transform: translateY(2px);
+}
+
+.scroll-fab:active {
+  transform: translateY(2px) scale(0.96);
+}
+
+@keyframes scroll-fab-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}

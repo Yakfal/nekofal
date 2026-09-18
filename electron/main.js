@@ -3482,12 +3482,28 @@ function pornhubViewkey(u) {
   return m ? m[1] : '';
 }
 
+// Flat-playlist enumerations (YouTube especially) often omit a top-level
+// `thumbnail` and only expose a `thumbnails` ladder that starts at 120x90.
+// Pick the largest entry so hero banners and cards get a crisp image.
+function bestThumbnailUrl(entry) {
+  if (entry.thumbnail) return entry.thumbnail;
+  const list = Array.isArray(entry.thumbnails) ? entry.thumbnails : [];
+  if (list.length === 0) return '';
+  let best = null;
+  let bestArea = -1;
+  for (const t of list) {
+    const area = (Number(t && t.width) || 0) * (Number(t && t.height) || 0);
+    if (t && t.url && area >= bestArea) { best = t; bestArea = area; }
+  }
+  return (best && best.url) || (list[list.length - 1] && list[list.length - 1].url) || '';
+}
+
 function normalizeSearchEntry(entry, fallbackSite) {
   const url = entry.webpage_url || entry.url || '';
   return {
     id: entry.id ? `${(entry.extractor || 'web')}_${entry.id}` : `web_${hashUrl(url)}`,
     title: (entry.title || entry.fulltitle || 'Untitled').substring(0, 200),
-    thumbnailUrl: entry.thumbnail || (entry.thumbnails && entry.thumbnails[0] && entry.thumbnails[0].url) || '',
+    thumbnailUrl: bestThumbnailUrl(entry),
     videoUrl: url,
     pageUrl: url,
     duration: entry.duration || 0,
@@ -4303,7 +4319,10 @@ ipcMain.handle('web:trending', async (_event, { count = 12 } = {}) => {
     const trendingTask = runFlatPlaylist('https://www.youtube.com/feed/trending', limit)
       .then(entries => shape(entries, 'trending'))
       .catch(err => { console.warn('[web:trending] trending feed unavailable:', String(err.message || '').split('\n')[0]); return []; });
-    const searchTask = runFlatPlaylist(`ytsearch${limit}:popular music videos this week`, limit)
+    // Pass a bare query: runFlatPlaylist() adds the `ytsearch<count>:` prefix
+    // itself. (Pre-prefixing here produced `ytsearch6:ytsearch6:...`, which
+    // YouTube answers with zero results — making the whole shelf look empty.)
+    const searchTask = runFlatPlaylist('popular music videos this week', limit)
       .then(entries => shape(entries, 'popular'))
       .catch(err => { console.warn('[web:trending] popularity search failed:', err.message); return []; });
 
