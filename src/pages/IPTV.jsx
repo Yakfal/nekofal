@@ -3,6 +3,7 @@ import MediaCard from '../components/MediaCard.jsx';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import { autoSync, getMediaId } from '../services/dbAdapter.js';
+import { IPTV_LANGUAGE_FEEDS, importLanguageFeed } from '../services/iptvService.js';
 import isAdultMedia from '../utils/contentSafety.js';
 import './IPTV.css';
 
@@ -210,6 +211,22 @@ function IPTV() {
       <div className="iptv-header">
         <h1>Live Channels</h1>
         <p>Import any M3U playlist — every channel is saved and organized by category automatically.</p>
+      </div>
+
+      {/* Quick-start language feeds: one tap imports that iptv-org playlist
+          through the exact same import engine as the form below, then the grid
+          re-syncs. Feeds are curated in services/iptvService.js. */}
+      <div className="iptv-langs" aria-label="Quick-start language playlists">
+        {IPTV_LANGUAGE_FEEDS.map(feed => (
+          <button
+            key={feed.key}
+            className="iptv-lang-chip"
+            onClick={() => handleLanguageChip(feed)}
+            disabled={langBusy === feed.key}
+          >
+            {langBusy === feed.key && '…'} {feed.label}
+          </button>
+        ))}
       </div>
 
       {/* Source bar */}
