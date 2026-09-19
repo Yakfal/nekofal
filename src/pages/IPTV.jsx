@@ -46,6 +46,7 @@ function IPTV() {
   const [query, setQuery] = useState('');
   const [sortBy, setSortBy] = useState('category');
   const [tab, setTab] = useState('all');
+  const [langBusy, setLangBusy] = useState(false);
 
   // Load favorite ids once so each channel card shows the real DB state and
   // toggles update the grid immediately (same IPC path as every other surface).
@@ -192,6 +193,24 @@ function IPTV() {
       showToast('Refresh failed: ' + err.message, 'err');
     } finally {
       setRefreshId(null);
+    }
+  };
+
+  const handleLanguageChip = async (feed) => {
+    if (langBusy) return;
+    setLangBusy(feed.key);
+    try {
+      const res = await importLanguageFeed(feed);
+      const ok = !!res?.success;
+      showToast(ok ? `Imported ${res.inserted ?? 0} channels (${feed.label})` : (res?.error || 'Import failed'), ok ? 'ok' : 'err');
+      if (ok) {
+        autoSync();
+        window.dispatchEvent(new Event('scrapers-synced'));
+      }
+    } catch (err) {
+      showToast('Import failed: ' + err.message, 'err');
+    } finally {
+      setLangBusy(false);
     }
   };
 
