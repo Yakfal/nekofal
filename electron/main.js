@@ -1404,7 +1404,8 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = console;
-  autoUpdater.verifyUpdateCodeSignature = false;
+  // electron-updater expects a function returning Promise<null> to bypass signature validation
+  autoUpdater.verifyUpdateCodeSignature = () => Promise.resolve(null);
 
   autoUpdater.on('update-available', (info) => {
     sendToRenderer('app:update', {
