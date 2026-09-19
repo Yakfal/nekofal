@@ -1404,6 +1404,7 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = console;
+  autoUpdater.verifyUpdateCodeSignature = false;
 
   autoUpdater.on('update-available', (info) => {
     sendToRenderer('app:update', {

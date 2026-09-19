@@ -83,7 +83,8 @@
       ],
       "publisherName": "Nekofal Open Source Team",
       "legalTrademarks": "Nekofal",
-      "requestedExecutionLevel": "asInvoker"
+      "requestedExecutionLevel": "asInvoker",
+      "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,
