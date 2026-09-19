@@ -120,6 +120,19 @@ async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_favorites_externalId ON favorites(externalId);
       CREATE INDEX IF NOT EXISTS idx_history_watchedAt ON watch_history(watchedAt);
 
+      CREATE TABLE IF NOT EXISTS media_weights (
+        id TEXT PRIMARY KEY,
+        tag TEXT,
+        artist TEXT,
+        genre TEXT,
+        score INTEGER DEFAULT 1,
+        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_media_weights_artist ON media_weights(artist);
+      CREATE INDEX IF NOT EXISTS idx_media_weights_genre ON media_weights(genre);
+      CREATE INDEX IF NOT EXISTS idx_media_weights_score ON media_weights(score DESC);
+
       CREATE TABLE IF NOT EXISTS scrapers (
         id TEXT PRIMARY KEY,
         siteName TEXT NOT NULL,
@@ -786,6 +799,92 @@ async function getWatchHistory() {
 }
 
 /**
+ * Adjust the preference weight of one or more media attributes.
+ * Positive delta = engaged watching (finished / watched > 60s).
+ * Negative delta = skipped / abandoned quickly.
+ * Each provided attribute (artist / genre / tag) is upserted by its own row,
+ * keyed `id = <scope>:<value>`, so multiple scopes update in a single call.
+ */
+async function addMediaWeight({ artist, genre, tag, delta = 1 }) {
+  if (typeof delta !== 'number') {
+    throw new Error('addMediaWeight requires a numeric delta');
+  }
+
+  const init = await initializeDatabase();
+  if (!init.success) throw new Error(init.error);
+
+  try {
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`
+      INSERT INTO media_weights (id, tag, artist, genre, score, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        tag = COALESCE(excluded.tag, media_weights.tag),
+        artist = COALESCE(excluded.artist, media_weights.artist),
+        genre = COALESCE(excluded.genre, media_weights.genre),
+        score = media_weights.score + excluded.score,
+        updatedAt = excluded.updatedAt
+    `);
+
+    const touched = [];
+    if (artist) {
+      stmt.run([`artist:${artist}`, null, artist, null, delta, now]);
+      touched.push({ scope: 'artist', value: artist });
+    }
+    if (genre) {
+      stmt.run([`genre:${genre}`, null, null, genre, delta, now]);
+      touched.push({ scope: 'genre', value: genre });
+    }
+    if (tag) {
+      stmt.run([`tag:${tag}`, tag, null, null, delta, now]);
+      touched.push({ scope: 'tag', value: tag });
+    }
+    stmt.free();
+    saveDatabase();
+
+    return { success: true, delta, touched };
+  } catch (error) {
+    console.error('Failed to add media weight:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get the top-weighted media attributes for a scope.
+ * Used for "Because You Watched" shelves and recommended mixes.
+ */
+async function getTopMediaWeights({ scope = 'genre', limit = 3 } = {}) {
+  if (!['artist', 'genre', 'tag'].includes(scope)) {
+    throw new Error(`Invalid media weight scope: ${scope}`);
+  }
+
+  const init = await initializeDatabase();
+  if (!init.success) throw new Error(init.error);
+
+  try {
+    const stmt = db.prepare(`
+      SELECT id, tag, artist, genre, score, updatedAt
+      FROM media_weights
+      WHERE ${scope} IS NOT NULL AND ${scope} != ''
+      ORDER BY score DESC, updatedAt DESC
+      LIMIT ?
+    `);
+    stmt.bind([Math.max(1, Math.min(20, limit))]);
+
+    const results = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    return results;
+  } catch (error) {
+    console.error('Failed to get top media weights:', error);
+    throw error;
+  }
+}
+
+/**
  * Clear the entire database
  */
 async function clearAll() {
@@ -1362,6 +1461,9 @@ module.exports = {
   // History
   setWatchHistory,
   getWatchHistory,
+  // Media preference weights (Because You Watched / recommendations)
+  addMediaWeight,
+  getTopMediaWeights,
   // Playback position (resume)
   setVideoPosition,
   // Downloads

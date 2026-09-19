@@ -65,6 +65,10 @@ const api = {
   setWatchHistory: (videoData) => ipcRenderer.invoke('db:setHistory', videoData),
   getWatchHistory: () => ipcRenderer.invoke('db:getHistory'),
 
+  // Media preference weights (Because You Watched / recommended mixes)
+  addMediaWeight: (payload) => ipcRenderer.invoke('db:addMediaWeight', payload),
+  getTopMediaWeights: (payload) => ipcRenderer.invoke('db:getTopMediaWeights', payload),
+
   // Database management
   clearAll: () => ipcRenderer.invoke('db:clearAll'),
 

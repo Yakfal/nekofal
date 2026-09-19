@@ -266,7 +266,7 @@ const Cinema = () => {
   return (
     <div className="cinema-page">
       <div className="cinema-header">
-        <h1 className="page-title">Classic Cinema</h1>
+        <h1 className="page-title">Free Movies</h1>
         <p className="cinema-subtitle">Public-domain films from the Internet Archive. Browse, search, and play classic features.</p>
       </div>
 

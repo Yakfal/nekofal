@@ -2606,6 +2606,41 @@ ipcMain.handle('db:getHistory', async () => {
   }
 });
 
+ipcMain.handle('db:addMediaWeight', async (_event, payload) => {
+  try {
+    const { db, error } = getDbSafe();
+    if (error) return { success: false, error: 'Database not available: ' + error };
+
+    const result = await db.addMediaWeight(payload || {});
+
+    return { success: true, data: result };
+  } catch (err) {
+    console.error('Add media weight error:', err);
+    return {
+      success: false,
+      error: 'Failed to adjust media weight'
+    };
+  }
+});
+
+ipcMain.handle('db:getTopMediaWeights', async (_event, payload) => {
+  try {
+    const { db, error } = getDbSafe();
+    if (error) return { success: false, error: 'Database not available: ' + error };
+
+    const result = await db.getTopMediaWeights(payload || {});
+
+    return { success: true, data: result };
+  } catch (err) {
+    console.error('Get top media weights error:', err);
+    return {
+      success: false,
+      error: 'Failed to get top media weights'
+    };
+  }
+});
+
+
 ipcMain.handle('db:clearAll', async () => {
   try {
     const { db, error } = getDbSafe();

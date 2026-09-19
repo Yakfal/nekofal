@@ -1,0 +1,8 @@
+
+## 1.0.23
+
+### Recommendations Engine (Because You Watched)
+- NEW: Backend media-weights recommendation engine (db / media_weights table) with genre-tag scoped weights.
+- NEW: db:addMediaWeight and db:getTopMediaWeights database + IPC + preload wiring.
+- NEW: Home page shelves retitled (Free Movies shelf + Live Channels header).
+- IMPROVED: Deduplicated recommendation IPC handlers.

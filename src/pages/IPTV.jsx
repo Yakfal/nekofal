@@ -208,7 +208,7 @@ function IPTV() {
   return (
     <div className="iptv-page">
       <div className="iptv-header">
-        <h1>IPTV / Live TV</h1>
+        <h1>Live Channels</h1>
         <p>Import any M3U playlist — every channel is saved and organized by category automatically.</p>
       </div>
 
