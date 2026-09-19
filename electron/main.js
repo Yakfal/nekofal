@@ -1613,7 +1613,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
         return {
           success: true,
           streamUrl: info.m3u8,
-          isHls: true,
+          isHls: /\.m3u8/i.test(info.m3u8),
           extractor: info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8',
           title: info.title,
           duration: info.duration,
@@ -3519,6 +3519,27 @@ function pornhubViewkey(u) {
   return m ? m[1] : '';
 }
 
+// ---- Shared HTML-search junk filter ----------------------------------------
+// Several adult grids (xHamster / XNXX / Pornhub / XVideos) interleave real
+// video thumbs with category thumbnails, language-switch chips, profile/avatar
+// links and broken blocks. These predicates are the universal garbage filter:
+// reject image-file URLs (.png/.jpg/...), category/language filter paths
+// (/tags/, /languages/, /spanish/...), and chip-style language/image titles.
+const SCRAPE_LANG_TEXT = /^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i;
+const SCRAPE_FILTER_PATH = /\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese)\//i;
+const SCRAPE_IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i;
+
+function isScrapeJunkUrl(url) {
+  const u = String(url || '');
+  return SCRAPE_IMAGE_FILE.test(u) || SCRAPE_FILTER_PATH.test(u);
+}
+
+function isScrapeJunkTitle(title) {
+  const t = String(title || '').trim();
+  if (!t) return false;
+  return SCRAPE_LANG_TEXT.test(t) || /\.(?:png|jpe?g|gif|webp)\b/i.test(t);
+}
+
 // Flat-playlist enumerations (YouTube especially) often omit a top-level
 // `thumbnail` and only expose a `thumbnails` ladder that starts at 120x90.
 // Pick the largest entry so hero banners and cards get a crisp image.
@@ -3550,12 +3571,16 @@ function normalizeSearchEntry(entry, fallbackSite) {
   };
 }
 
-// ---- Hanime v8 engine ------------------------------------------------
-// Native API: https://hanime.tv/api/v8/search (POST) returns elastic hits with
-// slugs; https://hanime.tv/api/v8/video?id={slug} returns the videos_manifest
-// with the master .m3u8. Requests go over net.fetch (Chromium stack) with
-// standard browser headers, so cookies/TLS look like a normal browser session.
+// ---- Hanime engine ----------------------------------------------------
+// Search goes through the active Hanime search service (the same upstream the
+// backend gateway proxies for /api/scrape/hanime): POST search_text/json to
+// https://search.htv-services.com/ returns elastic hits with slugs. The old
+// hanime.tv/api/v8/search shard gets sunset/rotated behind Cloudflare, while
+// this service key stays reachable. Video detail still uses the native v8
+// endpoint (https://hanime.tv/api/v8/video?id={slug}) which returns the
+// videos_manifest with the master .m3u8 (or a direct .mp4 fallback stream).
 const HANIME_API = 'https://hanime.tv/api/v8';
+const HANIME_SEARCH_API = 'https://search.htv-services.com/';
 
 // Cloudflare-bypass header block for the offscreen webview sniff fallback.
 // Presenting a full desktop-browser header set on the initial page load (plus
@@ -3587,37 +3612,58 @@ function hanimeHeaders(cookieHeader, browser = false) {
 }
 
 async function hanimeV8Search(query, count = 25) {
+  const text = String(query || '').trim();
   const body = {
-    search_text: String(query || '').trim(),
+    search_text: text,
     tags: [],
-    brands: []
+    tags_match: 'or',
+    keyword: text,
+    page: 0,
+    order_by: '',
+    ordering: 'desc',
+    c_type_filter: '',
+    is_bunny: true
   };
   const cookieHeader = await getSessionCookieHeader('https://hanime.tv/');
-  const res = await fetch(`${HANIME_API}/search`, {
+  const res = await fetch(HANIME_SEARCH_API, {
     method: 'POST',
     headers: hanimeHeaders(cookieHeader),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(20000)
   });
-  if (!res.ok) throw new Error(`Hanime v8 search HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Hanime search HTTP ${res.status}`);
   const data = await res.json();
-  const hits = (data && data.data && data.data.hits && data.data.hits.hits) || [];
+  // htv-services answers with the v8-shaped elastic payload; tolerate a few
+  // structural variants so a format shuffle upstream never returns zero rows.
+  const nestedHits = data && data.data && data.data.hits && (data.data.hits.hits || data.data.hits);
+  const hits = Array.isArray(nestedHits)
+    ? nestedHits
+    : (Array.isArray(data && data.hits) ? data.hits : []);
   const videos = [];
   for (const h of hits) {
     const src = h && h._source ? h._source : (h || {});
-    const slug = h && h._source ? h._source.slug : (h.slug || '');
+    const slug = src.slug || (h && h._source && h._source.slug) || '';
     if (!slug) continue;
     const pageUrl = `https://hanime.tv/videos/hentai/${slug}`;
+    // Some hit payloads embed the playable stream (master .m3u8 or direct
+    // .mp4) directly; when present use it as videoUrl so playback skips the
+    // extra video?id round-trip. Otherwise keep the page URL for the resolver.
+    const rawStream = String(src.stream_url || src.hls_url || src.video_url || src.url || '').trim();
+    const directStream = (rawStream && (/\.m3u8/i.test(rawStream) || /\.mp4/i.test(rawStream)))
+      ? rawStream
+      : '';
     videos.push({
       id: scrapeVideoId('hanime', pageUrl, slug),
       title: (src.name || 'Untitled').trim(),
       thumbnailUrl: src.poster_url || src.cover_url || src.thumb_url || '',
-      videoUrl: pageUrl,
+      videoUrl: directStream || pageUrl,
       pageUrl,
+      isHLS: /\.m3u8/i.test(directStream),
+      httpHeaders: directStream ? { 'Referer': 'https://hanime.tv/', 'Origin': 'https://hanime.tv' } : null,
       duration: src.duration_in_ms ? Math.floor(Number(src.duration_in_ms) / 1000) : 0,
       category: 'Hanime',
       sourceSite: 'hanime.tv',
-      extractor: 'hanime-v8',
+      extractor: directStream ? 'hanime-search-direct' : 'hanime-v8',
       description: src.description || ''
     });
     if (videos.length >= count) break;
@@ -3637,16 +3683,29 @@ async function hanimeV8Video(slug) {
   const v = data && data.data ? data.data.video : (data.video || data);
   if (!v) throw new Error('Hanime video payload missing');
   const manifest = v.videos_manifest;
-  const server = (manifest && Array.isArray(manifest.servers) && manifest.servers[0]) || null;
-  const stream = server && server.streams && server.streams[0];
-  const m3u8 = (stream && stream.url) || '';
+  const servers = (manifest && Array.isArray(manifest.servers)) ? manifest.servers : [];
+  // Walk every server/stream for a master .m3u8 first, then a direct .mp4, so
+  // the returned stream is always the cleanest playable URL (never a page).
+  let m3u8 = '';
+  let direct = '';
+  for (const server of servers) {
+    const streams = (server && Array.isArray(server.streams)) ? server.streams : [];
+    for (const stream of streams) {
+      const streamUrl = String((stream && stream.url) || '').trim();
+      if (!streamUrl) continue;
+      if (/\.m3u8/i.test(streamUrl)) { m3u8 = streamUrl; break; }
+      if (!direct && /\.mp4/i.test(streamUrl)) direct = streamUrl;
+    }
+    if (m3u8) break;
+  }
+  const playable = m3u8 || direct;
   return {
     id: String(v.id || slug),
     title: v.name || v.title || 'Untitled',
     thumbnailUrl: v.poster_url || v.cover_url || '',
     duration: v.duration_in_ms ? Math.floor(Number(v.duration_in_ms) / 1000) : 0,
-    m3u8,
-    canPlay: /\.m3u8/i.test(m3u8) || /m3u8/i.test(m3u8)
+    m3u8: playable,
+    canPlay: /\.m3u8/i.test(playable) || /\.mp4/i.test(playable)
   };
 }
 
@@ -3831,6 +3890,10 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
 
     const profile = block.find('.profile-name').first().text().trim();
     if (!abs.startsWith('http')) return;
+    // Sanitize: skip image/avatar URLs and category/language filter links, and
+    // require a real duration — the mozaique grid also embeds non-video thumbs.
+    if (isScrapeJunkUrl(abs)) return;
+    if (!duration) return;
 
     videos.push({
       id: scrapeVideoId('xvideos', abs, xvideosVideoKey(abs)),
@@ -3881,6 +3944,9 @@ for (var i = 0; i < blocks.length; i++) {
   var dur = 0;
   var dm = d.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
   if (dm) dur = (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
+  if (!dur) continue;
+  if (/\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i.test(abs)) continue;
+  if (/\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese)\//i.test(abs)) continue;
   var profile = (b.querySelector('.profile-name') || {}).textContent || '';
   out.push({ title: title.slice(0, 200), thumb: thumb, url: abs, duration: dur, profile: profile.trim() });
   if (out.length >= __LIMIT__) break;
@@ -3986,6 +4052,7 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
     // A result without a thumbnail image is a filter chip / broken card, not a video.
     if (!thumb) return;
     const duration = pornhubCardDuration(card.find('.duration, .video-duration, var.duration').first().text());
+    if (!duration) return;
 
     videos.push({
       id: scrapeVideoId('pornhub', abs, pornhubViewkey(abs)),
@@ -4044,6 +4111,7 @@ for (var i = 0; i < cards.length; i++) {
   var dur = 0;
   var dm = d.match(/(?:(\\d+)h\\s*)?(\\d+):(\\d+)/);
   if (dm) dur = (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
+  if (!dur) continue;
   seen[abs] = true;
   out.push({ title: title.slice(0, 200), thumb: thumb, url: abs, duration: dur });
 }
@@ -4072,6 +4140,168 @@ async function pornhubStealthSearch(searchUrl, count = 25) {
     sourceSite: 'pornhub.com',
     extractor: 'pornhub-stealth'
   })).slice(0, count || 25);
+}
+
+// ---- xHamster search -------------------------------------------------------
+// xhamster's search page interleaves real video thumbs (.video-thumb) with
+// sidebar category/language chips that reuse similar markup. Match strictly on
+// the .video-thumb containers, require a real /videos/{slug}-{id} video link,
+// junk-filter the URL + title, and demand a duration before accepting a hit.
+function xhamsterVideoKey(u) {
+  const m = String(u || '').match(/\/videos\/([^/?#]+)/i);
+  return m ? m[1] : '';
+}
+
+async function xhamsterSearchHtml(searchUrl, count = 25) {
+  const cheerio = require('cheerio');
+  const browserHeaders = {
+    'User-Agent': PH_UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://xhamster.com/',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-site',
+    'DNT': '1'
+  };
+
+  const res = await net.fetch(searchUrl, {
+    method: 'GET',
+    headers: browserHeaders,
+    signal: AbortSignal.timeout(20000),
+    redirect: 'follow'
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  const videos = [];
+
+  $('.video-thumb').each((_i, el) => {
+    const block = $(el);
+    const link = block.find('a[href*="/videos/"]').first();
+    if (!link.length) return;
+    const href = String(link.attr('href') || '');
+    const abs = /^https?:/i.test(href) ? href : `https://xhamster.com${href}`;
+    if (!/^https?:/i.test(abs)) return;
+    if (!/\/videos\//i.test(abs)) return;
+    if (isScrapeJunkUrl(abs)) return;
+    const title = (
+      block.find('.thumb-title a').attr('title') ||
+      link.attr('title') ||
+      block.find('img').first().attr('alt') ||
+      'Untitled'
+    ).trim().substring(0, 200);
+    if (isScrapeJunkTitle(title)) return;
+    const img = block.find('img').first();
+    const thumb = img.attr('data-src') || img.attr('data-lazy-src') || img.attr('src') || '';
+    const durText = block.find('.duration, var.duration, .thumb-duration').first().text().trim();
+    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
+    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    // A thumb without a duration is a category/avatar card, not a video.
+    if (!duration) return;
+
+    videos.push({
+      id: scrapeVideoId('xhamster', abs, xhamsterVideoKey(abs)),
+      title: title || 'Untitled',
+      thumbnailUrl: thumb,
+      videoUrl: abs,
+      pageUrl: abs,
+      duration,
+      category: 'xHamster',
+      sourceSite: 'xhamster.com',
+      extractor: 'xhamster-html'
+    });
+  });
+
+  const seen = new Set();
+  return videos
+    .filter(v => {
+      if (seen.has(v.videoUrl)) return false;
+      seen.add(v.videoUrl);
+      return true;
+    })
+    .slice(0, count || 25);
+}
+
+// ---- XNXX search -----------------------------------------------------------
+// XNXX reuses the xvideos-family ".mozaique .thumb-block" result grid. Parse
+// only real /video-{id} thumbs, sanitize junk URLs/titles, and require a
+// duration (same rules as the xvideos and pornhub parsers above).
+function xnxxVideoKey(u) {
+  const m = String(u || '').match(/\/video-([0-9]+)/i);
+  return m ? m[1] : '';
+}
+
+async function xnxxSearchHtml(searchUrl, count = 25) {
+  const cheerio = require('cheerio');
+  const browserHeaders = {
+    'User-Agent': PH_UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.xnxx.com/',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-site',
+    'DNT': '1'
+  };
+
+  const res = await net.fetch(searchUrl, {
+    method: 'GET',
+    headers: browserHeaders,
+    signal: AbortSignal.timeout(20000),
+    redirect: 'follow'
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  const videos = [];
+
+  $('.mozaique .thumb-block').each((_i, el) => {
+    const block = $(el);
+    const link = block.find('a[href*="/video-"]').first();
+    if (!link.length) return;
+    const href = String(link.attr('href') || '');
+    const abs = /^https?:/i.test(href) ? href : `https://www.xnxx.com${href}`;
+    if (!/^https?:/i.test(abs)) return;
+    if (!/\/video-/i.test(abs)) return;
+    if (isScrapeJunkUrl(abs)) return;
+    const title = (
+      block.find('.title a').attr('title') ||
+      link.attr('title') ||
+      block.find('img').first().attr('alt') ||
+      'Untitled'
+    ).trim().substring(0, 200);
+    if (isScrapeJunkTitle(title)) return;
+    const img = block.find('img').first();
+    const thumb = img.attr('data-src') || img.attr('src') || '';
+    const durText = block.find('.duration').text().trim();
+    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
+    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    if (!duration) return;
+
+    videos.push({
+      id: scrapeVideoId('xnxx', abs, xnxxVideoKey(abs)),
+      title: title || 'Untitled',
+      thumbnailUrl: thumb,
+      videoUrl: abs,
+      pageUrl: abs,
+      duration,
+      category: 'XNXX',
+      sourceSite: 'xnxx.com',
+      extractor: 'xnxx-html'
+    });
+  });
+
+  const seen = new Set();
+  return videos
+    .filter(v => {
+      if (seen.has(v.videoUrl)) return false;
+      seen.add(v.videoUrl);
+      return true;
+    })
+    .slice(0, count || 25);
 }
 
 // Base URL of the self-hosted Express gateway (same server as PocketBase,
@@ -4235,6 +4465,37 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       if (xvVideos.length > 0) {
         console.log(`[web:search] xvideos search returned ${xvVideos.length} results`);
         return { success: true, source: 'xvideos', videos: xvVideos };
+      }
+    }
+
+    // xHamster mixes real video thumbs (.video-thumb) with category/language
+    // chips, so parse the grid with xhamster-specific selectors + the shared
+    // junk/duration filter instead of generic card walkers.
+    if (/^https?:\/\//i.test(target) && /(^|\.)xhamster\.com$/i.test(new URL(target).hostname)) {
+      const xhSearchUrl = 'https://xhamster.com/search.php?q=' + encodeURIComponent(q);
+      try {
+        const xhVideos = await xhamsterSearchHtml(xhSearchUrl, count);
+        if (xhVideos.length > 0) {
+          console.log(`[web:search] xhamster search returned ${xhVideos.length} results`);
+          return { success: true, source: 'xhamster', videos: xhVideos };
+        }
+      } catch (xhErr) {
+        console.warn(`[web:search] xhamster HTML search failed: ${xhErr.message}`);
+      }
+    }
+
+    // XNXX reuses the xvideos-family ".mozaique .thumb-block" grid; parse it
+    // strictly (real /video-{id} links only, junk-filtered, duration required).
+    if (/^https?:\/\//i.test(target) && /(^|\.)xnxx\.com$/i.test(new URL(target).hostname)) {
+      const xnSearchUrl = 'https://www.xnxx.com/search/' + encodeURIComponent(q);
+      try {
+        const xnVideos = await xnxxSearchHtml(xnSearchUrl, count);
+        if (xnVideos.length > 0) {
+          console.log(`[web:search] xnxx search returned ${xnVideos.length} results`);
+          return { success: true, source: 'xnxx', videos: xnVideos };
+        }
+      } catch (xnErr) {
+        console.warn(`[web:search] xnxx HTML search failed: ${xnErr.message}`);
       }
     }
 

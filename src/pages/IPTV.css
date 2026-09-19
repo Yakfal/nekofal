@@ -132,36 +132,6 @@
   font-size: 0.85rem;
 }
 
-.iptv-folder-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 14px;
-}
-
-.iptv-folder {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px;
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.15s, transform 0.15s;
-}
-
-.iptv-folder:hover {
-  border-color: var(--accent);
-  transform: translateY(-2px);
-}
-
-.iptv-folder-icon { font-size: 1.5rem; }
-.iptv-folder-name { font-weight: 700; font-size: 0.88rem; word-break: break-word; }
-.iptv-folder-count { color: var(--text-dim); font-size: 0.74rem; }
-
 .iptv-crumb {
   display: flex;
   align-items: center;
@@ -170,13 +140,6 @@
 }
 
 .iptv-crumb .iptv-h2 { margin: 0; }
-
-.iptv-channel-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
-  padding: 16px 0 40px;
-}
 
 .iptv-empty {
   margin: 40px 0;
@@ -206,14 +169,21 @@
 
 .iptv-toast.err { background: #dc2626; }
 
+/* ---- Horizontal category tab bar ----------------------------------------- */
 .iptv-tabs {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  margin: 18px 0 6px;
+  margin: 18px 0 14px;
+  padding-bottom: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .iptv-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-muted);
@@ -221,6 +191,7 @@
   padding: 7px 14px;
   font-size: 0.82rem;
   font-weight: 700;
+  white-space: nowrap;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
@@ -236,17 +207,48 @@
   color: var(--text);
 }
 
-.iptv-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 14px 0 2px;
-  flex-wrap: wrap;
+.iptv-tab-count {
+  font-size: 0.66rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 1px 7px;
+  line-height: 1.4;
 }
 
-.iptv-search {
-  flex: 1 1 260px;
+.iptv-tab.active .iptv-tab-count { color: var(--text); }
+
+/* ---- Xuper two-pane layout ----------------------------------------------- */
+.iptv-split {
+  display: flex;
+  gap: 18px;
+  align-items: stretch;
+  min-height: 560px;
 }
+
+.iptv-pane-list {
+  flex: 0 0 40%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.iptv-pane-list .iptv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  margin: 0;
+  flex-wrap: nowrap;
+}
+
+.iptv-pane-list .iptv-search { flex: 1 1 auto; min-width: 0; padding: 9px 12px; font-size: 0.85rem; }
 
 .iptv-sort {
   background: var(--input-bg);
@@ -260,14 +262,235 @@
 }
 
 .iptv-sort:focus { border-color: var(--accent); }
+
+.iptv-pane-list .iptv-sort {
+  flex: 0 0 auto;
+  padding: 9px 10px;
+  font-size: 0.8rem;
+}
+
+.iptv-channel-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 400px;
+  max-height: 640px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.iptv-channel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: var(--input-bg);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.iptv-channel-row:hover {
+  border-color: var(--accent);
+}
+
+.iptv-channel-row.active {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.iptv-channel-logo {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 32px;
+  object-fit: contain;
+  object-position: center;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.iptv-channel-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.iptv-channel-name {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iptv-channel-pill {
+  align-self: flex-start;
+  background: rgba(139, 92, 246, 0.16);
+  color: #c4b5fd;
+  font-size: 0.64rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 8px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.iptv-channel-pill.big {
+  align-self: auto;
+  font-size: 0.72rem;
+  padding: 3px 10px;
+}
+
+/* ---- Right pane: embedded player + details -------------------------------- */
+.iptv-pane-player {
+  flex: 1 1 60%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.iptv-player {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.iptv-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+}
+
+.iptv-player-empty {
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  text-align: center;
+  padding: 20px;
+}
+
+.iptv-details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.iptv-details-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.iptv-details-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.iptv-details-title h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iptv-details-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.iptv-fav-btn {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 7px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.iptv-fav-btn:hover { border-color: var(--accent); color: var(--text); }
+.iptv-fav-btn.active { border-color: #f59e0b; color: #fbbf24; }
+.iptv-fav-btn:disabled { opacity: 0.5; cursor: wait; }
+
+.iptv-stream-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.iptv-stream-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Responsive ------------------------------------------------------------ */
+@media (max-width: 860px) {
+  .iptv-split {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .iptv-pane-list {
+    flex: 0 0 auto;
+  }
+
+  .iptv-channel-list {
+    max-height: 360px;
+  }
+}
+
 /* Language quick-start chips (iptvService quick import). Compact pill row so a
  * user can drop in a whole language playlist without ever opening the form. */
 .iptv-langs { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 2px 14px; }
-.iptv-langchip {
-  border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.04);
+.iptv-lang-chip {
+  border:1px solid var(--border); background:var(--surface);
   color:inherit; font:inherit; font-size:.82rem; padding:5px 12px;
   border-radius:999px; cursor:pointer; transition:border-color .15s ease;
 }
-.iptv-langchip:hover:not(:disabled) { border-color: var(--accent); }
-.iptv-langchip:disabled { opacity:.45; cursor:wait; }
-.iptv-langchip.busy::after { content:'…'; margin-left:4px; }
+.iptv-lang-chip:hover:not(:disabled) { border-color: var(--accent); }
+.iptv-lang-chip:disabled { opacity:.45; cursor:wait; }
+.iptv-lang-chip.busy::after { content:'…'; margin-left:4px; }
