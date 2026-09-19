@@ -589,6 +589,16 @@ function setupWebRequestHeaders() {
     } else {
       headers['Cookie'] = hint.cookie;
     }
+
+    // Pornhub CDN fix: phncdn.com media hosts and pornhub.com pages reject
+    // requests with a missing/wrong Referer or UA. Stamp a www.pornhub.com
+    // referer + desktop Chrome/124 UA on every host in the CDN family so the
+    // HLS segments and player/API calls authenticate (also overrides the
+    // VLC-style UA the isStream branch above would otherwise attach).
+    if (/\.(?:phncdn\.com|pornhub\.com)$/i.test(hostname)) {
+      headers['Referer'] = 'https://www.pornhub.com/';
+      headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    }
     
     callback({ requestHeaders: headers });
   });
@@ -3526,8 +3536,8 @@ function pornhubViewkey(u) {
 // reject image-file URLs (.png/.jpg/...), category/language filter paths
 // (/tags/, /languages/, /spanish/...), and chip-style language/image titles.
 const SCRAPE_LANG_TEXT = /^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i;
-const SCRAPE_FILTER_PATH = /\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese)\//i;
-const SCRAPE_IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i;
+const SCRAPE_FILTER_PATH = /\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese|categor(?:y|ies))\//i;
+const SCRAPE_IMAGE_FILE = /\.(?:png|jpe?g|gif|svg|webp)(?:[?#].*)?$/i;
 
 function isScrapeJunkUrl(url) {
   const u = String(url || '');
@@ -3536,8 +3546,9 @@ function isScrapeJunkUrl(url) {
 
 function isScrapeJunkTitle(title) {
   const t = String(title || '').trim();
-  if (!t) return false;
-  return SCRAPE_LANG_TEXT.test(t) || /\.(?:png|jpe?g|gif|webp)\b/i.test(t);
+  if (!t || t.length < 4) return true;                  // empty / under 4 chars
+  if (/^(?:untitled|image)$/i.test(t)) return true;      // placeholder junk
+  return SCRAPE_LANG_TEXT.test(t) || /\.(?:png|jpe?g|gif|svg|webp)\b/i.test(t);
 }
 
 // Flat-playlist enumerations (YouTube especially) often omit a top-level
@@ -3633,8 +3644,14 @@ async function hanimeV8Search(query, count = 25) {
   });
   if (!res.ok) throw new Error(`Hanime search HTTP ${res.status}`);
   const data = await res.json();
-  // htv-services answers with the v8-shaped elastic payload; tolerate a few
-  // structural variants so a format shuffle upstream never returns zero rows.
+  return parseHanimeSearchPayload(data, count, 'hanime-v8');
+}
+
+// htv-services answers with the v8-shaped elastic payload; tolerate a few
+// structural variants so a format shuffle upstream never returns zero rows.
+// Shared by the direct v8 fetch path and the offscreen stealth capture so
+// both backends produce identical result shapes.
+function parseHanimeSearchPayload(data, count = 25, extractor = 'hanime-v8') {
   const nestedHits = data && data.data && data.data.hits && (data.data.hits.hits || data.data.hits);
   const hits = Array.isArray(nestedHits)
     ? nestedHits
@@ -3663,12 +3680,152 @@ async function hanimeV8Search(query, count = 25) {
       duration: src.duration_in_ms ? Math.floor(Number(src.duration_in_ms) / 1000) : 0,
       category: 'Hanime',
       sourceSite: 'hanime.tv',
-      extractor: directStream ? 'hanime-search-direct' : 'hanime-v8',
+      extractor: directStream ? 'hanime-search-direct' : extractor,
       description: src.description || ''
     });
     if (videos.length >= count) break;
   }
   return videos;
+}
+
+// v1.0.29: offscreen stealth Hanime search. Instead of POSTing straight to
+// search.htv-services.com from a plain net.fetch (which Cloudflare challenges
+// when the request leaves the freed session), navigate the hidden offscreen
+// window to https://hanime.tv/search?q=... and let the page's own React app
+// issue the htv-services POST with a genuine browser fingerprint. Electron 28
+// removed the body-capturing webRequest.filter() stream API, so response
+// payloads are captured via the CDP (webContents.debugger) network protocol
+// (Network.responseReceived -> Network.getResponseBody on loadingFinished).
+// If no payload arrives (the SPA did not auto-submit from the query string),
+// fall back to reading the rendered result cards out of the live DOM.
+const HANIME_DOM_SCRIPT = `
+(function(){
+  var out = [];
+  var seen = {};
+  var anchors = [].slice.call(document.querySelectorAll('a[href*="/videos/hentai/"]'));
+  for (var i = 0; i < anchors.length && out.length < __LIMIT__; i++) {
+    var a = anchors[i];
+    var raw = String(a.getAttribute('href') || '');
+    if (!raw || raw.charAt(0) === '#') continue;
+    var abs;
+    try { abs = new URL(raw, location.href).href; } catch (e) { continue; }
+    if (seen[abs]) continue;
+    if (/\.(png|jpe?g|gif|svg|webp)([?#]|$)/i.test(abs)) continue;
+    var img = a.querySelector('img');
+    var thumb = img ? (img.getAttribute('data-src') || img.getAttribute('src') || '') : '';
+    var title = (a.getAttribute('title') || (img ? img.getAttribute('alt') : '') || '').trim();
+    if (!title || title.length < 4 || /^(untitled|image)$/i.test(title)) title = 'Untitled';
+    var durText = '';
+    var nodes = a.querySelectorAll('.duration, [class*="duration"]');
+    for (var k = 0; k < nodes.length; k++) { durText = (nodes[k].textContent || '').trim(); if (durText) break; }
+    if (!durText) {
+      var tx = a.textContent.match(/(?:\\d+h\\s*)?\\d{1,2}:\\d{2}/);
+      durText = tx ? tx[0] : '';
+    }
+    seen[abs] = true;
+    out.push({ title: title, thumb: thumb, url: abs, durationText: durText });
+  }
+  return { out: out, href: location.href, title: document.title };
+})();
+`;
+
+async function hanimeStealthSearch(query, count = 25) {
+  const text = String(query || '').trim();
+  if (!text) return [];
+  const searchUrl = 'https://hanime.tv/search?q=' + encodeURIComponent(text);
+  const win = ensureStealthWindow();
+  const payloads = [];
+  const pendingIds = new Map();
+  let attached = false;
+
+  // 1) CDP network capture: record every search.htv-services.com response body
+  //    as it lands, so results come straight from the network layer.
+  try {
+    win.webContents.debugger.attach('1.3');
+    attached = true;
+    win.webContents.debugger.on('message', (_event, method, params) => {
+      if (!params) return;
+      if (method === 'Network.responseReceived' || method === 'Network.requestWillBeSent') {
+        const u = (params.response && params.response.url) || (params.request && params.request.url) || '';
+        const id = params.requestId;
+        if (id && u && /search\.htv-services\.com/i.test(String(u))) pendingIds.set(id, String(u));
+      }
+      if (method === 'Network.loadingFinished') {
+        const id = params.requestId;
+        if (!id || !pendingIds.has(id)) return;
+        win.webContents.debugger.sendCommand('Network.getResponseBody', { requestId: id })
+          .then(({ body, base64Encoded }) => {
+            const rawText = Buffer.isBuffer(body)
+              ? body.toString('utf8')
+              : (base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : String(body || ''));
+            let json = null;
+            try { json = JSON.parse(rawText); } catch (_e) { json = null; }
+            if (json) payloads.push({ url: pendingIds.get(id), json });
+          })
+          .catch(() => { /* frame navigated away before body fetch */ })
+          .finally(() => pendingIds.delete(id));
+      }
+    });
+    await win.webContents.debugger.sendCommand('Network.enable');
+  } catch (err) {
+    console.warn(`[hanimeStealthSearch] CDP attach failed (DOM fallback only): ${err.message}`);
+  }
+
+  try {
+    const load = await loadInStealth(searchUrl, { pauseAfterLoadMs: 2000, challengeTimeoutMs: 20000, timeoutMs: 30000 });
+    if (!load.success) throw new Error(`hanime search page load failed: ${load.error}`);
+
+    // Wait for the page's own POST to htv-services to land (then catch any
+    // stragglers), so the network path is preferred over DOM scraping.
+    const payloadDeadline = Date.now() + 10000;
+    while (payloads.length === 0 && Date.now() < payloadDeadline && !win.isDestroyed()) {
+      await sleep(500);
+    }
+    await sleep(500);
+
+    // 2) Network payload path: parse the captured htv-services responses.
+    for (const { url, json } of payloads) {
+      const parsed = parseHanimeSearchPayload(json, count, 'hanime-stealth-search');
+      if (parsed.length > 0) {
+        console.log(`[hanimeStealthSearch] captured ${parsed.length} hits from ${url}`);
+        return parsed;
+      }
+    }
+
+    // 3) DOM fallback: read the rendered result cards from the live page.
+    for (let i = 0; i < 15; i++) {
+      if (win.isDestroyed()) break;
+      const res = await evalInStealth(buildAutoSearchScript(HANIME_DOM_SCRIPT, { limit: count }), 6000);
+      if (res && res.__stealthError) throw new Error(`hanime DOM extract failed: ${res.__stealthError}`);
+      const out = (res && Array.isArray(res.out)) ? res.out : [];
+      const valid = out.filter(e => e && e.url && !isScrapeJunkUrl(e.url));
+      if (valid.length > 0) {
+        return valid.map(r => {
+          const m = (r.durationText || '').match(/(?:(\d+)h\s*)?(\d{1,2}):(\d{2})/);
+          const duration = m ? (m[1] ? parseInt(m[1], 10) * 3600 : 0) + parseInt(m[2], 10) * 60 + parseInt(m[3], 10) : 0;
+          return {
+            id: scrapeVideoId('hanime', r.url),
+            title: String(r.title || 'Untitled').trim().substring(0, 200),
+            thumbnailUrl: r.thumb || '',
+            videoUrl: r.url,
+            pageUrl: r.url,
+            isHLS: false,
+            httpHeaders: { 'Referer': 'https://hanime.tv/', 'Origin': 'https://hanime.tv' },
+            duration,
+            category: 'Hanime',
+            sourceSite: 'hanime.tv',
+            extractor: 'hanime-stealth-search'
+          };
+        });
+      }
+      await sleep(700);
+    }
+    return [];
+  } finally {
+    if (attached) {
+      try { win.webContents.debugger.detach(); } catch (_e) { /* already detached */ }
+    }
+  }
 }
 
 async function hanimeV8Video(slug) {
@@ -3799,36 +3956,34 @@ async function resolvePornhubStream(pageUrl) {
 
 async function searchHanime(query, count = 25) {
   let lastErr = null;
-  // Fast path: official v8 search API. It now re-attaches the cf_clearance /
-  // __cf_bm cookies the stealth browser stored in defaultSession, so the POST
-  // presents the same cleared session to Cloudflare instead of re-challenging.
+
+  // Primary (v1.0.29): offscreen stealth search. The hidden browser window
+  // loads https://hanime.tv/search?q=..., auto-solves Cloudflare/Turnstile,
+  // and its own React app issues the htv-services.com POST with a real browser
+  // fingerprint; the response payload is captured from the network layer (CDP)
+  // or read back from the rendered DOM.
+  try {
+    const stealthVideos = await hanimeStealthSearch(query, count);
+    if (stealthVideos.length > 0) return stealthVideos;
+    lastErr = new Error('stealth search returned no results');
+  } catch (stealthErr) {
+    lastErr = stealthErr;
+    console.warn(`[searchHanime] stealth search failed, falling back to v8 API: ${stealthErr.message}`);
+  }
+
+  // Fallback: direct v8 search API — still works while the cleared
+  // cf_clearance / __cf_bm cookies from a prior stealth visit live in
+  // session.defaultSession, so the POST presents the same freed session.
   try {
     const v8 = await hanimeV8Search(query, count);
     if (v8.length > 0) return v8;
   } catch (v8Err) {
     lastErr = v8Err;
-    console.warn(`[searchHanime] v8 search failed, falling back to stealth browser: ${v8Err.message}`);
-  }
-
-  // Stealth browser: drive https://hanime.tv/search inside the offscreen window
-  // (genuine fingerprint, Turnstile auto-solved, cf_clearance stored in
-  // defaultSession) and read the rendered result cards straight from the DOM.
-  try {
-    const stealthVideos = await stealthAutoSearch('https://hanime.tv/search', query, count);
-    if (stealthVideos.length > 0) {
-      const hanimeLinks = stealthVideos.filter(v => /hanime\.tv\/videos\/hentai\//i.test(v.videoUrl || ''));
-      if (hanimeLinks.length > 0) {
-        console.log(`[searchHanime] stealth DOM returned ${hanimeLinks.length} results`);
-        return hanimeLinks.slice(0, count);
-      }
-    }
-  } catch (stealthErr) {
-    lastErr = stealthErr;
-    console.warn(`[searchHanime] stealth search failed: ${stealthErr.message}`);
+    console.warn(`[searchHanime] v8 search failed: ${v8Err.message}`);
   }
 
   const e = lastErr || new Error('No Hanime search backend reachable');
-  e.message += ' (Hanime v8 API and stealth hanime.tv/search are currently unreachable/blocked)';
+  e.message += ' (Hanime stealth search and v8 API are currently unreachable/blocked)';
   throw e;
 }
 
@@ -4177,13 +4332,16 @@ async function xhamsterSearchHtml(searchUrl, count = 25) {
   const $ = cheerio.load(html);
   const videos = [];
 
-  $('.video-thumb').each((_i, el) => {
+  $('.video-thumb, a.video-thumb__image-container').each((_i, el) => {
     const block = $(el);
-    const link = block.find('a[href*="/videos/"]').first();
+    // `a.video-thumb__image-container` IS the video link itself, so use it
+    // directly when the matched element is an anchor; otherwise look inside.
+    const link = block.is('a[href*="/videos/"]') ? block : block.find('a[href*="/videos/"]').first();
     if (!link.length) return;
     const href = String(link.attr('href') || '');
     const abs = /^https?:/i.test(href) ? href : `https://xhamster.com${href}`;
     if (!/^https?:/i.test(abs)) return;
+    // Strict: real xHamster results always live under /videos/.
     if (!/\/videos\//i.test(abs)) return;
     if (isScrapeJunkUrl(abs)) return;
     const title = (
@@ -4258,14 +4416,15 @@ async function xnxxSearchHtml(searchUrl, count = 25) {
   const $ = cheerio.load(html);
   const videos = [];
 
-  $('.mozaique .thumb-block').each((_i, el) => {
+  $('.mozaique .thumb-block, #content .thumb-block').each((_i, el) => {
     const block = $(el);
-    const link = block.find('a[href*="/video-"]').first();
+    const link = block.find('a[href*="/video-"], a[href*="/video/"]').first();
     if (!link.length) return;
     const href = String(link.attr('href') || '');
     const abs = /^https?:/i.test(href) ? href : `https://www.xnxx.com${href}`;
     if (!/^https?:/i.test(abs)) return;
-    if (!/\/video-/i.test(abs)) return;
+    // Strict: only real /video-{id} (classic) or /video/{slug} result pages.
+    if (!/\/video-|\/video\//i.test(abs)) return;
     if (isScrapeJunkUrl(abs)) return;
     const title = (
       block.find('.title a').attr('title') ||
