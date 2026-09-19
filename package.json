@@ -1,6 +1,6 @@
 {
   "name": "nekofal",
-  "version": "1.0.24",
+  "version": "1.0.25",
   "description": "Nekofal - Desktop media streaming hub",
   "main": "electron/main.js",
   "scripts": {
@@ -10,7 +10,7 @@
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "node scripts/dist.js",
-    "dist:publish": "node scripts/dist.js --publish",
+    "dist:publish": "node scripts/dist.js --publish && node scripts/publish-release.js",
     "dist:local": "npm run build && electron-builder --win"
   },
   "keywords": [
@@ -100,7 +100,8 @@
       {
         "provider": "github",
         "owner": "Yakfal",
-        "repo": "nekofal"
+        "repo": "nekofal",
+        "releaseType": "release"
       }
     ]
   }

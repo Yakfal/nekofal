@@ -18,3 +18,12 @@
 - NEW: iptvService.js curates the iptv-org language playlists (English, Espa<F1>ol, Fran<E7>ais, Deutsch, <65E5>?<8A9E>, News) and re-uses the proven M3U engine to import any of them in one tap.
 - NEW: Live Channels page now has a language chip row - import an entire language's channel shelf without touching the URL form.
 - IMPROVED: Same dedupe + adult-safety + HLS live detection engine as the main import path - zero new parser risk.
+
+## 1.0.25 - Auto-Update Release Pipeline Fix
+
+### Renderer, now with a real publish step
+- scripts/publish-release.js: promotes every draft release on Yakfal/nekofal
+  to a published (public) release immediately, so the electron-builder
+  auto-update feed (latest.yml) resolves for real users.
+- dist:publish now chains: build -> upload -> publish-release.js (safety belt
+  in case electron-builder ever defaults back to draft mode).
