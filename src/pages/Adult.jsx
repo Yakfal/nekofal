@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import VideoSearchSection from '../components/VideoSearchSection.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import './Adult.css';
 
 const STORAGE_KEY = 'pmh-adult-sites';
@@ -41,6 +42,7 @@ const loadSites = () => {
 };
 
 const Adult = () => {
+  const { t } = useLanguage();
   const [sites, setSites] = useState(loadSites);
   const [activeId, setActiveId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -59,7 +61,7 @@ const Adult = () => {
   const activeSite = sites.find(s => s.id === activeId) || null;
 
   const addSite = () => {
-    const name = form.name.trim() || hostNameOf(form.homepage) || 'Custom Site';
+    const name = form.name.trim() || hostNameOf(form.homepage) || t('adult.customSite');
     const site = {
       id: 'site-' + Date.now(),
       name,
@@ -90,14 +92,14 @@ const Adult = () => {
   return (
     <div className="adult-page">
       <div className="adult-header">
-        <h1>Adult Sites</h1>
-        <p>Search your added sites from here, play, favorite and download. Add any site with a {`{query}`} search template.</p>
+        <h1>{t('nav.adult')}</h1>
+        <p>{t('adult.subtitle')}</p>
       </div>
 
       <div className="adult-sites">
         <div className="adult-chip-row">
           {sites.length === 0 && (
-            <span className="adult-empty-hint">No sites yet — add one below.</span>
+            <span className="adult-empty-hint">{t('adult.noSites')}</span>
           )}
           {sites.map(s => (
             <button
@@ -110,7 +112,7 @@ const Adult = () => {
               <span className="adult-chip-x" onClick={(e) => { e.stopPropagation(); removeSite(s.id); }}>×</span>
             </button>
           ))}
-          <button className="adult-chip add" onClick={() => setShowAdd(true)}>+ Add Site</button>
+          <button className="adult-chip add" onClick={() => setShowAdd(true)}>{t('adult.addSite')}</button>
         </div>
 
         <div className="adult-presets">
@@ -128,13 +130,13 @@ const Adult = () => {
           <div className="adult-add-form">
             <input
               className="adult-input"
-              placeholder="Site name (optional — auto-filled from URL)"
+              placeholder={t('adult.siteNamePlaceholder')}
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
             />
             <input
               className="adult-input"
-              placeholder="Paste the site main URL  e.g. https://www.xnxx.com"
+              placeholder={t('adult.homeUrlPlaceholder')}
               value={form.homepage}
               onChange={e => {
                 const homepage = e.target.value;
@@ -152,21 +154,21 @@ const Adult = () => {
             />
             <input
               className="adult-input"
-              placeholder="Search URL with {query} (auto-filled for known sites)"
+              placeholder={t('adult.searchUrlPlaceholder')}
               value={form.searchTemplate}
               onChange={e => setForm({ ...form, searchTemplate: e.target.value, detected: false })}
             />
             <div className="adult-add-actions">
-              <button className="adult-btn primary" onClick={addSite} disabled={!form.name.trim() && !form.homepage.trim()}>Save site</button>
-              <button className="adult-btn" onClick={() => setShowAdd(false)}>Cancel</button>
+              <button className="adult-btn primary" onClick={addSite} disabled={!form.name.trim() && !form.homepage.trim()}>{t('adult.saveSite')}</button>
+              <button className="adult-btn" onClick={() => setShowAdd(false)}>{t('common.cancel')}</button>
             </div>
             {form.detected && (
               <p className="adult-hint ok">
-                Auto-detected search URL for this site — searching will work right away. You can edit it above.
+                {t('adult.detectedHint')}
               </p>
             )}
             <p className="adult-hint">
-              Tip: if the URL isn't auto-detected, just paste the homepage — the app drives the site's own search box. For known sites (XVideos, XNXX, Pornhub) the correct search URL is filled in for you; no need to know the ?k= format.
+              {t('adult.tip')}
             </p>
           </div>
         )}
@@ -174,21 +176,21 @@ const Adult = () => {
 
       <VideoSearchSection
         key={activeId || 'none'}
-        title={activeSite ? `Search · ${activeSite.name}` : 'Search the web'}
+        title={activeSite ? `${t('adult.searchTitle')} · ${activeSite.name}` : t('adult.searchWeb')}
         subtitle={activeSite
-          ? `Searches "${activeSite.name}". Names become site searches, links fetch whole pages.`
-          : 'With no site selected, names search YouTube. Add a site to search inside it.'}
+          ? `${t('adult.searchesSite')} "${activeSite.name}". ${t('adult.namesSitesHint')}`
+          : t('adult.noSiteSubtitle')}
         placeholder={activeSite && activeSite.searchTemplate.includes('{query}')
-          ? `Search ${activeSite.name}…`
+          ? `${t('common.search')} ${activeSite.name}…`
           : activeSite
-            ? `Search ${activeSite.name} by auto-filling its search form…`
-            : 'Enter a name or paste a link…'}
+            ? `${t('common.search')} ${activeSite.name} ${t('adult.byAutoFilling')}`
+            : t('search.searchPlaceholder')}
         tags={siteTag}
         siteUrl={activeSite?.searchTemplate || activeSite?.homepage || null}
         hint={activeSite && activeSite.searchTemplate.includes('{query}')
-          ? `Searching via ${activeSite.searchTemplate.replace('{query}', '…')}`
+          ? `${t('adult.searchingVia')} ${activeSite.searchTemplate.replace('{query}', '…')}`
           : activeSite && activeSite.homepage
-            ? `No search template — driving the site's own search form (${activeSite.homepage.replace(/^https?:\/\//, '')})`
+            ? `${t('adult.noTemplate')} (${activeSite.homepage.replace(/^https?:\/\//, '')})`
             : ''}
         accent="#e11d48"
       />

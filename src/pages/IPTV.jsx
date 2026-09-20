@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Hls from 'hls.js';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
 import { IPTV_LANGUAGE_FEEDS, importLanguageFeed } from '../services/iptvService.js';
@@ -14,6 +15,19 @@ function getApi() { return window.api || window.electronAPI; }
 // category so every channel lands in a predictable bucket and the tab bar
 // above the guide stays small and human readable.
 const PRIMARY_CATEGORIES = ['All', 'General', 'News', 'Movies', 'Series', 'Sports', 'Entertainment', 'Kids'];
+
+// Localized labels for the primary category tab bar (labels are keyed by the
+// stable English bucket; the per-row pills below stay as raw catalog data).
+const CATEGORY_TAB_LABELS = {
+  'All': 'liveTv.tabAll',
+  'General': 'liveTv.tabGeneral',
+  'News': 'liveTv.tabNews',
+  'Movies': 'liveTv.tabMovies',
+  'Series': 'liveTv.tabSeries',
+  'Sports': 'liveTv.tabSports',
+  'Entertainment': 'liveTv.tabEntertainment',
+  'Kids': 'liveTv.tabKids'
+};
 
 const CATEGORY_SYNONYMS = {
   general: 'General', mixed: 'General', misc: 'General', other: 'General',
@@ -139,6 +153,7 @@ function EmbeddedPlayer({ channel }) {
 // Channels are HLS streams masquerading as random extensions; always treat as direct/stream
 function IPTV() {
   const { settings } = useAppSettings();
+  const { t } = useLanguage();
   const familyMode = settings.familyMode;
   const [sources, setSources] = useState([]);
   const [channels, setChannels] = useState([]);
@@ -264,6 +279,37 @@ function IPTV() {
     }
   }, [categorized, selectedChannel]);
 
+  // TV remote zapping: ArrowUp / ArrowDown hop the active channel through the
+  // visible list the user is browsing. The inline search input keeps its arrow
+  // keys (typing must not be hijacked), and the highlighted rail row is kept
+  // in view so zapping never loses the cursor.
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const tag = document.activeElement && document.activeElement.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      // The page stays mounted (keep-alive) while another tab is visible;
+      // a display:none ancestor makes offsetParent null, so ignore keys when
+      // the IPTV view is hidden — don't zap channels the user can't see.
+      const pageEl = document.querySelector('.iptv-page');
+      if (!pageEl || pageEl.offsetParent === null) return;
+      if (!visibleChannels || visibleChannels.length === 0) return;
+      const idx = visibleChannels.findIndex(c => selectedChannel && c.id === selectedChannel.id);
+      let next;
+      if (e.key === 'ArrowDown') {
+        next = idx < 0 ? 0 : (idx + 1) % visibleChannels.length;
+      } else {
+        next = idx <= 0 ? visibleChannels.length - 1 : idx - 1;
+      }
+      e.preventDefault();
+      setSelectedChannel(visibleChannels[next]);
+      const rows = document.querySelectorAll('.iptv-channel-row');
+      if (rows[next]) rows[next].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [visibleChannels, selectedChannel]);
+
   const handleSelectChannel = useCallback((ch) => {
     if (ch) setSelectedChannel(ch);
   }, []);
@@ -382,8 +428,8 @@ function IPTV() {
   return (
     <div className="iptv-page">
       <div className="iptv-header">
-        <h1>Live Channels</h1>
-        <p>Import any M3U playlist — every channel is saved and organized by category automatically.</p>
+        <h1>{t('nav.liveChannels')}</h1>
+        <p>{t('page.liveChannels.subtitle')}</p>
       </div>
 
       {/* Quick-start language feeds: one tap imports that iptv-org playlist
@@ -405,30 +451,30 @@ function IPTV() {
       {/* Source bar */}
       <div className="iptv-sources">
         {sources.length === 0 && !loading && (
-          <span className="iptv-empty-hint">No playlists yet — add your first M3U/M3U8 below.</span>
+          <span className="iptv-empty-hint">{t('liveTv.noPlaylistsYet')}</span>
         )}
         {sources.map(s => (
           <div key={s.id} className="iptv-source">
             <div className="iptv-source-info">
               <strong>{s.name}</strong>
-              <span className="iptv-source-url">{s.channelCount} channels · {s.url}</span>
+              <span className="iptv-source-url">{s.channelCount} {t('common.channels')} · {s.url}</span>
             </div>
             <button className="iptv-mini" onClick={() => handleRefresh(s)} disabled={refreshId === s.id}>
-              {refreshId === s.id ? 'Refreshing…' : '⟳ Refresh'}
+              {refreshId === s.id ? t('liveTv.refreshing') : t('liveTv.refresh')}
             </button>
             <button className="iptv-mini danger" onClick={() => handleRemove(s)}>×</button>
           </div>
         ))}
         <button className="iptv-addsource" onClick={() => setAddOpen(o => !o)}>
-          {addOpen ? '− Hide' : '+ Add Playlist'}
+          {addOpen ? t('liveTv.hide') : t('liveTv.addPlaylist')}
         </button>
       </div>
 
       {addOpen && (
         <form className="iptv-addform" onSubmit={handleAdd}>
-          <input className="iptv-input" placeholder="Name (optional)" value={name} onChange={e => setName(e.target.value)} />
+          <input className="iptv-input" placeholder={t('liveTv.nameOptional')} value={name} onChange={e => setName(e.target.value)} />
           <input className="iptv-input" placeholder="https://example.com/playlist.m3u" value={url} onChange={e => setUrl(e.target.value)} />
-          <button className="iptv-btn primary" disabled={adding}>{adding ? 'Loading…' : 'Import channels'}</button>
+          <button className="iptv-btn primary" disabled={adding}>{adding ? t('liveTv.loading') : t('liveTv.importChannels')}</button>
         </form>
       )}
 
@@ -446,7 +492,7 @@ function IPTV() {
                   className={`iptv-tab ${tab === cat ? 'active' : ''}`}
                   onClick={() => setTab(cat)}
                 >
-                  {cat}
+                  {t(CATEGORY_TAB_LABELS[cat] || cat)}
                   <span className="iptv-tab-count">{count}</span>
                 </button>
               );
@@ -459,7 +505,7 @@ function IPTV() {
               <div className="iptv-toolbar">
                 <input
                   className="iptv-input iptv-search"
-                  placeholder="Search channels by name or group…"
+                  placeholder={t('liveTv.searchPlaceholder')}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
@@ -469,8 +515,8 @@ function IPTV() {
                   onChange={(e) => setSortBy(e.target.value)}
                   aria-label="Sort channels"
                 >
-                  <option value="category">Sort: Category</option>
-                  <option value="alpha">Sort: Name (A–Z)</option>
+                  <option value="category">{t('liveTv.sortCategory')}</option>
+                  <option value="alpha">{t('liveTv.sortAlpha')}</option>
                 </select>
               </div>
 
@@ -496,7 +542,7 @@ function IPTV() {
                 ))}
                 {visibleChannels.length === 0 && (
                   <div className="iptv-empty">
-                    <p>{query ? `No channels match "${query}".` : 'No channels in this category.'}</p>
+                    <p>{query ? `${t('liveTv.noMatchQuery')} "${query}".` : t('liveTv.noChannelsInCategory')}</p>
                   </div>
                 )}
               </div>
@@ -521,10 +567,10 @@ function IPTV() {
                           disabled={favBusy === getMediaId(selectedChannel)}
                           aria-pressed={selectedFav}
                         >
-                          {selectedFav ? '★ Favorited' : '☆ Favorite'}
+                          {selectedFav ? t('liveTv.favorited') : t('liveTv.favorite')}
                         </button>
                         <button className="iptv-mini" onClick={() => handleOpenFullPlayer(selectedChannel)}>
-                          ⛶ Full player
+                          {t('liveTv.fullPlayer')}
                         </button>
                       </div>
                     </div>
@@ -534,14 +580,14 @@ function IPTV() {
                         {selectedChannel.videoUrl}
                       </code>
                       <button className="iptv-mini" onClick={() => handleCopyStream(selectedChannel)}>
-                        {copied ? 'Copied!' : 'Copy URL'}
+                        {copied ? t('liveTv.copied') : t('liveTv.copyUrl')}
                       </button>
                     </div>
                   </div>
                 </>
               ) : (
                 <div className="iptv-player-empty">
-                  <p>Select a channel to start watching</p>
+                  <p>{t('liveTv.selectChannel')}</p>
                 </div>
               )}
             </div>
@@ -551,18 +597,18 @@ function IPTV() {
 
       {!loading && channels.length === 0 && (
         <div className="iptv-empty">
-          <p>No channels imported yet.</p>
-          <p className="iptv-empty-hint">Paste an M3U playlist URL above. Works with iptv-org lists, free TV lists, etc.</p>
+          <p>{t('liveTv.noChannelsImported')}</p>
+          <p className="iptv-empty-hint">{t('liveTv.addPlaylistHint')}</p>
         </div>
       )}
 
       {!loading && familyMode && channels.length > 0 && categorized.length === 0 && (
         <div className="iptv-empty">
-          <p>All imported channels are hidden by Family Mode.</p>
+          <p>{t('liveTv.familyHidden')}</p>
         </div>
       )}
 
-      {loading && <div className="iptv-loading">Loading playlists…</div>}
+      {loading && <div className="iptv-loading">{t('liveTv.loadingPlaylists')}</div>}
 
       {toast && <div className={`iptv-toast ${toast.type === 'err' ? 'err' : ''}`}>{toast.msg}</div>}
     </div>

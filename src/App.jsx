@@ -17,11 +17,13 @@ import { SearchProvider } from './contexts/SearchContext.jsx';
 import { AppSettingsProvider } from './contexts/AppSettingsContext.jsx';
 import { PlaylistsProvider } from './contexts/PlaylistsContext.jsx';
 import { PlaybackProvider } from './contexts/PlaybackContext.jsx';
+import { LanguageProvider } from './i18n/LanguageContext.jsx';
 
 const VideoPlayer = lazy(() => import('./components/VideoPlayer.jsx'));
 
 export default function App() {
   return (
+    <LanguageProvider>
     <AppSettingsProvider>
       <HashRouter>
         <SearchProvider>
@@ -52,5 +54,6 @@ export default function App() {
         </SearchProvider>
       </HashRouter>
     </AppSettingsProvider>
+    </LanguageProvider>
   );
 }

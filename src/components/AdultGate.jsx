@@ -43,7 +43,7 @@ const AdultGate = () => {
               <button type="submit" className="adult-gate-btn">Unlock</button>
             </form>
             {error && <div className="adult-gate-error">{error}</div>}
-            <p className="adult-gate-hint">The session unlocks until you switch pages or Family Mode is toggled off.</p>
+            <p className="adult-gate-hint">The session stays unlocked while the app runs — Family Mode still hides adult content elsewhere.</p>
           </>
         ) : (
           <p>Adult content is hidden in Family Mode and this section is blocked. Set a family passcode in Settings to allow temporary unlocks.</p>

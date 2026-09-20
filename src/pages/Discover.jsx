@@ -4,6 +4,7 @@ import VideoSearchSection from '../components/VideoSearchSection.jsx';
 import MediaShelf from '../components/MediaShelf.jsx';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import isAdultMedia from '../utils/contentSafety.js';
 import './Discover.css';
 
@@ -12,18 +13,19 @@ const getApi = () => window.api || window.electronAPI;
 // Quick-start tiles: each either fires a pre-filtered search or opens a channel
 // list, so a brand-new user reaches content in one click without typing.
 const TOPIC_TILES = [
-  { key: 'news', label: 'Live News', emoji: '📰', query: 'live news', accent: '#ef4444' },
-  { key: 'music', label: 'Music 24/7', emoji: '🎵', query: 'lofi hip hop live radio', accent: '#8b5cf6' },
-  { key: 'movies', label: 'Free Movies', emoji: '🎬', route: '/cinema', accent: '#f59e0b' },
-  { key: 'radio', label: 'Live Radio', emoji: '📻', route: '/radio', accent: '#10b981' },
-  { key: 'popular', label: 'Popular Today', emoji: '⭐', query: 'popular music videos this week', accent: '#3b82f6' }
+  { key: 'news', emoji: '📰', query: 'live news', accent: '#ef4444' },
+  { key: 'music', emoji: '🎵', query: 'lofi hip hop live radio', accent: '#8b5cf6' },
+  { key: 'movies', emoji: '🎬', route: '/cinema', accent: '#f59e0b' },
+  { key: 'radio', emoji: '📻', route: '/radio', accent: '#10b981' },
+  { key: 'popular', emoji: '⭐', query: 'popular music videos this week', accent: '#3b82f6' }
 ];
 
 // Pre-curated fallback shelves: if trending comes back empty (blocked region,
-// yt-dlp offline) these still fill the page with real, reachable media.
+// yt-dlp offline) these still fill the page with real, reachable media. Keys
+// drive the localized titles via home.fallback*.
 const FALLBACK_SHELVES = [
-  { key: 'popular', title: 'Popular Web Streams', query: 'popular live streams', accent: '#3b82f6' },
-  { key: 'news', title: 'Live News Highlights', query: 'live news', accent: '#ef4444' }
+  { key: 'popular', query: 'popular live streams', accent: '#3b82f6', titleKey: 'home.fallbackPopularTitle' },
+  { key: 'news', query: 'live news', accent: '#ef4444', titleKey: 'home.fallbackNewsTitle' }
 ];
 
 const historyToCard = (h) => ({
@@ -52,6 +54,7 @@ const formatDuration = (seconds) => {
 // Full-width spotlight banner above the shelves. The thumbnail is a plain
 // <img> so we can gracefully degrade to a gradient when it 404s.
 const HeroBanner = ({ item, loading, onPlay }) => {
+  const { t } = useLanguage();
   const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => { setImageFailed(false); }, [item && (item.id || item.videoUrl)]);
@@ -61,8 +64,8 @@ const HeroBanner = ({ item, loading, onPlay }) => {
   }
   if (!item) return null;
 
-  const title = item.videoTitle || item.title || 'Featured';
-  const badge = item.category || item.sourceSite || 'Featured';
+  const title = item.videoTitle || item.title || t('home.featured');
+  const badge = item.category || item.sourceSite || t('home.featured');
   const duration = formatDuration(item.duration);
   const showImage = item.thumbnailUrl && !imageFailed;
 
@@ -83,12 +86,12 @@ const HeroBanner = ({ item, loading, onPlay }) => {
         <span className="home-hero-badge">{badge}</span>
         <h2 className="home-hero-title" title={title}>{title}</h2>
         <p className="home-hero-meta">
-          {item.sourceSite || 'Web'}
+          {item.sourceSite || t('home.web')}
           {duration ? ` · ${duration}` : ''}
         </p>
         <div className="home-hero-actions">
           <button type="button" className="home-hero-play" onClick={() => onPlay(item)}>
-            ▶ Play Now
+            ▶ {t('common.playNow')}
           </button>
         </div>
       </div>
@@ -101,6 +104,7 @@ const Discover = () => {
   const navigate = useNavigate();
   const { playVideo } = usePlayback();
   const { settings } = useAppSettings();
+  const { t } = useLanguage();
   const familyMode = settings.familyMode;
 
   const [trending, setTrending] = useState([]);
@@ -202,16 +206,16 @@ const Discover = () => {
 
   const tiles = (
     <div className="home-tiles">
-      {TOPIC_TILES.map((t) => (
+      {TOPIC_TILES.map((tile) => (
         <button
-          key={t.key}
+          key={tile.key}
           type="button"
           className="home-tile"
-          style={{ '--tile-accent': t.accent }}
-          onClick={() => handleTile(t)}
+          style={{ '--tile-accent': tile.accent }}
+          onClick={() => handleTile(tile)}
         >
-          <span className="home-tile-emoji">{t.emoji}</span>
-          <span className="home-tile-label">{t.label}</span>
+          <span className="home-tile-emoji">{tile.emoji}</span>
+          <span className="home-tile-label">{t('home.tile.' + tile.key)}</span>
         </button>
       ))}
     </div>
@@ -222,16 +226,16 @@ const Discover = () => {
       <HeroBanner item={spotlight} loading={trendingLoading} onPlay={playVideo} />
 
       <MediaShelf
-        title="Watch Again"
-        subtitle="Pick up where you left off"
+        title={t('home.watchAgain')}
+        subtitle={t('home.watchAgainSubtitle')}
         items={visibleHistory}
         loading={historyLoading}
         onSelectVideo={playVideo}
       />
 
       <MediaShelf
-        title="Trending Videos"
-        subtitle="What's hot on YouTube right now"
+        title={t('home.trending')}
+        subtitle={t('home.trendingSubtitle')}
         items={visibleTrending}
         loading={trendingLoading}
         onSelectVideo={playVideo}
@@ -240,20 +244,20 @@ const Discover = () => {
       {trendingEmpty && (
         <>
           <MediaShelf
-            title={FALLBACK_SHELVES[0].title}
-            subtitle="Hand-picked streams that are always available"
+            title={t(FALLBACK_SHELVES[0].titleKey)}
+            subtitle={t('home.fallbackPopularSubtitle')}
             items={visibleFallbackPopular}
             loading={fallbacksLoading}
             onSelectVideo={playVideo}
-            emptyHint="Couldn't reach the stream index — try again in a moment."
+            emptyHint={t('home.fallbackEmptyHint')}
           />
           <MediaShelf
-            title={FALLBACK_SHELVES[1].title}
-            subtitle="Live coverage from around the world"
+            title={t(FALLBACK_SHELVES[1].titleKey)}
+            subtitle={t('home.fallbackNewsSubtitle')}
             items={visibleFallbackNews}
             loading={fallbacksLoading}
             onSelectVideo={playVideo}
-            emptyHint="Couldn't reach the stream index — try again in a moment."
+            emptyHint={t('home.fallbackEmptyHint')}
           />
         </>
       )}
@@ -263,10 +267,10 @@ const Discover = () => {
   return (
     <VideoSearchSection
       ref={searchRef}
-      title="Home"
-      subtitle="Search the web like YouTube — or jump straight into something popular."
-      placeholder="Search any video, or paste a YouTube / video page URL…"
-      hint="Names search YouTube (and anything yt-dlp can reach). Pasting a URL pulls every video on that page, playlist or channel."
+      title={t('nav.home')}
+      subtitle={t('page.home.subtitle')}
+      placeholder={t('home.searchPlaceholder')}
+      hint={t('home.searchHint')}
       tags={{ category: 'YouTube', sourceSite: 'YouTube', type: 'Web Video' }}
       accent="#3b82f6"
       belowSearch={tiles}

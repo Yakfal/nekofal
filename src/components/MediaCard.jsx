@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import PlaylistMenu from './PlaylistMenu.jsx';
 import './MediaCard.css';
 
@@ -10,6 +11,7 @@ const MediaCard = ({
   onSelectVideo,
   onDeleteVideo
 }) => {
+  const { t } = useLanguage();
   const [isFavorite, setIsFavorite] = useState(false);
   const [isToggling, setIsToggling] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
@@ -91,7 +93,7 @@ const MediaCard = ({
     e.stopPropagation();
     e.preventDefault();
     if (!onDeleteVideo || isDeleting) return;
-    if (!window.confirm(`Delete "${video.videoTitle || video.title || 'this item'}" permanently?`)) return;
+    if (!window.confirm(`${t('mediaCard.delete')} "${video.videoTitle || video.title || t('mediaCard.untitledVideo')}" ${t('mediaCard.permanently')}?`)) return;
 
     setIsDeleting(true);
     try {
@@ -138,7 +140,7 @@ const MediaCard = ({
               <div className="absolute inset-0 flex items-center justify-center bg-black/60">
                 <div className="flex flex-col items-center gap-2 text-white">
                   <div className="animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
-                  <span className="text-sm">Extracting stream...</span>
+                  <span className="text-sm">{t('mediaCard.extracting')}</span>
                 </div>
               </div>
             )}
@@ -168,7 +170,7 @@ const MediaCard = ({
             {video.lastPosition > 5 && (
               <span className="resume-badge">
                 <span className="resume-icon">▶</span>
-                <span>Resume {formatDuration(video.lastPosition)}</span>
+                <span>{t('mediaCard.resume')} {formatDuration(video.lastPosition)}</span>
               </span>
             )}
           </>
@@ -188,7 +190,7 @@ const MediaCard = ({
         {/* Title & Action Buttons */}
         <div className="title-row flex items-start justify-between gap-2">
           <h3 className="video-title text-white font-medium text-sm line-clamp-2" title={video.videoTitle}>
-            {video.videoTitle || 'Untitled Video'}
+            {video.videoTitle || t('mediaCard.untitledVideo')}
           </h3>
           <div className="card-actions flex items-center gap-1 flex-shrink-0">
             {/* Add to playlist (portal dropdown, never clipped by the card) */}
@@ -199,8 +201,8 @@ const MediaCard = ({
                 className={`favorite-btn trash-btn ${isDeleting ? 'opacity-50 cursor-wait' : 'text-gray-400 hover:text-red-400'} transition-colors`}
                 onClick={handleDelete}
                 disabled={isDeleting}
-                aria-label="Delete video"
-                title="Delete video"
+                aria-label={t('mediaCard.deleteVideo')}
+                title={t('mediaCard.deleteVideo')}
               >
                 🗑
               </button>
@@ -209,7 +211,7 @@ const MediaCard = ({
               className={`favorite-btn flex-shrink-0 ${isFavorite ? 'active text-yellow-400' : 'text-gray-400 hover:text-yellow-400'} transition-colors ${isToggling ? 'opacity-50 cursor-wait' : ''}`}
               onClick={handleFavoriteToggle}
               disabled={isToggling}
-              aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+              aria-label={isFavorite ? t('common.removeFromFavorites') : t('common.addToFavorites')}
               aria-pressed={isFavorite}
             >
               {isFavorite ? '★' : '☆'}
@@ -220,7 +222,7 @@ const MediaCard = ({
         {/* Favorite error hint */}
         {favError && (
           <p className="card-error-text text-[10px] text-red-400 mt-0.5">
-            Could not update favorite
+            {t('mediaCard.favoriteFailed')}
           </p>
         )}
 

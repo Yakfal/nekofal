@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import { autoSync, getCloudState, getMediaId, favoritePayloadFor, isPageUrl } from '../services/dbAdapter.js';
 import PlaylistMenu from './PlaylistMenu.jsx';
 import './VideoSearchSection.css';
@@ -36,7 +37,7 @@ const formatDuration = (seconds) => {
 const VideoSearchSection = forwardRef(({
   title,
   subtitle,
-  placeholder = 'Enter a name or paste a link...',
+  placeholder = null,
   tags,
   siteUrl = null,
   hint = '',
@@ -44,6 +45,7 @@ const VideoSearchSection = forwardRef(({
   belowSearch = null,
   shelves = null
 }, ref) => {
+  const { t } = useLanguage();
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState([]);
@@ -116,7 +118,7 @@ const VideoSearchSection = forwardRef(({
   const runSearch = useCallback(async (rawOverride) => {
     const q = String(rawOverride != null ? rawOverride : query || '').trim();
     setQuery(q);
-    if (!q) { showToast('Type a name or paste a link', 'err'); return; }
+    if (!q) { showToast(t('search.typeNameOrPaste'), 'err'); return; }
 
     // Detect: full URL -> enumerate that page
     const isUrl = /^https?:\/\//i.test(q);
@@ -132,7 +134,7 @@ const VideoSearchSection = forwardRef(({
     try {
       const api = getApi();
       if (!api?.webSearch) {
-        setSearchError('Web search is only available inside the app (window.api is missing in a browser).');
+        setSearchError(t('search.browserUnavailable'));
         setSearching(false);
         return;
       }
@@ -151,19 +153,19 @@ const VideoSearchSection = forwardRef(({
           mode: mode === 'site' ? 'site' : isUrl ? 'url' : 'search'
         });
         if (!res.videos || res.videos.length === 0) {
-          setSearchError('Found nothing. Try another name/link.');
+          setSearchError(t('search.foundNothing'));
         }
       } else {
-        setSearchError(res?.error || res?.details || 'Search failed');
+        setSearchError(res?.error || res?.details || t('search.searchFailed'));
         setResults([]);
       }
     } catch (err) {
       console.error('[Search] failed:', err);
-      setSearchError('Search failed: ' + err.message);
+      setSearchError(`${t('search.searchFailed')}: ${err.message}`);
     } finally {
       setSearching(false);
     }
-  }, [query, siteUrl, showToast]);
+  }, [query, siteUrl, showToast, t]);
 
   const handleSearch = (e) => {
     e?.preventDefault();
@@ -182,11 +184,11 @@ const VideoSearchSection = forwardRef(({
       const res = await api.addVideos([{ ...v, category: (tags?.category || v.category || 'Video') }], tags);
       if (res?.success && res.inserted > 0) {
         setAddedIds(prev => new Set(prev).add(v.id));
-        showToast(`Saved "${v.title}" to your library`);
+        showToast(`${t('search.saved')} "${v.title}" ${t('search.toYourLibrary')}`);
         window.dispatchEvent(new Event('scrapers-synced'));
       } else {
         setAddedIds(prev => new Set(prev).add(v.id));
-        showToast(`"${v.title}" was already in the library`);
+        showToast(`"${v.title}" ${t('search.alreadyInLibrary')}`);
       }
     } catch (err) {
       showToast('Failed to save: ' + err.message, 'err');
@@ -195,13 +197,13 @@ const VideoSearchSection = forwardRef(({
 
   const handleSaveAll = async () => {
     const fresh = results.filter(v => !addedIds.has(v.id));
-    if (fresh.length === 0) { showToast('Everything here is already saved'); return; }
+    if (fresh.length === 0) { showToast(t('search.everythingSaved')); return; }
     try {
       const api = getApi();
       const res = await api.addVideos(fresh, tags);
       if (res?.success) {
         setAddedIds(prev => new Set([...prev, ...fresh.map(v => v.id)]));
-        showToast(`Saved ${res.inserted || fresh.length} videos to your library`);
+        showToast(`${t('search.saved')} ${res.inserted || fresh.length} ${t('library.videos')} ${t('search.toYourLibrary')}`);
         window.dispatchEvent(new Event('scrapers-synced'));
       }
     } catch (err) {
@@ -212,7 +214,7 @@ const VideoSearchSection = forwardRef(({
   const handleToggleFavorite = async (v) => {
     const key = v.id || getMediaId(v);
     const identifiable = Boolean((v.pageUrl && String(v.pageUrl).trim()) || (v.id && String(v.id).trim()));
-    if (!identifiable || !key) { showToast('Cannot favorite this item', 'err'); return; }
+    if (!identifiable || !key) { showToast(t('search.cannotFavorite'), 'err'); return; }
     setTogglingId(key);
     try {
       const api = getApi();
@@ -223,13 +225,13 @@ const VideoSearchSection = forwardRef(({
       if (res?.success) {
         const favorited = res.data ? res.data.favorited : res.favorited;
         await reloadFavorites();
-        showToast(favorited ? 'Added to favorites' : 'Removed from favorites');
+        showToast(favorited ? t('search.addedToFavorites') : t('search.removedFromFavorites'));
         autoSync();
       } else {
-        showToast('Favorite toggle failed', 'err');
+        showToast(t('search.favoriteFailed'), 'err');
       }
     } catch (err) {
-      showToast('Favorite toggle failed', 'err');
+      showToast(t('search.favoriteFailed'), 'err');
     } finally {
       setTogglingId(null);
     }
@@ -251,13 +253,13 @@ const VideoSearchSection = forwardRef(({
           ref={inputRef}
           type="text"
           className="vss-input"
-          placeholder={placeholder}
+          placeholder={placeholder ?? t('search.searchPlaceholder')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          aria-label="Search"
+          aria-label={t('common.search')}
         />
         <button type="submit" className="vss-go" disabled={searching}>
-          {searching ? 'Searching…' : 'Search'}
+          {searching ? t('common.searching') : t('common.search')}
         </button>
       </form>
       {hint && <p className="vss-hint">{hint}</p>}
@@ -270,11 +272,11 @@ const VideoSearchSection = forwardRef(({
 
       {searchInfo && (
         <div className="vss-meta">
-          {searchInfo.count} results · via {searchInfo.source}
+          {searchInfo.count} {t('search.results')} · {t('search.via')} {searchInfo.source === 'server gateway' ? t('search.sourceGateway') : searchInfo.source === 'HTML' ? t('search.sourceHtml') : searchInfo.source}
           {results.length > 0 && (
             <>
               {' · '}
-              <button className="vss-linkish" onClick={handleSaveAll}>Save all to library</button>
+              <button className="vss-linkish" onClick={handleSaveAll}>{t('common.saveAll')}</button>
             </>
           )}
         </div>
@@ -282,7 +284,7 @@ const VideoSearchSection = forwardRef(({
 
       {searchError && (
         <div className="vss-error">
-          <strong>No results:</strong> {searchError}
+          <strong>{t('search.noResults')}</strong> {searchError}
         </div>
       )}
 
@@ -307,9 +309,9 @@ const VideoSearchSection = forwardRef(({
                   <h3 className="vss-vtitle" title={v.title}>{v.title}</h3>
                   <p className="vss-vsub">{v.sourceSite || (v.extractor ? v.extractor : urlHost(v.videoUrl))}</p>
                   <div className="vss-actions">
-                    <button className="vss-btn play" onClick={() => playVideo(toPlayerPayload(v))}>Play</button>
+                    <button className="vss-btn play" onClick={() => playVideo(toPlayerPayload(v))}>{t('common.play')}</button>
                     <button className="vss-btn add" onClick={() => handleAddOne(v)} disabled={added}>
-                      {added ? '✔ Saved' : '+ Save'}
+                      {added ? '✔ ' + t('common.saved') : '+ ' + t('common.save')}
                     </button>
                     <PlaylistMenu
                       video={{
@@ -322,11 +324,11 @@ const VideoSearchSection = forwardRef(({
                       }}
                       buttonClassName="vss-btn pl"
                       buttonContent="⊕"
-                      buttonTitle="Add to playlist"
+                      buttonTitle={t('common.addToPlaylist')}
                     />
                     <button
                       className={`vss-btn fav ${isFav ? 'active' : ''}`}
-                      title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+                      title={isFav ? t('common.removeFromFavorites') : t('common.addToFavorites')}
                       aria-pressed={isFav}
                       disabled={togglingId === favKey}
                       onClick={() => handleToggleFavorite(v)}

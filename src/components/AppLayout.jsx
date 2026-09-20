@@ -1,17 +1,75 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Navbar from './Navbar.jsx';
 import Sidebar from './Sidebar.jsx';
 import DownloadManager from './DownloadManager.jsx';
-import { Outlet } from 'react-router-dom';
+import AdultGate from './AdultGate.jsx';
+import MediaLibrary from '../pages/MediaLibrary.jsx';
+import Favorites from '../pages/Favorites.jsx';
+import Settings from '../pages/Settings.jsx';
+import Discover from '../pages/Discover.jsx';
+import IPTV from '../pages/IPTV.jsx';
+import Playlists from '../pages/Playlists.jsx';
+import LiveRadio from '../pages/LiveRadio.jsx';
+import Cinema from '../pages/Cinema.jsx';
 import { SearchProvider } from '../contexts/SearchContext.jsx';
 import './ScrollFab.css';
 
+// Persistent view registry. Every main tab stays mounted once it has been
+// visited — switching tabs only toggles `display` on the wrapper (never
+// unmounts), so playing IPTV/radio streams, active searches and per-view
+// scroll positions survive navigation.
+const VIEWS = {
+  '/discover': <Discover />,
+  '/adult': <AdultGate />,
+  '/iptv': <IPTV />,
+  '/library': <MediaLibrary />,
+  '/favorites': <Favorites />,
+  '/playlists': <Playlists />,
+  '/radio': <LiveRadio />,
+  '/cinema': <Cinema />,
+  '/settings': <Settings />,
+};
+
+const VIEW_PATHS = Object.keys(VIEWS);
+
+// Map a router path to a persistent view key. The bare `/` (app home) maps to
+// Discover, and transient/legacy routes (`/video/...`) keep the last view.
+function resolveView(pathname) {
+  if (!pathname || pathname === '/') return '/discover';
+  return VIEW_PATHS.includes(pathname) ? pathname : null;
+}
+
 const AppLayout = () => {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 960);
-  const contentRef = useRef(null);
+  const activeViewRef = useRef(null);
   const menuRef = useRef(null);
   const [updateToast, setUpdateToast] = useState(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
+
+  // Keep the last "real" tab in mind so transient routes (`/video/...`, the
+  // legacy player URL) show the tab the user was on instead of a blank page.
+  const lastViewRef = useRef('/discover');
+  const rawView = resolveView(pathname);
+  if (rawView) lastViewRef.current = rawView;
+  const activeView = rawView || lastViewRef.current;
+
+  // Views mount lazily on first visit and stay mounted for the session.
+  const [mountedViews, setMountedViews] = useState(() => new Set([rawView || '/discover']));
+
+  // Deep-linked home (`#/`) is normalized to Discover so the sidebar/NavLink
+  // highlighting and React Router's URL stay consistent.
+  useEffect(() => {
+    if (pathname === '/') navigate('/discover', { replace: true });
+  }, [pathname, navigate]);
+
+  useEffect(() => {
+    if (!mountedViews.has(activeView)) {
+      setMountedViews((prev) => new Set(prev).add(activeView));
+    }
+  }, [activeView]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const handleResize = () => {
@@ -46,11 +104,11 @@ const AppLayout = () => {
 
   const toggleSidebar = () => setIsSidebarCollapsed(!isSidebarCollapsed);
 
-  // Show the scroll-down affordance only when the routed page actually
-  // overflows the viewport, and hide it once the user reaches the bottom.
-  // Re-evaluates on scroll, resize, and any DOM change (async shelves/images).
+  // Show the scroll-down affordance only when the ACTIVE view actually
+  // overflows, and hide it once the user reaches the bottom. Each keep-alive
+  // view is its own scroll container, so this re-attaches on tab switch.
   useEffect(() => {
-    const el = contentRef.current;
+    const el = activeViewRef.current;
     if (!el) return undefined;
     let frame = 0;
     const update = () => {
@@ -74,10 +132,10 @@ const AppLayout = () => {
       observer.disconnect();
       resizeObserver.disconnect();
     };
-  }, []);
+  }, [activeView]);
 
   const scrollToLowerContent = () => {
-    const el = contentRef.current;
+    const el = activeViewRef.current;
     if (!el) return;
     el.scrollBy({ top: Math.max(el.clientHeight * 0.85, 320), behavior: 'smooth' });
   };
@@ -95,17 +153,29 @@ const AppLayout = () => {
             width={sidebarWidth}
           />
           <main 
-            ref={contentRef}
-            className="main-content flex-1 w-full overflow-y-auto p-6"
+            className="main-content flex-1 w-full overflow-hidden p-6 flex flex-col"
             style={{ marginLeft: sidebarWidth, marginTop: '70px' }}
           >
-            <Outlet />
+            {/* Keep-alive view stack: all visited views stay in the DOM; the
+                active one is shown, the rest are just display:none. */}
+            <div className="view-stack">
+              {[...mountedViews].map((viewPath) => (
+                <div
+                  key={viewPath}
+                  ref={viewPath === activeView ? activeViewRef : undefined}
+                  className={`keepalive-view ${viewPath === activeView ? 'active' : ''}`}
+                  style={{ display: viewPath === activeView ? 'block' : 'none' }}
+                >
+                  {VIEWS[viewPath]}
+                </div>
+              ))}
+            </div>
           </main>
         </div>
         <DownloadManager />
       </div>
 
-      {/* Scroll-down FAB — appears only when the page overflows the viewport */}
+      {/* Scroll-down FAB — appears only when the active page overflows */}
       {showScrollFab && (
         <button
           type="button"

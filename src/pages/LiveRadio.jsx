@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { bindMediaKey, unbindMediaKey } from '../utils/mediaKeys.js';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import './LiveRadio.css';
 
 const RADIO_API = 'https://de1.api.radio-browser.info/json/stations/topclick';
 
 const LiveRadio = () => {
+  const { t } = useLanguage();
   const [stations, setStations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -213,7 +215,7 @@ const LiveRadio = () => {
   return (
     <div className="radio-page">
       <div className="radio-header">
-        <h1 className="page-title">Live Radio</h1>
+        <h1 className="page-title">{t('nav.liveRadio')}</h1>
         <p className="radio-subtitle">Top-clicked stations from the radio-browser directory. Click any station to tune in.</p>
       </div>
 

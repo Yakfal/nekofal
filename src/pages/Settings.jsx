@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
+import { useLanguage, SUPPORTED_LANGUAGES } from '../i18n/LanguageContext.jsx';
 import {
   getCloudState,
   onCloudChange,
@@ -16,6 +17,7 @@ import './Settings.css';
 const Settings = () => {
   const getApi = () => window.api || window.electronAPI;
   const { settings, setTheme, setFamilyMode, setFamilyPasscode, verifyFamilyPasscode, hasFamilyPasscode, lock } = useAppSettings();
+  const { language, setLanguage, t } = useLanguage();
   const [passcodeInput, setPasscodeInput] = useState('');
   const [confirmFor, setConfirmFor] = useState(null);
   const [confirmCode, setConfirmCode] = useState('');
@@ -123,11 +125,11 @@ const Settings = () => {
     const api = getApi();
     const off = api?.onUpdateEvent ? api.onUpdateEvent((e) => {
       if (!e || !e.type) return;
-      if (e.type === 'available') setUpdateMsg(`Update ${e.version || ''} found — downloading…`);
-      else if (e.type === 'progress') setUpdateMsg(`Downloading update… ${Math.round(e.percent || 0)}%`);
-      else if (e.type === 'downloaded') setUpdateMsg('Update downloaded — restart to install.');
+      if (e.type === 'available') setUpdateMsg(`${t('settings.updateFound')}${e.version ? ' (' + e.version + ')' : ''}`);
+      else if (e.type === 'progress') setUpdateMsg(`${t('settings.downloadingUpdate')} ${Math.round(e.percent || 0)}%`);
+      else if (e.type === 'downloaded') setUpdateMsg(t('settings.updateDownloaded'));
       else if (e.type === 'error') setUpdateMsg(`Update check failed: ${e.message || 'unknown error'}`);
-      else if (e.type === 'not-available') setUpdateMsg('You are on the latest version.');
+      else if (e.type === 'not-available') setUpdateMsg(t('settings.latestVersion'));
     }) : undefined;
     return () => { if (typeof off === 'function') off(); };
   }, [refreshSecrets]);
@@ -135,14 +137,14 @@ const Settings = () => {
   const handleAddSecret = async (e) => {
     e.preventDefault();
     const name = secretName.trim();
-    if (!name || !secretValue) { showToast('Enter a key name and value.', 'error'); return; }
+    if (!name || !secretValue) { showToast(t('settings.enterKeyNameValue'), 'error'); return; }
     const api = getApi();
-    if (!api?.secrets?.set) { showToast('Secure vault unavailable in this build.', 'error'); return; }
+    if (!api?.secrets?.set) { showToast(t('settings.vaultUnavailable'), 'error'); return; }
     try {
       setSecretsBusy(true);
       const res = await api.secrets.set(name, secretValue);
       if (res && res.success) {
-        showToast('Secret saved to the vault');
+        showToast(t('settings.secretSaved'));
         setSecretName('');
         setSecretValue('');
         refreshSecrets();
@@ -161,7 +163,7 @@ const Settings = () => {
     if (!api?.secrets?.remove) return;
     try {
       await api.secrets.remove(key);
-      showToast(`Removed "${key}"`);
+      showToast(`${t('settings.removedSecret')} "${key}"`);
       refreshSecrets();
     } catch (err) {
       showToast('Failed to remove secret.', 'error');
@@ -170,15 +172,15 @@ const Settings = () => {
 
   const handleCheckUpdates = async () => {
     const api = getApi();
-    if (!api?.checkForUpdates) { setUpdateMsg('Manual updates are available in the packaged app.'); return; }
+    if (!api?.checkForUpdates) { setUpdateMsg(t('settings.manualUpdatesPackaged')); return; }
     setUpdateBusy(true);
     try {
       const res = await api.checkForUpdates();
       if (res && res.success) {
-        if (res.updateInfo) setUpdateMsg(`Update ${res.updateInfo.version || ''} found — downloading…`);
-        else setUpdateMsg('Checking…');
+        if (res.updateInfo) setUpdateMsg(`${t('settings.updateFound')}${res.updateInfo.version ? ' (' + res.updateInfo.version + ')' : ''}`);
+        else setUpdateMsg(t('settings.checking'));
       } else {
-        setUpdateMsg((res && res.error) || 'No update available.');
+        setUpdateMsg((res && res.error) || t('settings.noUpdate'));
       }
     } catch (err) {
       setUpdateMsg('Update check unavailable.');
@@ -189,13 +191,13 @@ const Settings = () => {
 
   const handleCloudLogin = async (e) => {
     e.preventDefault();
-    if (!cloudEmail || !cloudPassword) { showToast('Email and password are required', 'error'); return; }
+    if (!cloudEmail || !cloudPassword) { showToast(t('settings.emailPasswordRequired'), 'error'); return; }
     setCloudBusy(true);
     try {
       const res = await cloudLogin(cloudServerUrl, cloudEmail, cloudPassword);
       if (res.success) {
         const s = res.sync || {};
-        showToast(`Connected as ${res.user.email}` + (s.pushed || s.pulled ? ` — ${s.pushed} pushed, ${s.pulled} pulled` : ''));
+        showToast(t('settings.connectedAs') + ' ' + res.user.email + (s.pushed || s.pulled ? ` — ${s.pushed} ${t('settings.pushed')}, ${s.pulled} ${t('settings.pulled')}` : ''));
         setCloudPassword('');
       } else {
         showToast('Cloud login failed: ' + res.error, 'error');
@@ -210,14 +212,14 @@ const Settings = () => {
   const handleCloudRegister = async (e) => {
     e.preventDefault();
     if (!cloudEmail || !cloudPassword || cloudPassword.length < 6) {
-      showToast('Email and a password (6+ chars) are required', 'error');
+      showToast(t('settings.emailPasswordMin'), 'error');
       return;
     }
     setCloudBusy(true);
     try {
       const res = await cloudRegister(cloudServerUrl, cloudEmail, cloudUsername, cloudPassword);
       if (res.success) {
-        showToast(`Account created & connected as ${res.user.email}`);
+        showToast(t('settings.accountCreated') + ' ' + res.user.email);
         setCloudPassword('');
       } else {
         showToast('Registration failed: ' + res.error, 'error');
@@ -231,7 +233,7 @@ const Settings = () => {
 
   const handleCloudLogout = async () => {
     await cloudLogout();
-    showToast('Disconnected from cloud');
+    showToast(t('settings.cloudDisconnected'));
   };
 
   const handleCloudEnable = async (enabled) => {
@@ -239,9 +241,9 @@ const Settings = () => {
     if (!res.success && res.error) { showToast(res.error, 'error'); return; }
     if (enabled) {
       const s = res.sync || {};
-      showToast(`Cloud sync enabled — ${s.pushed} pushed, ${s.pulled} pulled`);
+      showToast(`${t('settings.cloudSyncEnabledMsg')} — ${s.pushed} ${t('settings.pushed')}, ${s.pulled} ${t('settings.pulled')}`);
     } else {
-      showToast('Cloud sync disabled');
+      showToast(t('settings.cloudSyncOffMsg'));
     }
   };
 
@@ -250,7 +252,7 @@ const Settings = () => {
     try {
       const res = await syncNow();
       if (res.success) {
-        showToast(`Sync complete — ${res.pushed} pushed, ${res.pulled} pulled` + (res.errors.length ? `, ${res.errors.length} skipped` : ''));
+        showToast(`${t('settings.syncComplete')} — ${res.pushed} ${t('settings.pushed')}, ${res.pulled} ${t('settings.pulled')}` + (res.errors.length ? `, ${res.errors.length} ${t('settings.skipped')}` : ''));
       } else {
         showToast('Sync failed: ' + res.error, 'error');
       }
@@ -261,7 +263,7 @@ const Settings = () => {
 
   const handleCloudTest = async () => {
     const res = await testConnection(cloudServerUrl);
-    showToast(res.success ? `Server reachable` + (res.version !== 'unknown' ? ' (version ' + res.version + ')' : '') : 'Server unreachable: ' + res.error, res.success ? 'success' : 'error');
+    showToast(res.success ? t('settings.serverReachable') + (res.version !== 'unknown' ? ' (' + res.version + ')' : '') : 'Server unreachable: ' + res.error, res.success ? 'success' : 'error');
   };
 
   const handleExportBackup = async () => {
@@ -273,7 +275,7 @@ const Settings = () => {
       if (res?.canceled) return;
       if (res?.success) {
         const c = res.counts || {};
-        showToast(`Backup saved to ${res.path || 'file'}: ${c.playlists} playlists, ${c.playlistItems} items, ${c.favorites} favorites, ${c.iptvSources} IPTV sources`);
+        showToast(`${t('settings.backupSavedTo')} ${res.path || t('settings.file')}: ${c.playlists} ${t('settings.playlists')}, ${c.playlistItems} ${t('settings.items')}, ${c.favorites} ${t('settings.favoritesCount')}, ${c.iptvSources} ${t('settings.iptvSourcesCount')}`);
       } else {
         showToast('Backup failed: ' + (res?.error || 'unknown'), 'error');
       }
@@ -293,7 +295,7 @@ const Settings = () => {
       if (res?.canceled) return;
       if (res?.success) {
         const c = res.counts || {};
-        showToast(`Restored from ${res.source || 'file'}: ${c.playlists} playlists, ${c.playlistItems} items, ${c.favorites} favorites, ${c.iptvSources} sources`);
+        showToast(`${t('settings.restoredFrom')} ${res.source || t('settings.file')}: ${c.playlists} ${t('settings.playlists')}, ${c.playlistItems} ${t('settings.items')}, ${c.favorites} ${t('settings.favoritesCount')}, ${c.iptvSources} ${t('settings.iptvSourcesCount')}`);
         window.dispatchEvent(new Event('scrapers-synced'));
       } else {
         showToast('Restore failed: ' + (res?.error || 'unknown'), 'error');
@@ -323,7 +325,7 @@ const Settings = () => {
     const validUrls = urls.map(u => u.trim()).filter(u => u !== '');
 
     if (!name) {
-      showToast('Site name is required', 'error');
+      showToast(t('settings.siteNameRequired'), 'error');
       return;
     }
 
@@ -331,7 +333,7 @@ const Settings = () => {
     const passingUrls = validUrls.filter(u => validUrlRegex.test(u));
 
     if (passingUrls.length === 0) {
-      showToast('At least one valid URL (http/https) is required', 'error');
+      showToast(t('settings.validUrlRequired'), 'error');
       return;
     }
 
@@ -350,7 +352,7 @@ const Settings = () => {
       if (api?.saveScrapers) {
         const result = await api.saveScrapers([...savedScrapers, newScraper].map(toDbScraper));
         if (result && result.success) {
-          showToast(`Added "${name}" to saved scrapers`);
+          showToast(`${t('settings.scraperAddedPrefix')} "${name}" ${t('settings.scraperAddedSuffix')}`);
         } else {
           showToast('Failed to save scraper', 'error');
         }
@@ -375,7 +377,7 @@ const Settings = () => {
       if (api?.saveScrapers) {
         const result = await api.saveScrapers(filtered.map(toDbScraper));
         if (result && result.success) {
-          showToast('Scraper removed');
+          showToast(t('settings.scraperRemoved'));
         } else {
           showToast('Failed to remove scraper', 'error');
         }
@@ -391,7 +393,7 @@ const Settings = () => {
   const testScraper = async (scraper) => {
     const targets = (Array.isArray(scraper.urls) ? scraper.urls : []).filter(u => u.trim());
     if (targets.length === 0) {
-      showToast('No URLs to test for this scraper', 'error');
+      showToast(t('settings.noUrlsToTest'), 'error');
       return;
     }
 
@@ -415,11 +417,7 @@ const Settings = () => {
         }
       }
 
-      showToast(
-        successCount === targets.length
-          ? `${scraper.siteName}: all ${successCount} URLs OK`
-          : `${scraper.siteName}: ${successCount}/${targets.length} URLs OK`
-      );
+      showToast(`${scraper.siteName}: ${successCount}/${targets.length} ${t('settings.urlsOk')}`);
     } catch (err) {
       console.error('Failed to test scraper:', err);
       showToast('Scraper test failed', 'error');
@@ -431,7 +429,7 @@ const Settings = () => {
   const syncScrapers = async () => {
     const allUrls = savedScrapers.flatMap(s => (s.urls || []).filter(u => u && u.trim() !== ''));
     if (allUrls.length === 0) {
-      showToast('Add a scraper with at least one URL first', 'error');
+      showToast(t('settings.addScraperFirst'), 'error');
       return;
     }
 
@@ -439,13 +437,13 @@ const Settings = () => {
     try {
       const api = getApi();
       if (!api?.runScrapers) {
-        showToast('Sync not available in this environment', 'error');
+        showToast(t('settings.syncUnavailable'), 'error');
         return;
       }
 
       const result = await api.runScrapers(allUrls);
       if (result && result.success) {
-        showToast(`Synced ${result.inserted || 0} new videos into Media Library`);
+        showToast(`${t('settings.syncedPrefix')} ${result.inserted || 0} ${t('settings.newVideosIntoLibrary')}`);
         window.dispatchEvent(new Event('scrapers-synced'));
       } else {
         showToast(result?.error || 'Sync failed', 'error');
@@ -459,13 +457,13 @@ const Settings = () => {
   };
 
   const clearDatabase = async () => {
-    if (!window.confirm('Are you sure you want to clear the entire database? This cannot be undone.')) return;
+    if (!window.confirm(t('settings.clearDatabaseConfirm'))) return;
 
     try {
       const api = getApi();
       if (api?.clearAll) {
         await api.clearAll();
-        showToast('Database cleared');
+        showToast(t('settings.databaseCleared'));
       }
     } catch (err) {
       console.error('Failed to clear database:', err);
@@ -476,7 +474,7 @@ const Settings = () => {
   const toggleYtDlp = () => {
     setYtDlpEnabled(prev => {
       const next = !prev;
-      showToast(next ? 'yt-dlp extraction enabled' : 'yt-dlp extraction disabled');
+      showToast(next ? t('settings.ytdlpEnabled') : t('settings.ytdlpDisabled'));
       return next;
     });
   };
@@ -490,21 +488,21 @@ const Settings = () => {
     }
     setFamilyMode(false);
     lock();
-    showToast('Family Mode off');
+    showToast(t('settings.familyModeOff'));
   };
 
   const handleSavePasscode = async () => {
     if (!passcodeInput.trim()) {
-      showToast('Enter a passcode first', 'error');
+      showToast(t('settings.enterPasscodeFirst'), 'error');
       return;
     }
     if (passcodeInput.trim().length < 4) {
-      showToast('Passcode must be at least 4 characters', 'error');
+      showToast(t('settings.passcodeMin'), 'error');
       return;
     }
     await setFamilyPasscode(passcodeInput.trim());
     setPasscodeInput('');
-    showToast('Family passcode saved');
+    showToast(t('settings.passcodeSaved'));
   };
 
   const handleClearPasscode = () => {
@@ -516,7 +514,7 @@ const Settings = () => {
     }
     setFamilyPasscode(null);
     setPasscodeInput('');
-    showToast('Family passcode removed');
+    showToast(t('settings.passcodeRemoved'));
   };
 
   const handleConfirmSubmit = async (e) => {
@@ -524,7 +522,7 @@ const Settings = () => {
     if (!confirmFor) return;
     const ok = await verifyFamilyPasscode(confirmCode);
     if (!ok) {
-      setConfirmError('Incorrect passcode');
+      setConfirmError(t('settings.incorrectPasscode'));
       return;
     }
     const action = confirmFor.action;
@@ -534,11 +532,11 @@ const Settings = () => {
     if (action === 'off') {
       setFamilyMode(false);
       lock();
-      showToast('Family Mode off');
+      showToast(t('settings.familyModeOff'));
     } else if (action === 'clear') {
       await setFamilyPasscode(null);
       setPasscodeInput('');
-      showToast('Family passcode removed');
+      showToast(t('settings.passcodeRemoved'));
     }
   };
 
@@ -566,15 +564,15 @@ const Settings = () => {
     e.preventDefault();
     const name = iptvName.trim();
     const url = iptvUrl.trim();
-    if (!url) { showToast('Playlist URL is required', 'error'); return; }
-    if (!/^https?:\/\/.+/i.test(url)) { showToast('Enter a valid http/https URL', 'error'); return; }
+    if (!url) { showToast(t('settings.iptvUrlRequired'), 'error'); return; }
+    if (!/^https?:\/\/.+/i.test(url)) { showToast(t('settings.validHttpUrl'), 'error'); return; }
 
     setIptvLoading(true);
     try {
       const api = getApi();
       const result = await api.addIptvSource(name || 'IPTV Playlist', url);
       if (result?.success) {
-        showToast(`Added ${result.inserted || 0} channels from "${name || 'playlist'}"`);
+        showToast(`${t('settings.addedChannelsPrefix')} ${result.inserted || 0} ${t('settings.channelsFrom')} "${name || t('settings.playlistFallback')}"`);
         setIptvName(''); setIptvUrl('');
         autoSync();
         window.dispatchEvent(new Event('scrapers-synced'));
@@ -595,7 +593,7 @@ const Settings = () => {
       const api = getApi();
       await api.removeIptvSource(sourceId);
       setIptvSources(prev => prev.filter(s => s.id !== sourceId));
-      showToast('IPTV source removed');
+      showToast(t('settings.iptvSourceRemoved'));
       autoSync();
       window.dispatchEvent(new Event('scrapers-synced'));
     } catch (err) {
@@ -607,14 +605,14 @@ const Settings = () => {
     e.preventDefault();
     const url = adultSiteUrl.trim();
     const name = adultSiteName.trim();
-    if (!url) { showToast('Site URL is required', 'error'); return; }
+    if (!url) { showToast(t('settings.siteUrlRequired'), 'error'); return; }
 
     setScrapingAdult(true);
     try {
       const api = getApi();
       const result = await api.runScrapers([url]);
       if (result?.success) {
-        showToast(`Added ${result.inserted || 0} videos from "${name || url}"`);
+        showToast(`${t('settings.addedVideosPrefix')} ${result.inserted || 0} ${t('settings.videosFrom')} "${name || url}"`);
         setAdultSiteUrl(''); setAdultSiteName('');
         window.dispatchEvent(new Event('scrapers-synced'));
       } else {
@@ -630,23 +628,56 @@ const Settings = () => {
   return (
     <div className="settings-page">
       <div className="settings-header">
-        <h1 className="page-title">Settings</h1>
+        <h1 className="page-title">{t('nav.settings')}</h1>
       </div>
+
+      <section className="settings-section">
+        <div className="section-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <circle cx="12" cy="12" r="9" strokeWidth="2"/>
+            <path d="M3.6 9h16.8M3.6 15h16.8" strokeWidth="2" strokeLinecap="round"/>
+            <path d="M12 3a15 15 0 010 18M12 3a15 15 0 000 18" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          <h2>{t('settings.appLanguage')}</h2>
+        </div>
+
+        <div className="settings-toggles">
+          <div className="toggle-item">
+            <span>
+              {t('settings.languageLabel')}
+              <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
+                {t('settings.languageDesc')}
+              </span>
+            </span>
+            <select
+              className="form-input"
+              style={{ width: 'auto', minWidth: '220px', padding: '6px 10px' }}
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              aria-label={t('settings.appLanguage')}
+            >
+              {SUPPORTED_LANGUAGES.map((l) => (
+                <option key={l.code} value={l.code}>{l.nativeName}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </section>
 
       <section className="settings-section">
         <div className="section-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.36-6.36l-1.42 1.42M7.05 16.95l-1.41 1.41m12.72 0l-1.41-1.41M7.05 7.05L5.64 5.64M12 8a4 4 0 100 8 4 4 0 000-8z" />
           </svg>
-          <h2>Appearance &amp; Family</h2>
+          <h2>{t('settings.appearanceAndFamily')}</h2>
         </div>
 
         <div className="settings-toggles">
           <div className="toggle-item">
             <span>
-              Theme
+              {t('settings.theme')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Dark Cyber (default) or Light Sky.
+                {t('settings.themeDesc')}
               </span>
             </span>
             <div className="theme-options" style={{ display: 'flex', gap: '8px' }}>
@@ -655,23 +686,23 @@ const Settings = () => {
                 className={`theme-option ${settings.theme === 'dark-cyber' ? 'active' : ''}`}
                 onClick={() => setTheme('dark-cyber')}
               >
-                <span className="theme-swatch dark"></span> Dark Cyber
+                <span className="theme-swatch dark"></span> {t('settings.themeDark')}
               </button>
               <button
                 type="button"
                 className={`theme-option ${settings.theme === 'light-sky' ? 'active' : ''}`}
                 onClick={() => setTheme('light-sky')}
               >
-                <span className="theme-swatch light"></span> Light Sky
+                <span className="theme-swatch light"></span> {t('settings.themeLight')}
               </button>
             </div>
           </div>
 
           <div className="toggle-item">
             <span>
-              Family Mode
+              {t('settings.familyMode')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Hides adult content everywhere and locks the Adult Sites tab. Add a passcode to prevent turning it off.
+                {t('settings.familyModeDesc')}
               </span>
             </span>
             <button
@@ -679,31 +710,31 @@ const Settings = () => {
               className={`toggle ${settings.familyMode ? 'active' : 'off'}`}
               onClick={() => settings.familyMode ? handleFamilyModeOff() : setFamilyMode(true)}
             >
-              {settings.familyMode ? 'On' : 'Off'}
+              {settings.familyMode ? t('common.on') : t('common.off')}
             </button>
           </div>
 
           <div className="toggle-item">
             <span>
-              Family passcode
+              {t('settings.familyPasscode')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Required to turn Family Mode off or open the Adult tab. {hasFamilyPasscode() ? 'Already set.' : 'Not set.'}
+                {t('settings.familyPasscodeDesc')} {hasFamilyPasscode() ? t('settings.passcodeSet') : t('settings.passcodeNotSet')}
               </span>
             </span>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
               <input
                 type="password"
                 className="form-input"
-                placeholder="New passcode"
+                placeholder={t('settings.passcodePlaceholder')}
                 value={passcodeInput}
                 onChange={(e) => setPasscodeInput(e.target.value)}
                 style={{ width: '160px' }}
               />
               <button type="button" className="btn btn-primary btn-small" onClick={handleSavePasscode}>
-                Save
+                {t('common.save')}
               </button>
               <button type="button" className="btn btn-secondary btn-small" onClick={handleClearPasscode}>
-                Remove
+                {t('common.remove')}
               </button>
             </div>
           </div>
@@ -715,29 +746,29 @@ const Settings = () => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M4 5h9a3 3 0 013 3v1m0 0h4v7a3 3 0 01-3 3H4a1 1 0 01-1-1V6a1 1 0 011-1zm7 5l3-2m0 0l3 2m-3-2v6" />
           </svg>
-          <h2>Backup &amp; Restore</h2>
+          <h2>{t('settings.backupRestore')}</h2>
         </div>
         <div className="settings-toggles">
           <div className="toggle-item">
             <span>
-              Export backup
+              {t('settings.exportBackup')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Saves playlists, playlist items, favorites and custom IPTV sources into a single .json file.
+                {t('settings.exportBackupDesc')}
               </span>
             </span>
             <button type="button" className="btn btn-primary btn-small" onClick={handleExportBackup} disabled={backupBusy}>
-              {backupBusy ? 'Working…' : 'Export'}
+              {backupBusy ? t('settings.working') : t('settings.export')}
             </button>
           </div>
           <div className="toggle-item">
             <span>
-              Restore backup
+              {t('settings.restoreBackup')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Re-imports a previous .json backup. Existing entries are kept, missing ones are added.
+                {t('settings.restoreBackupDesc')}
               </span>
             </span>
             <button type="button" className="btn btn-secondary btn-small" onClick={handleImportBackup} disabled={backupBusy}>
-              {backupBusy ? 'Working…' : 'Import'}
+              {backupBusy ? t('settings.working') : t('settings.import')}
             </button>
           </div>
         </div>
@@ -749,17 +780,17 @@ const Settings = () => {
             <path d="M4 4a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" />
             <path d="M8 20a2 2 0 01-2-2M16 20a2 2 0 001.465-.535M12 20v-4M12 12a3 3 0 00-3-3h-1a2 2 0 012-2h2a2 2 0 012 2 2 2 0 01-2 2h0" />
           </svg>
-          <h2>Cloud Sync</h2>
+          <h2>{t('settings.cloudSync')}</h2>
         </div>
 
         <div className="settings-toggles">
           <div className="toggle-item">
             <span>
-              Cloud sync
+              {t('settings.cloudSyncToggle')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
                 {cloudState.user
-                  ? `Connected as ${cloudState.user.email || cloudState.user.username}${cloudState.enabled ? '' : ' — sync disabled'}.`
-                  : 'Not connected. Favorites, playlists and IPTV sources stay local until you connect.'}
+                  ? t('settings.cloudConnectedAs') + ' ' + (cloudState.user.email || cloudState.user.username) + (cloudState.enabled ? '.' : t('settings.cloudSyncDisabled') + '.')
+                  : t('settings.cloudNotConnected')}
               </span>
             </span>
             <button
@@ -768,20 +799,20 @@ const Settings = () => {
               onClick={() => handleCloudEnable(!cloudState.enabled)}
               disabled={!cloudState.user}
             >
-              {cloudState.enabled ? 'On' : 'Off'}
+              {cloudState.enabled ? t('common.on') : t('common.off')}
             </button>
           </div>
 
           {cloudState.user && (
             <div className="toggle-item">
               <span>
-                Manual sync
+                {t('settings.manualSync')}
                 <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                  Push local changes up and pull remote changes down right now.
+                  {t('settings.manualSyncDesc')}
                 </span>
               </span>
               <button type="button" className="btn btn-primary btn-small" onClick={handleCloudSync} disabled={cloudSyncBusy}>
-                {cloudSyncBusy ? 'Syncing…' : 'Sync Now'}
+                {cloudSyncBusy ? t('settings.syncing') : t('settings.syncNow')}
               </button>
             </div>
           )}
@@ -789,35 +820,35 @@ const Settings = () => {
 
         <form className="settings-form" style={{ marginTop: '16px' }} onSubmit={cloudRegisterMode ? handleCloudRegister : handleCloudLogin}>
           <div className="form-group">
-            <label htmlFor="cloud-url">Server URL</label>
+            <label htmlFor="cloud-url">{t('settings.serverUrl')}</label>
             <div style={{ display: 'flex', gap: '8px' }}>
               <input
                 id="cloud-url"
                 type="text"
                 className="form-input"
                 style={{ flex: 1 }}
-                placeholder="http://132.145.159.2:8090"
+                placeholder={t('settings.serverUrlPlaceholder')}
                 value={cloudServerUrl}
                 onChange={(e) => setCloudServerUrl(e.target.value)}
                 disabled={cloudBusy}
               />
               <button type="button" className="btn btn-secondary btn-small" onClick={handleCloudTest} disabled={cloudBusy || !cloudServerUrl.trim()}>
-                Test
+                {t('settings.test')}
               </button>
             </div>
             <p className="form-hint">
-              Your PocketBase server (see deploy/ — docker compose on 132.145.159.2). Schema is created by the deploy script.
+              {t('settings.serverUrlHint')}
             </p>
           </div>
 
           {cloudRegisterMode && (
             <div className="form-group">
-              <label htmlFor="cloud-username">Username (optional)</label>
+              <label htmlFor="cloud-username">{t('settings.usernameOptional')}</label>
               <input
                 id="cloud-username"
                 type="text"
                 className="form-input"
-                placeholder="e.g. myhub"
+                placeholder={t('settings.usernamePlaceholder')}
                 value={cloudUsername}
                 onChange={(e) => setCloudUsername(e.target.value)}
                 disabled={cloudBusy}
@@ -826,12 +857,12 @@ const Settings = () => {
           )}
 
           <div className="form-group">
-            <label htmlFor="cloud-email">Email</label>
+            <label htmlFor="cloud-email">{t('settings.email')}</label>
             <input
               id="cloud-email"
               type="email"
               className="form-input"
-              placeholder="you@example.com"
+              placeholder={t('settings.emailPlaceholder')}
               value={cloudEmail}
               onChange={(e) => setCloudEmail(e.target.value)}
               disabled={cloudBusy}
@@ -839,12 +870,12 @@ const Settings = () => {
           </div>
 
           <div className="form-group">
-            <label htmlFor="cloud-password">Password</label>
+            <label htmlFor="cloud-password">{t('settings.password')}</label>
             <input
               id="cloud-password"
               type="password"
               className="form-input"
-              placeholder={cloudRegisterMode ? '6+ characters' : 'Your password'}
+              placeholder={cloudRegisterMode ? t('settings.passwordRegisterHint') : t('settings.passwordPlaceholder')}
               value={cloudPassword}
               onChange={(e) => setCloudPassword(e.target.value)}
               disabled={cloudBusy}
@@ -853,15 +884,15 @@ const Settings = () => {
 
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
             <button type="submit" className="btn btn-primary" disabled={cloudBusy}>
-              {cloudBusy ? 'Working…' : (cloudRegisterMode ? 'Create Account' : (cloudState.user ? 'Reconnect' : 'Connect'))}
+              {cloudBusy ? t('settings.working') : (cloudRegisterMode ? t('settings.createAccount') : (cloudState.user ? t('settings.reconnect') : t('settings.connect')))}
             </button>
             {cloudState.user && (
               <button type="button" className="btn btn-secondary btn-small" onClick={handleCloudLogout}>
-                Logout
+                {t('settings.logout')}
               </button>
             )}
             <button type="button" className="btn btn-secondary btn-small" onClick={() => setCloudRegisterMode(v => !v)} disabled={cloudBusy}>
-              {cloudRegisterMode ? 'Use existing account' : 'Create account'}
+              {cloudRegisterMode ? t('settings.useExistingAccount') : t('settings.createAccountShort')}
             </button>
           </div>
         </form>
@@ -872,32 +903,32 @@ const Settings = () => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M12 4V2m0 20v-2m8-8h2M2 12h2m13.66-5.66l1.41-1.41M4.93 19.07l1.41-1.41m12.72 1.41l-1.41-1.41M6.34 6.34L4.93 4.93M12 8a4 4 0 104 4 4 4 0 00-4-4z" />
           </svg>
-          <h2>Scraper Management</h2>
+          <h2>{t('settings.scraperManagement')}</h2>
         </div>
 
         {/* Add Scraper Form */}
         <form className="settings-form" onSubmit={handleAddScraper}>
           <div className="form-group">
-            <label htmlFor="site-name">Site Name</label>
+            <label htmlFor="site-name">{t('settings.siteName')}</label>
             <input
               id="site-name"
               type="text"
               className="form-input"
-              placeholder="e.g. Example Streams"
+              placeholder={t('settings.siteNamePlaceholder')}
               value={siteName}
               onChange={(e) => setSiteName(e.target.value)}
             />
           </div>
 
           <div className="form-group">
-            <label>Target URLs</label>
+            <label>{t('settings.targetUrls')}</label>
             {urls.map((url, index) => (
               <div key={index} className="url-row" style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                 <input
                   type="url"
                   className="form-input"
                   style={{ flex: 1 }}
-                  placeholder="https://example.com/browse"
+                  placeholder={t('settings.urlPlaceholder')}
                   value={url}
                   onChange={(e) => {
                     const next = [...urls];
@@ -910,21 +941,21 @@ const Settings = () => {
                   className="btn btn-secondary btn-small"
                   onClick={() => removeUrlField(index)}
                   disabled={urls.length <= 1}
-                  aria-label="Remove URL field"
+                  aria-label={t('common.removeUrlField')}
                 >
                   &times;
                 </button>
               </div>
             ))}
             <button type="button" className="btn btn-secondary btn-small" onClick={addUrlField}>
-              + Add URL
+              {t('settings.addUrl')}
             </button>
             <p className="form-hint">
-              Enter one or more category/browse page URLs. The scraper will extract video links from these pages.
+              {t('settings.urlsHint')}
             </p>
           </div>
 
-          <button type="submit" className="btn btn-primary">Add Scraper</button>
+          <button type="submit" className="btn btn-primary">{t('settings.addScraper')}</button>
         </form>
 
         {/* Saved Scrapers List */}
@@ -932,17 +963,17 @@ const Settings = () => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2zM8 7h8M8 12h8M8 17h5" />
           </svg>
-          <h2>Saved Scrapers</h2>
+          <h2>{t('settings.savedScrapers')}</h2>
         </div>
 
         {loading ? (
           <div className="empty-state">
-            <p>Loading scrapers...</p>
+            <p>{t('settings.loadingScrapers')}</p>
           </div>
         ) : savedScrapers.length === 0 ? (
           <div className="empty-state">
-            <p>No scrapers saved yet.</p>
-            <p className="form-hint">Use the form above to add your first target site.</p>
+            <p>{t('settings.noScrapersYet')}</p>
+            <p className="form-hint">{t('settings.noScrapersHint')}</p>
           </div>
         ) : (
           <div className="scraper-list">
@@ -963,7 +994,7 @@ const Settings = () => {
                     onClick={() => testScraper(scraper)}
                     disabled={testingId === scraper.id}
                   >
-                    {testingId === scraper.id ? 'Testing...' : 'Test Scraper'}
+                    {testingId === scraper.id ? t('settings.testing') : t('settings.testScraper')}
                   </button>
                   <button
                     type="button"
@@ -971,7 +1002,7 @@ const Settings = () => {
                     onClick={() => removeScraper(scraper.id)}
                     disabled={removingId === scraper.id}
                   >
-                    {removingId === scraper.id ? 'Removing...' : 'Remove'}
+                    {removingId === scraper.id ? t('settings.removing') : t('common.remove')}
                   </button>
                 </div>
               </div>
@@ -987,10 +1018,10 @@ const Settings = () => {
             onClick={syncScrapers}
             disabled={syncing || savedScrapers.length === 0}
           >
-            {syncing ? 'Syncing...' : 'Sync Scrapers Now'}
+            {syncing ? t('settings.syncing') : t('settings.syncScrapersNow')}
           </button>
           <p className="form-hint">
-            Run all saved scrapers and add any new videos to your Media Library.
+            {t('settings.syncHint')}
           </p>
         </div>
       </section>
@@ -1000,37 +1031,37 @@ const Settings = () => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
           </svg>
-          <h2>IPTV / Live TV</h2>
+          <h2>{t('settings.iptvLiveTv')}</h2>
         </div>
 
         <form className="settings-form" onSubmit={handleAddIptv}>
           <div className="form-group">
-            <label htmlFor="iptv-name">Playlist Name (optional)</label>
+            <label htmlFor="iptv-name">{t('settings.playlistNameOptional')}</label>
             <input
               id="iptv-name"
               type="text"
               className="form-input"
-              placeholder="e.g. My IPTV, Sports, Movies"
+              placeholder={t('settings.playlistNamePlaceholder')}
               value={iptvName}
               onChange={(e) => setIptvName(e.target.value)}
             />
           </div>
           <div className="form-group">
-            <label htmlFor="iptv-url">M3U / M3U8 Playlist URL</label>
+            <label htmlFor="iptv-url">{t('settings.playlistUrl')}</label>
             <input
               id="iptv-url"
               type="url"
               className="form-input"
-              placeholder="https://example.com/playlist.m3u8"
+              placeholder={t('settings.playlistUrlPlaceholder')}
               value={iptvUrl}
               onChange={(e) => setIptvUrl(e.target.value)}
             />
             <p className="form-hint">
-              Paste an M3U or M3U8 playlist URL. Channels will appear in your Media Library.
+              {t('settings.playlistUrlHint')}
             </p>
           </div>
           <button type="submit" className="btn btn-primary" disabled={iptvLoading}>
-            {iptvLoading ? 'Loading playlist...' : 'Add IPTV Source'}
+            {iptvLoading ? t('settings.loadingPlaylist') : t('settings.addIptvSource')}
           </button>
         </form>
 
@@ -1040,14 +1071,14 @@ const Settings = () => {
               <div key={src.id} className="scraper-item">
                 <div className="scraper-name">
                   <div className="text-white font-medium">{src.name}</div>
-                  <div className="scraper-details">{src.channelCount} channels &middot; {src.url}</div>
+                  <div className="scraper-details">{src.channelCount} {t('common.channels')} &middot; {src.url}</div>
                 </div>
                 <button
                   type="button"
                   className="btn btn-danger btn-small"
                   onClick={() => handleRemoveIptv(src.id)}
                 >
-                  Remove
+                  {t('common.remove')}
                 </button>
               </div>
             ))}
@@ -1060,43 +1091,41 @@ const Settings = () => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
           </svg>
-          <h2>Video Site Scraping (yt-dlp)</h2>
+          <h2>{t('settings.videoSiteScraping')}</h2>
         </div>
 
         <p className="form-hint" style={{ marginBottom: '16px' }}>
-          yt-dlp supports 1000+ sites including adult platforms (XVideos, Pornhub, etc.),
-          YouTube, Vimeo, and more. Add a direct video URL, search page, or category page URL.
+          {t('settings.ytdlpIntro')}
         </p>
 
         <form className="settings-form" onSubmit={handleScrapeAdultSite}>
           <div className="form-group">
-            <label htmlFor="adult-name">Source Name (optional)</label>
+            <label htmlFor="adult-name">{t('settings.sourceNameOptional')}</label>
             <input
               id="adult-name"
               type="text"
               className="form-input"
-              placeholder="e.g. XVideos, Pornhub, YouTube"
+              placeholder={t('settings.sourceNamePlaceholder')}
               value={adultSiteName}
               onChange={(e) => setAdultSiteName(e.target.value)}
             />
           </div>
           <div className="form-group">
-            <label htmlFor="adult-url">Video / Category / Search Page URL</label>
+            <label htmlFor="adult-url">{t('settings.scrapeUrlLabel')}</label>
             <input
               id="adult-url"
               type="url"
               className="form-input"
-              placeholder="https://www.example.com/category/some-category"
+              placeholder={t('settings.scrapeUrlPlaceholder')}
               value={adultSiteUrl}
               onChange={(e) => setAdultSiteUrl(e.target.value)}
             />
             <p className="form-hint">
-              Works best with direct video pages, category pages, or search result pages.
-              yt-dlp will extract video metadata and stream URLs automatically.
+              {t('settings.ytdlpHint')}
             </p>
           </div>
           <button type="submit" className="btn btn-primary" disabled={scrapingAdult}>
-            {scrapingAdult ? 'Extracting videos...' : 'Scrape Site'}
+            {scrapingAdult ? t('settings.extracting') : t('settings.scrapeSite')}
           </button>
         </form>
       </section>
@@ -1107,15 +1136,15 @@ const Settings = () => {
             <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
             <path d="M13 5l3 3m0 0l-3 3m3-3H8a4 4 0 00-4 4v.5" />
           </svg>
-          <h2>Playback &amp; Quality</h2>
+          <h2>{t('settings.playbackQuality')}</h2>
         </div>
 
         <div className="settings-toggles">
           <div className="toggle-item">
             <span>
-              Default volume
+              {t('settings.defaultVolume')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Used the next time you open any video player.
+                {t('settings.defaultVolumeDesc')}
               </span>
             </span>
             <input
@@ -1126,7 +1155,7 @@ const Settings = () => {
               className="volume-slider"
               value={Math.round((playbackPrefs.defaultVolume ?? 1) * 100)}
               onChange={handleVolumePref}
-              aria-label="Default volume"
+              aria-label={t('settings.defaultVolume')}
               style={{ width: '160px', accentColor: '#3b82f6' }}
             />
             <span className="text-white font-mono text-sm" style={{ width: '44px', textAlign: 'right' }}>
@@ -1136,9 +1165,9 @@ const Settings = () => {
 
           <div className="toggle-item">
             <span>
-              Default playback speed
+              {t('settings.defaultSpeed')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Applied automatically in the player.
+                {t('settings.defaultSpeedDesc')}
               </span>
             </span>
             <select
@@ -1146,7 +1175,7 @@ const Settings = () => {
               style={{ width: 'auto', padding: '6px 10px' }}
               value={playbackPrefs.defaultRate ?? 1}
               onChange={handleRatePref}
-              aria-label="Default playback speed"
+              aria-label={t('settings.defaultSpeed')}
             >
               {[0.5, 0.75, 1, 1.25, 1.5, 2].map(rate => (
                 <option key={rate} value={rate}>{rate}x</option>
@@ -1156,9 +1185,9 @@ const Settings = () => {
 
           <div className="toggle-item">
             <span>
-              Preferred quality
+              {t('settings.preferredQuality')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Auto picks the best available level. Works for adaptive (HLS) streams.
+                {t('settings.preferredQualityDesc')}
               </span>
             </span>
             <select
@@ -1166,10 +1195,10 @@ const Settings = () => {
               style={{ width: 'auto', padding: '6px 10px' }}
               value={playbackPrefs.preferredQuality ?? 'auto'}
               onChange={handleQualityPref}
-              aria-label="Preferred quality"
+              aria-label={t('settings.preferredQuality')}
             >
-              <option value="auto">Auto (best available)</option>
-              <option value="max">Highest quality</option>
+              <option value="auto">{t('settings.qualityAuto')}</option>
+              <option value="max">{t('settings.qualityHighest')}</option>
               <option value="1080">1080p</option>
               <option value="720">720p</option>
               <option value="480">480p</option>
@@ -1184,26 +1213,26 @@ const Settings = () => {
             <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
             <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
-          <h2>Options</h2>
+          <h2>{t('settings.options')}</h2>
         </div>
 
         <div className="settings-toggles">
           <div className="toggle-item">
-            <span>Use yt-dlp for stream extraction</span>
+            <span>{t('settings.useYtDlp')}</span>
             <button
               type="button"
               className={`toggle ${ytDlpEnabled ? 'active' : 'off'}`}
               onClick={toggleYtDlp}
             >
-              {ytDlpEnabled ? 'On' : 'Off'}
+              {ytDlpEnabled ? t('common.on') : t('common.off')}
             </button>
           </div>
         </div>
 
         <div className="danger-zone">
-          <h3 className="text-red-400 font-semibold mb-2">Danger Zone</h3>
+          <h3 className="text-red-400 font-semibold mb-2">{t('settings.dangerZone')}</h3>
           <button type="button" className="clear-database" onClick={clearDatabase}>
-            Clear Database
+            {t('settings.clearDatabase')}
           </button>
         </div>
       </section>
@@ -1213,31 +1242,31 @@ const Settings = () => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M12 2l7 4v6c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6l7-4z" />
           </svg>
-          <h2>API Keys &amp; Secrets</h2>
+          <h2>{t('settings.apiKeysAndSecrets')}</h2>
         </div>
         <div className="settings-toggles">
           <div className="toggle-item">
             <span>
-              Secure vault
+              {t('settings.secureVault')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Keys are encrypted on this PC with the OS keychain (Windows Credential Manager / DPAPI). Values never touch the repository.
+                {t('settings.secureVaultDesc')}
               </span>
             </span>
           </div>
           <div className="toggle-item">
             <span>
-              Stored keys
+              {t('settings.storedKeys')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Click a chip to remove it.
+                {t('settings.storedKeysDesc')}
               </span>
             </span>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'flex-end', maxWidth: '60%' }}>
-              {secretKeys.length === 0 && <span className="form-hint">None yet.</span>}
+              {secretKeys.length === 0 && <span className="form-hint">{t('settings.noneYet')}</span>}
               {secretKeys.map((k) => (
                 <button
                   key={k}
                   type="button"
-                  title={`Remove "${k}"`}
+                  title={t('common.remove') + ` "${k}"`}
                   onClick={() => handleRemoveSecret(k)}
                   style={{
                     display: 'inline-flex', alignItems: 'center', gap: '6px', background: '#111827',
@@ -1252,15 +1281,15 @@ const Settings = () => {
           </div>
           <form className="toggle-item" onSubmit={handleAddSecret}>
             <span>
-              Add a key
+              {t('settings.addKey')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                e.g. SCRAPER_API_KEY, CLOUD_TOKEN, GITHUB_TOKEN…
+                {t('settings.addKeyDesc')}
               </span>
             </span>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
               <input
                 className="form-input"
-                placeholder="Key name"
+                placeholder={t('settings.keyName')}
                 value={secretName}
                 onChange={(e) => setSecretName(e.target.value)}
                 style={{ width: '150px' }}
@@ -1268,13 +1297,13 @@ const Settings = () => {
               <input
                 className="form-input"
                 type="password"
-                placeholder="Value"
+                placeholder={t('settings.value')}
                 value={secretValue}
                 onChange={(e) => setSecretValue(e.target.value)}
                 style={{ width: '180px' }}
               />
               <button type="submit" className="btn btn-primary btn-small" disabled={secretsBusy}>
-                {secretsBusy ? 'Saving…' : 'Save'}
+                {secretsBusy ? t('settings.working') : t('common.save')}
               </button>
             </div>
           </form>
@@ -1286,18 +1315,18 @@ const Settings = () => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M13 2L4.5 12H11l-1 10 8.5-10H12l1-10z" />
           </svg>
-          <h2>Updates</h2>
+          <h2>{t('settings.updates')}</h2>
         </div>
         <div className="settings-toggles">
           <div className="toggle-item">
             <span>
-              App updates
+              {t('settings.appUpdates')}
               <span className="form-hint" style={{ display: 'block', fontSize: '11px' }}>
-                Releases are pulled from GitHub automatically and installed on restart. Check manually below.
+                {t('settings.appUpdatesDesc')}
               </span>
             </span>
             <button type="button" className="btn btn-primary btn-small" onClick={handleCheckUpdates} disabled={updateBusy}>
-              {updateBusy ? 'Checking…' : 'Check for updates'}
+              {updateBusy ? t('settings.checking') : t('settings.checkForUpdates')}
             </button>
           </div>
           {updateMsg && (
@@ -1311,21 +1340,21 @@ const Settings = () => {
       {confirmFor && (
         <div className="passcode-overlay" onClick={() => setConfirmFor(null)}>
           <div className="passcode-dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>{confirmFor.action === 'off' ? 'Turn Family Mode off' : 'Remove family passcode'}</h3>
-            <p>Enter your family passcode to continue.</p>
+            <h3>{confirmFor.action === 'off' ? t('settings.familyOffTitle') : t('settings.removePasscodeTitle')}</h3>
+            <p>{t('settings.enterPasscode')}</p>
             <form onSubmit={handleConfirmSubmit}>
               <input
                 type="password"
                 className="form-input"
-                placeholder="Family passcode"
+                placeholder={t('settings.passcode')}
                 value={confirmCode}
                 onChange={(e) => setConfirmCode(e.target.value)}
                 autoFocus
               />
               {confirmError && <p className="passcode-error">{confirmError}</p>}
               <div className="passcode-actions">
-                <button type="button" className="btn btn-secondary btn-small" onClick={() => setConfirmFor(null)}>Cancel</button>
-                <button type="submit" className="btn btn-primary btn-small">Confirm</button>
+                <button type="button" className="btn btn-secondary btn-small" onClick={() => setConfirmFor(null)}>{t('common.cancel')}</button>
+                <button type="submit" className="btn btn-primary btn-small">{t('settings.confirm')}</button>
               </div>
             </form>
           </div>

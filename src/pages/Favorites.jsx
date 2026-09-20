@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchContext } from '../contexts/SearchContext.jsx';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import isAdultMedia from '../utils/contentSafety.js';
 import MediaCard from '../components/MediaCard.jsx';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
@@ -10,6 +11,7 @@ const Favorites = () => {
   const [loading, setLoading] = useState(true);
   const { searchQuery } = useSearchContext();
   const { settings } = useAppSettings();
+  const { t } = useLanguage();
   const familyMode = settings.familyMode;
   const { playVideo } = usePlayback();
 
@@ -102,7 +104,7 @@ const Favorites = () => {
   return (
     <main className="favorites-page p-6 pb-20">
       <div className="flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold text-white">Your Favorites</h1>
+        <h1 className="text-3xl font-bold text-white">{t('page.favorites.title')}</h1>
         <span className="text-gray-400 text-sm">{filteredFavorites.length} videos</span>
       </div>
 

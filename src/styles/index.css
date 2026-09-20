@@ -190,8 +190,30 @@ body {
 
 .main-content {
   height: calc(100vh - 70px);
-  overflow-y: auto;
+  overflow: hidden;
   -webkit-overflow-scrolling: touch;
+}
+
+/* ---------------------------------------------------------------------------
+   Keep-alive view stack (persistent page mounting).
+   Every visited tab stays in the DOM; inactive views are display:none. Each
+   view owns its scroll container so scroll position is preserved per tab and
+   playback (IPTV / radio) keeps running while another tab is visible.
+   --------------------------------------------------------------------------- */
+.view-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.keepalive-view {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .media-library-page,

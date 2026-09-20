@@ -3,6 +3,7 @@ import MediaCard from '../components/MediaCard.jsx';
 import { usePlaylists } from '../contexts/PlaylistsContext.jsx';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import isAdultMedia from '../utils/contentSafety.js';
 import './Playlists.css';
 
@@ -63,6 +64,7 @@ const shuffle = (list) => {
 const Playlists = () => {
   const { playlists, loading, create, remove, removeItem } = usePlaylists();
   const { settings } = useAppSettings();
+  const { t } = useLanguage();
   const familyMode = settings.familyMode;
 
   const [newName, setNewName] = useState('');
@@ -217,7 +219,7 @@ const Playlists = () => {
   return (
     <div className="playlists-page">
       <div className="playlists-header">
-        <h1 className="page-title">My Mixes &amp; Saved</h1>
+        <h1 className="page-title">{t('nav.mixes')}</h1>
         <p className="playlists-subtitle">Auto-generated mixes plus your own collections. Add items from any card's ⊕ menu.</p>
       </div>
 

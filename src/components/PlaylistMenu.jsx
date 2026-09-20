@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { usePlaylists } from '../contexts/PlaylistsContext.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import './PlaylistMenu.css';
 
 const MENU_WIDTH = 224;
@@ -26,14 +27,16 @@ const PlaylistMenu = ({
   video,
   buttonClassName = 'favorite-btn playlist-btn',
   buttonContent = '⊕',
-  buttonTitle = 'Add to playlist',
+  buttonTitle = null,
   onOpenChange
 }) => {
+  const { t } = useLanguage();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState(null);
   const [newName, setNewName] = useState('');
   const triggerRef = useRef(null);
   const { playlists, addItem, create } = usePlaylists();
+  const label = buttonTitle ?? t('common.addToPlaylist');
 
   const close = useCallback(() => {
     setOpen(false);
@@ -102,10 +105,10 @@ const PlaylistMenu = ({
         type="button"
         className={buttonClassName + (open ? ' active' : '')}
         onClick={openMenu}
-        aria-label={buttonTitle}
+        aria-label={label}
         aria-haspopup="true"
         aria-expanded={open}
-        title={buttonTitle}
+        title={label}
       >
         {buttonContent}
       </button>
@@ -113,10 +116,10 @@ const PlaylistMenu = ({
       {open && anchor && createPortal(
         <div className="pm-backdrop">
           <div className="pm-menu" style={{ top: anchor.top, left: anchor.left, minWidth: MENU_WIDTH, zIndex: 9999 }}>
-            <div className="pm-menu-title">Add to playlist</div>
+            <div className="pm-menu-title">{t('playlist.addToPlaylist')}</div>
             <div className="pm-menu-scroll">
               {playlists.length === 0 && (
-                <div className="pm-menu-empty">No playlists yet.</div>
+                <div className="pm-menu-empty">{t('playlist.noPlaylists')}</div>
               )}
               {playlists.map((p) => (
                 <button
@@ -133,7 +136,7 @@ const PlaylistMenu = ({
             <div className="pm-menu-new">
               <input
                 className="pm-menu-input"
-                placeholder="New playlist…"
+                placeholder={t('playlist.newPlaylist')}
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleCreateAndAdd(e); }}

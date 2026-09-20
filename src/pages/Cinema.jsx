@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Hls from 'hls.js';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import './Cinema.css';
 
 const SEARCH_URL = 'https://archive.org/advancedsearch.php';
@@ -18,6 +19,15 @@ const COLLECTIONS = {
 const ALL_COLLECTIONS_QUERY =
   'collection:(classic_tv_mimetypes OR feature_films OR silent_films)';
 
+// Display labels for the collection chips, keyed by the stable identifier so
+// the state/logic always works on the English bucket names.
+const COLLECTION_LABELS = {
+  'All Classic': 'freeMovies.collectionAll',
+  'Classic Films': 'freeMovies.collectionFilms',
+  'Silent Films': 'freeMovies.collectionSilent',
+  'Classic TV': 'freeMovies.collectionTv'
+};
+
 const toVideo = (doc) => ({
   id: doc.identifier,
   videoTitle: doc.title && String(doc.title).length > 140 ? String(doc.title).slice(0, 140) + '…' : (doc.title || doc.identifier),
@@ -32,6 +42,7 @@ const toVideo = (doc) => ({
 });
 
 const Cinema = () => {
+  const { t } = useLanguage();
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -266,19 +277,19 @@ const Cinema = () => {
   return (
     <div className="cinema-page">
       <div className="cinema-header">
-        <h1 className="page-title">Free Movies</h1>
-        <p className="cinema-subtitle">Public-domain films from the Internet Archive. Browse, search, and play classic features.</p>
+        <h1 className="page-title">{t('nav.freeMovies')}</h1>
+        <p className="cinema-subtitle">{t('freeMovies.subtitle')}</p>
       </div>
 
       <div className="cinema-toolbar">
         <form className="cinema-searchform" onSubmit={submitSearch}>
           <input
             className="cinema-search"
-            placeholder="Search classic films…"
+            placeholder={t('freeMovies.searchPlaceholder')}
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
-          <button className="cinema-btn primary" type="submit" disabled={loading}>Search</button>
+          <button className="cinema-btn primary" type="submit" disabled={loading}>{t('common.search')}</button>
         </form>
         <div className="cinema-cols">
           {Object.keys(COLLECTIONS).map(key => (
@@ -287,7 +298,7 @@ const Cinema = () => {
               className={`cinema-btn ${collection === key && !query ? 'active' : ''}`}
               onClick={() => pickCollection(key)}
             >
-              {key}
+              {t(COLLECTION_LABELS[key] || key)}
             </button>
           ))}
         </div>
@@ -296,9 +307,9 @@ const Cinema = () => {
       {error && <div className="cinema-error">{error}</div>}
 
       {loading ? (
-        <div className="cinema-loading">Loading from Archive.org…</div>
+        <div className="cinema-loading">{t('freeMovies.loading')}</div>
       ) : results.length === 0 ? (
-        <div className="cinema-empty"><p>No results. Try another collection or search term.</p></div>
+        <div className="cinema-empty"><p>{t('freeMovies.empty')}</p></div>
       ) : (
         <>
           <div className="cinema-grid">
@@ -319,7 +330,7 @@ const Cinema = () => {
                     <div className="cinema-fav">
                       <button
                         className={`cinema-fav-btn ${isFav ? 'active' : ''}`}
-                        title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+                        title={isFav ? t('common.removeFromFavorites') : t('common.addToFavorites')}
                         aria-pressed={isFav}
                         disabled={togglingId === favKey}
                         onClick={(e) => { e.stopPropagation(); toggleFavoriteC(v); }}
@@ -335,7 +346,7 @@ const Cinema = () => {
           {hasMore && (
             <div className="cinema-more">
               <button className="cinema-btn primary" onClick={loadMore} disabled={loading || searching}>
-                Load more
+                {t('common.loadMore')}
               </button>
             </div>
           )}
@@ -345,7 +356,7 @@ const Cinema = () => {
       {detailLoading && (
         <div className="cinema-modal-backdrop">
           <div className="cinema-modal">
-            <p>Resolving playable stream…</p>
+            <p>{t('freeMovies.resolving')}</p>
             <div className="cinema-spinner"></div>
           </div>
         </div>
@@ -359,7 +370,7 @@ const Cinema = () => {
             {activeVideo.videoUrl ? (
               <video ref={videoRef} className="cinema-player" controls autoPlay />
             ) : (
-              <p className="cinema-error">No playable stream found for this item.</p>
+              <p className="cinema-error">{t('freeMovies.noStream')}</p>
             )}
           </div>
         </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchContext } from '../contexts/SearchContext.jsx';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
+import { useLanguage } from '../i18n/LanguageContext.jsx';
 import isAdultMedia from '../utils/contentSafety.js';
 import MediaCard from '../components/MediaCard.jsx';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
@@ -25,6 +26,7 @@ const MOCK_VIDEOS = [
 const MediaLibrary = () => {
   const { searchQuery } = useSearchContext();
   const { settings } = useAppSettings();
+  const { t } = useLanguage();
   const familyMode = settings.familyMode;
   const { playVideo } = usePlayback();
   const [videos, setVideos] = useState([]);
@@ -237,7 +239,7 @@ const MediaLibrary = () => {
 
   // Build dynamic filter pills
   const buildFilterPills = () => {
-    const pills = [{ key: 'all', label: `All (${videos.length})` }];
+    const pills = [{ key: 'all', label: `${t('common.all')} (${videos.length})` }];
     
     // Source type pills
     const iptvCount = videos.filter(v => v.sourceSite === 'IPTV').length;
@@ -247,7 +249,7 @@ const MediaLibrary = () => {
       pills.push({ key: 'iptv', label: `IPTV (${iptvCount})`, group: 'source' });
     }
     if (scrapedCount > 0) {
-      pills.push({ key: 'scraped', label: `Web TV & Shows (${scrapedCount})`, group: 'source' });
+      pills.push({ key: 'scraped', label: `${t('library.iptvShows')} (${scrapedCount})`, group: 'source' });
     }
     
     // Type pills (Web TV, Scraped Show, etc.)
@@ -313,16 +315,16 @@ const MediaLibrary = () => {
   return (
     <div className="media-library-page pb-20">
       <div className="library-header flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold text-white">Media Library</h1>
+        <h1 className="text-3xl font-bold text-white">{t('page.library.title')}</h1>
         <div className="flex items-center gap-2">
           {usingMock && (
             <span className="text-xs px-2 py-1 bg-yellow-600/20 text-yellow-400 rounded">
-              Using Demo Data
+              {t('library.usingDemoData')}
             </span>
           )}
           {!usingMock && videos.length > 0 && (
             <span className="text-xs px-2 py-1 bg-gray-700 text-gray-300 rounded">
-              {videos.length} total
+              {videos.length} {t('library.total')}
             </span>
           )}
         </div>
@@ -360,7 +362,7 @@ const MediaLibrary = () => {
               onClick={() => { setSourceFilter('all'); setTypeFilter('all'); setCategoryFilter('all'); setSelectedFolder(null); }}
               className="px-3 py-1.5 text-sm rounded-lg bg-gray-600 text-gray-200 hover:bg-gray-500 transition-colors"
             >
-              Clear Filters
+              {t('library.clearFilters')}
             </button>
           )}
         </div>
@@ -370,9 +372,9 @@ const MediaLibrary = () => {
       {!loading && sourceFilter === 'iptv' && !selectedFolder && Object.keys(iptvGroups).length > 0 && (
         <div className="iptv-folders-view mb-6">
           <div className="folders-header flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-white">IPTV Channels by Category</h2>
+            <h2 className="text-xl font-semibold text-white">{t('library.iptvByCategory')}</h2>
             <span className="text-sm text-gray-400">
-              {Object.keys(iptvGroups).length} categories · {videos.filter(v => v.sourceSite === 'IPTV').length} total channels
+              {Object.keys(iptvGroups).length} {t('library.categories')} · {videos.filter(v => v.sourceSite === 'IPTV').length} {t('library.totalChannels')}
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
@@ -386,9 +388,9 @@ const MediaLibrary = () => {
                 >
                   <div className="folder-icon text-4xl mb-2">📁</div>
                   <h3 className="folder-name font-medium text-white truncate">{groupName}</h3>
-                  <p className="folder-count text-sm text-gray-400 mt-1">{channels.length} channels</p>
+                  <p className="folder-count text-sm text-gray-400 mt-1">{channels.length} {t('library.channels')}</p>
                   <div className="folder-hover-overlay absolute inset-0 bg-blue-600/20 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
-                    <span className="text-blue-300 font-medium">Open →</span>
+                    <span className="text-blue-300 font-medium">{t('library.open')} →</span>
                   </div>
                 </button>
               ))}
@@ -405,11 +407,11 @@ const MediaLibrary = () => {
               className="breadcrumb-btn flex items-center gap-2 text-gray-400 hover:text-white transition-colors"
             >
               <span>←</span>
-              <span>Back to All Folders</span>
+              <span>{t('library.backToFolders')}</span>
             </button>
             <div className="subgrid-info">
               <h2 className="text-xl font-semibold text-white">{selectedFolder}</h2>
-              <p className="text-sm text-gray-400">{iptvGroups[selectedFolder].length} channels</p>
+              <p className="text-sm text-gray-400">{iptvGroups[selectedFolder].length} {t('library.channels')}</p>
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
@@ -426,7 +428,7 @@ const MediaLibrary = () => {
           </div>
           {displayVideos.length === 0 && (
             <div className="text-center py-12 text-gray-400">
-              <p className="text-xl">No channels found in this category</p>
+              <p className="text-xl">{t('library.noChannelsInCategory')}</p>
             </div>
           )}
         </div>
@@ -435,7 +437,7 @@ const MediaLibrary = () => {
       {/* Results count */}
       {searchQuery && (
         <p className="text-gray-400 text-sm mb-4">
-          Showing {displayVideos.length} of {videos.length} videos for "{searchQuery}"
+          {t('library.showing')} {displayVideos.length} {t('library.of')} {videos.length} {t('library.videos')} {t('library.for')} "{searchQuery}"
         </p>
       )}
 
@@ -468,9 +470,9 @@ const MediaLibrary = () => {
           {/* Empty state */}
           {displayVideos.length === 0 && (
             <div className="text-center py-12 text-gray-400">
-              <p className="text-xl">No videos found</p>
+              <p className="text-xl">{t('library.noVideos')}</p>
               <p className="mt-2">
-                {usingMock ? 'Add scraper URLs in Settings to load real content' : 'Try a different search term or filter'}
+                {usingMock ? t('library.emptyAddScrapers') : t('library.emptyTryDifferent')}
               </p>
             </div>
           )}
