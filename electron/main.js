@@ -4692,6 +4692,135 @@ async function xhamsterSearchHtml(searchUrl, count = 25) {
     .slice(0, count || 25);
 }
 
+// ---- SpankBang search (HTML) ------------------------------------------------
+async function spankBangSearchHtml(searchUrl, count = 25) {
+  const cheerio = require('cheerio');
+  const sbHeaders = {
+    'User-Agent': PH_UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://spankbang.com/',
+    'Upgrade-Insecure-Requests': '1',
+    'DNT': '1'
+  };
+  const res = await net.fetch(searchUrl, {
+    method: 'GET',
+    headers: sbHeaders,
+    signal: AbortSignal.timeout(20000),
+    redirect: 'follow'
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  const videos = [];
+  const seen = new Set();
+  const junk = new Set();
+
+  $('.video-item, a.video-item, .video-list .video-item').each((_i, el) => {
+    const block = $(el);
+    // Real SpankBang hits always live under /{id}/video/{slug}/ — reject
+    // category/\"New Videos\"/channel/ad chips exactly like the suite.
+    const link = block.is('a[href*="/video/"]') ? block : block.find('a[href*="/video/"]').first();
+    if (!link.length) return;
+    const href = String(link.attr('href') || '');
+    const abs = /^https?:/i.test(href) ? href : `https://spankbang.com${href}`;
+    if (!/^https?:\/\//i.test(abs)) return;
+    if (!/\/video\//i.test(abs)) return;
+    if (isScrapeJunkUrl(abs) || seen.has(abs)) return;
+    seen.add(abs);
+    const title = cleanThumbTitle(block);
+    if (!title) return;
+    const img = block.find('img').first();
+    const thumb = scrapeThumbUrl(img);
+    const durText = block.find('.duration, var.duration, .d').first().text().trim();
+    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
+    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    if (duration < 1) return;
+    videos.push({
+      id: scrapeVideoId('spankbang', abs, spankBangVideoKey(abs)),
+      title,
+      thumbnailUrl: thumb,
+      videoUrl: abs,
+      pageUrl: abs,
+      duration,
+      category: 'SpankBang',
+      sourceSite: 'spankbang.com',
+      extractor: 'spankbang-html'
+    });
+  });
+
+  return videos.filter(v => v.videoUrl && v.videoUrl.startsWith('http')).slice(0, count);
+}
+
+function spankBangVideoKey(u) {
+  const m = String(u || '').match(/\/video\/([0-9a-zA-Z]+)/i);
+  return m ? m[1] : '';
+}
+
+// ---- HQPorner search (HTML) -------------------------------------------------
+async function hqPornerSearchHtml(searchUrl, count = 25) {
+  const cheerio = require('cheerio');
+  const hqHeaders = {
+    'User-Agent': PH_UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://hqporner.com/',
+    'Upgrade-Insecure-Requests': '1',
+    'DNT': '1'
+  };
+  const res = await net.fetch(searchUrl, {
+    method: 'GET',
+    headers: hqHeaders,
+    signal: AbortSignal.timeout(20000),
+    redirect: 'follow'
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  const videos = [];
+  const seen = new Set();
+
+  $('.video-item, a.video-item, .video-mozaique .video-item, .wd-videos a').each((_i, el) => {
+    const block = $(el);
+    // Real HQPorner (WP) results anchor under /hd/{id}/ — categories, channels
+    // and ad chips anchor elsewhere, so require /hd/ + a real duration.
+    const link = block.is('a[href*="/hd/"]') ? block : block.find('a[href*="/hd/"]').first();
+    if (!link.length) return;
+    const href = String(link.attr('href') || '');
+    const abs = /^https?:/i.test(href) ? href : `https://hqporner.com${href}`;
+    if (!/^https?:\/\//i.test(abs)) return;
+    if (!/\/hd\//i.test(abs)) return;
+    if (isScrapeJunkUrl(abs) || seen.has(abs)) return;
+    seen.add(abs);
+    const title = cleanThumbTitle(block);
+    if (!title) return;
+    const img = block.find('img').first();
+    const thumb = scrapeThumbUrl(img);
+    const durText = block.find('.duration, var.duration').first().text().trim();
+    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
+    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    if (duration < 1) return;
+    videos.push({
+      id: scrapeVideoId('hqporner', abs, hqPornerVideoKey(abs)),
+      title,
+      thumbnailUrl: thumb,
+      videoUrl: abs,
+      pageUrl: abs,
+      duration,
+      category: 'HQPorner',
+      sourceSite: 'hqporner.com',
+      extractor: 'hqporner-html'
+    });
+  });
+
+  return videos.filter(v => v.videoUrl && v.videoUrl.startsWith('http')).slice(0, count);
+}
+
+function hqPornerVideoKey(u) {
+  const m = String(u || '').match(/\/hd\/([0-9a-zA-Z]+)/i);
+  return m ? m[1] : '';
+}
+
 // ---- XNXX search -----------------------------------------------------------
 // XNXX reuses the xvideos-family ".mozaique .thumb-block" result grid. Parse
 // only real /video-{id} thumbs, sanitize junk URLs/titles, and require a
@@ -5142,35 +5271,49 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       }
     }
 
-    // HentaiHaven: WP loop with nav/footer links that masquerade as post
-    // cards. Parse ONLY article post-card containers and drop the nav/footer
-    // title blacklist before accepting a hit.
-    if (/^https?:\/\//i.test(target) && /(^|\.)hentaihaven\./i.test(new URL(target).hostname)) {
-      const hhSearchUrl = new URL(target).origin + '/?s=' + encodeURIComponent(q);
+    // SpankBang search (HTML): server-rendered .video-item grid. Each real
+    // hit anchors under /{id}/video/ so we require that path and junk-filter
+    // like the rest of the top-tier suite.
+    if (/^https?:\/\//i.test(target) && /(^|\.)spankbang\.com$/i.test(new URL(target).hostname)) {
+      const sbSearchUrl = 'https://spankbang.com/s/' + encodeURIComponent(q) + '/';
       try {
-        const hhVideos = await hentaiHavenSearchHtml(hhSearchUrl, count);
-        if (hhVideos.length > 0) {
-          console.log(`[web:search] hentaihaven search returned ${hhVideos.length} results`);
-          return { success: true, source: 'hentaihaven', videos: hhVideos };
+        const sbVideos = await spankBangSearchHtml(sbSearchUrl, count);
+        if (sbVideos.length > 0) {
+          console.log(`[web:search] spankbang search returned ${sbVideos.length} results`);
+          return { success: true, source: 'spankbang', videos: sbVideos };
         }
-      } catch (hhErr) {
-        console.warn(`[web:search] hentaihaven HTML search failed: ${hhErr.message}`);
+      } catch (sbErr) {
+        console.warn(`[web:search] spankbang HTML search failed: ${sbErr.message}`);
       }
     }
 
-    // Hentaimama: JS-rendered WP theme — scrape .post-item results in the
-    // stealth (real-browser) window so links come out clean.
-    if (/^https?:\/\//i.test(target) && /(^|\.)hentaimama\./i.test(new URL(target).hostname)) {
-      const hmSearchUrl = new URL(target).origin + '/?s=' + encodeURIComponent(q);
+    // HQPorner search (HTML): WP post grid under /hd/ real-video paths.
+    if (/^https?:\/\//i.test(target) && /(^|\.)hqporner\.com$/i.test(new URL(target).hostname)) {
+      const hqSearchUrl = 'https://hqporner.com/?s=' + encodeURIComponent(q);
       try {
-        const hmVideos = await hentaiMamaStealthSearch(hmSearchUrl, count);
-        if (hmVideos.length > 0) {
-          console.log(`[web:search] hentaimama stealth search returned ${hmVideos.length} results`);
-          return { success: true, source: 'hentaimama', videos: hmVideos };
+        const hqVideos = await hqPornerSearchHtml(hqSearchUrl, count);
+        if (hqVideos.length > 0) {
+          console.log(`[web:search] hqporner search returned ${hqVideos.length} results`);
+          return { success: true, source: 'hqporner', videos: hqVideos };
         }
-      } catch (hmErr) {
-        console.warn(`[web:search] hentaimama stealth search failed: ${hmErr.message}`);
+      } catch (hqErr) {
+        console.warn(`[web:search] hqporner HTML search failed: ${hqErr.message}`);
       }
+    }
+
+    // Deprecated v1.0.37: hentaihaven's WP loop nav/footer links masquerade as
+    // post cards and ad-hijacked overlays keep breaking the parse; the site is
+    // pruned from the active suite (see scraper-suite pruning note below).
+    if (false && /^https?:\/\//i.test(target) && /(^|\.)hentaihaven\./i.test(new URL(target).hostname)) {
+      // Pruned from the active suite in v1.0.37 — branch disabled.
+    }
+
+    // Deprecated v1.0.37: Hentaimama's JS-rendered WP theme keeps rotating
+    // ad-hijacked .post-item overlays and its stealth DOM work was getting flaky;
+    // the site is pruned from the active suite alongside hentaihaven/zhentube/
+    // uncensored-hentai (see scraper-suite pruning note).
+    if (false && /^https?:\/\//i.test(target) && /(^|\.)hentaimama\./i.test(new URL(target).hostname)) {
+      // Pruned from the active suite in v1.0.37 — branch disabled.
     }
 
     try {
