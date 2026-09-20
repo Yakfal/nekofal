@@ -3629,7 +3629,9 @@ function scrapeThumbUrl(img) {
   const get = (n) => (img.attr
     ? String(img.attr(n) || '')
     : (typeof img.getAttribute === 'function' ? String(img.getAttribute(n) || '') : ''));
-  return get('src') || get('data-src') || get('data-lazy-src');
+  // Lazy-loaded grids publish the real image in data-src first; the raw src is
+  // often a placeholder or a 1x1 tracking gif, so prefer data-src.
+  return get('data-src') || get('src') || get('data-lazy-src');
 }
 
 // v1.0.33: strict thumbnail-title fallback for the grid engines (XNXX, xHamster,
@@ -4186,22 +4188,32 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
   const $ = cheerio.load(html);
   const videos = [];
 
-  $('.mozaique .thumb-block').each((_i, el) => {
+  // v1.0.35: query strictly inside video card containers (.mozaique .thumb-block,
+  // .video-block, #content .thumb-block). Global menu entries ("login", "join
+  // for free", "sign in") and blank chrome live outside these and never match.
+  $('.mozaique .thumb-block, .video-block, #content .thumb-block').each((_i, el) => {
     const block = $(el);
     const link = block.find('a[href*="/video"]').first();
     if (!link.length) return;
     const href = String(link.attr('href') || '');
     const abs = href.startsWith('http') ? href : `https://www.xvideos.com${href}`;
-    const title = (
-      block.find('.title a').attr('title') ||
-      link.attr('title') ||
-      block.find('img').first().attr('alt') ||
-      block.text().replace(/\s+/g, ' ').trim() ||
-      'Untitled'
+    if (!/^https?:/i.test(abs)) return;
+    if (isScrapeJunkUrl(abs)) return;
+    // Title: anchor title attr first, then its text, then link title/poster
+    // alt — and reject menu/login junk, metric-only or <4 char strings.
+    const titleEl = block.find('.title a, .p a, p a').first();
+    let title = (
+      String(titleEl.attr('title') || '') ||
+      String(titleEl.text().replace(/\s+/g, ' ').trim() || '') ||
+      String(link.attr('title') || '') ||
+      String(block.find('img').first().attr('alt') || '') ||
+      String(block.text().replace(/\s+/g, ' ').trim() || '')
     ).trim().substring(0, 200);
+    // isScrapeJunkTitle folds in SCRAPER_TITLE_BLACKLIST, length + metric rules.
+    if (isScrapeJunkTitle(title)) return;
 
     const img = block.find('img').first();
-    const thumb = img.attr('data-src') || img.attr('src') || '';
+    const thumb = scrapeThumbUrl(img);
 
     const durText = block.find('.duration').text().trim();
     let duration = 0;
@@ -4211,10 +4223,8 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
     }
 
     const profile = block.find('.profile-name').first().text().trim();
-    if (!abs.startsWith('http')) return;
     // Sanitize: skip image/avatar URLs and category/language filter links, and
     // require a real duration — the mozaique grid also embeds non-video thumbs.
-    if (isScrapeJunkUrl(abs)) return;
     if (!duration) return;
 
     videos.push({
@@ -4247,8 +4257,18 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
 // the ".mozaique" grid straight from the rendered DOM. Mirrors the same
 // normalized shape as the net.fetch variant.
 const XV_GRID_SCRIPT = `
+function xvJunk(t) {
+  t = (t || '').trim();
+  if (!t || t.length < 4) return true;
+  if (/^(untitled|image source|image)$/i.test(t)) return true;
+  if (/^(?:\\d{1,3}(?:\\.\\d{1,2})?[kmhKMH]?|\\d{1,2}:\\d{2})$/.test(t)) return true;
+  var black = /^(xnxx gold|top creators live|new channel|liked|autoplay|videos i like|uncensored hentai|ai hentai|latest releases|most popular|most liked|settings|sign in|privacy policy|terms of service|contact|about|clear|pick your poison|rta|dmca|faq|home)$/i;
+  if (black.test(t)) return true;
+  if (/^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i.test(t)) return true;
+  return /\\.(?:png|jpe?g|gif|svg|webp)\\b/i.test(t);
+}
 var out = [];
-var blocks = [].slice.call(document.querySelectorAll('.mozaique .thumb-block'));
+var blocks = [].slice.call(document.querySelectorAll('.mozaique .thumb-block, .video-block, #content .thumb-block'));
 for (var i = 0; i < blocks.length; i++) {
   var b = blocks[i];
   var link = b.querySelector('a[href*="/video"]');
@@ -4256,21 +4276,24 @@ for (var i = 0; i < blocks.length; i++) {
   var href = link.getAttribute('href') || '';
   var abs = /^https?:/i.test(href) ? href : 'https://www.xvideos.com' + href;
   if (!abs) continue;
-  var titleEl = b.querySelector('.title a');
-  var title = (titleEl && (titleEl.getAttribute('title') || titleEl.textContent.trim())) || '';
+  var titleEl = b.querySelector('.title a, .p a, p a');
+  var title = '';
+  if (titleEl) title = titleEl.getAttribute('title') || titleEl.textContent.replace(/\\s+/g, ' ').trim() || '';
   if (!title) title = link.getAttribute('title') || '';
-  if (!title) title = (b.querySelector('img') || {}).alt || 'Untitled';
+  if (!title) title = (b.querySelector('img') || {}).alt || '';
+  title = title.trim().slice(0, 200);
+  if (xvJunk(title)) continue;
   var img = b.querySelector('img');
-  var thumb = img ? (img.getAttribute('data-src') || img.src || '') : '';
+  var thumb = img ? (img.getAttribute('data-src') || img.getAttribute('src') || '') : '';
   var d = (b.querySelector('.duration') || {}).textContent || '';
   var dur = 0;
-  var dm = d.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
+  var dm = d.match(/(?:(\\d+)h\\s*)?(\\d+):(\\d+)/);
   if (dm) dur = (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
   if (!dur) continue;
-  if (/\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i.test(abs)) continue;
-  if (/\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese)\//i.test(abs)) continue;
+  if (/\\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i.test(abs)) continue;
+  if (/\\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese)\\//i.test(abs)) continue;
   var profile = (b.querySelector('.profile-name') || {}).textContent || '';
-  out.push({ title: title.slice(0, 200), thumb: thumb, url: abs, duration: dur, profile: profile.trim() });
+  out.push({ title: title, thumb: thumb, url: abs, duration: dur, profile: profile.trim() });
   if (out.length >= __LIMIT__) break;
 }
 return { out: out, href: location.href };
@@ -4588,8 +4611,17 @@ async function xnxxSearchHtml(searchUrl, count = 25) {
     // Strict: only real /video-{id} (classic) or /video/{slug} result pages.
     if (!/\/video-|\/video\//i.test(abs)) return;
     if (isScrapeJunkUrl(abs)) return;
-    const title = cleanThumbTitle(block);
-    if (!title) return;
+    // v1.0.35: expanded title resolution — anchor title attr -> anchor text ->
+    // poster alt -> card title attr. Reject outright when the result is empty,
+    // "untitled"/"Image", purely metric/duration text, or under 4 characters.
+    const titleEl = block.find('.title a, p a').first();
+    const title = (
+      String(titleEl.attr('title') || '') ||
+      String(titleEl.text().replace(/\s+/g, ' ').trim() || '') ||
+      String(block.find('img').first().attr('alt') || '') ||
+      String(block.attr('title') || '')
+    ).trim().substring(0, 200);
+    if (!title || isScrapeJunkTitle(title)) return;
     const img = block.find('img').first();
     const thumb = scrapeThumbUrl(img);
     const durText = block.find('.duration').text().trim();

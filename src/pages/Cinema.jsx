@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Hls from 'hls.js';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
 import { useLanguage } from '../i18n/LanguageContext.jsx';
+import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import './Cinema.css';
 
 const SEARCH_URL = 'https://archive.org/advancedsearch.php';
@@ -41,8 +42,20 @@ const toVideo = (doc) => ({
   _year: doc.year || ''
 });
 
-const Cinema = () => {
+// Mount HLS playback (hls.js) for classic items that expose a manifest. The
+// modal participates in the global media coordinator: it announces its own play
+// (playerId-tagged) and detaches the moment any other keep-alive surface starts
+// a stream, so two sources are never decoding audio at once.
+let cinemaInstanceSeq = 0;
+
+function Cinema() {
   const { t } = useLanguage();
+  const videoRef = useRef(null);
+  const hlsRef = useRef(null);
+  const cinemaIdRef = useRef(`cinema-${++cinemaInstanceSeq}`);
+  const retryAttemptRef = useRef(0);
+  const retryTimerRef = useRef(null);
+  const { notifyMediaPlaying } = usePlayback();
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -216,13 +229,16 @@ const Cinema = () => {
   };
 
   // Mount HLS playback (hls.js) for classic items that expose a manifest.
-  const videoRef = useRef(null);
-  const retryAttemptRef = useRef(0);
-  const retryTimerRef = useRef(null);
   useEffect(() => {
     const el = videoRef.current;
     if (!activeVideo || !el || !activeVideo.videoUrl) return undefined;
     const url = activeVideo.videoUrl;
+    if (hlsRef.current) {
+      try { hlsRef.current.destroy(); } catch (err) {}
+      hlsRef.current = null;
+    }
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    retryTimerRef.current = null;
     let hls = null;
     retryAttemptRef.current = 0;
 
@@ -239,7 +255,7 @@ const Cinema = () => {
         const cur = videoRef.current;
         if (!cur || !activeVideo) return;
         const pos = cur.currentTime || 0;
-        if (hls) hls.startLoad();
+        if (hlsRef.current) hlsRef.current.startLoad();
         else {
           cur.src = activeVideo.videoUrl;
           if (pos > 0) { try { cur.currentTime = pos; } catch {} }
@@ -251,6 +267,7 @@ const Cinema = () => {
     if (/\.m3u8([?#]|$)/i.test(url)) {
       if (Hls.isSupported()) {
         hls = new Hls();
+        hlsRef.current = hls;
         hls.on(Hls.Events.MANIFEST_PARSED, () => { retryAttemptRef.current = 0; });
         hls.on(Hls.Events.ERROR, (_evt, data) => {
           if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) scheduleRetry();
@@ -265,14 +282,45 @@ const Cinema = () => {
     }
     el.onerror = () => scheduleRetry();
     el.onplaying = () => { retryAttemptRef.current = 0; };
+    // Claim the global media slot so keep-alive panes (IPTV etc.) release
+    // their own streams the moment this modal starts.
+    notifyMediaPlaying('free', { playerId: cinemaIdRef.current });
 
     return () => {
+      if (hlsRef.current === hls) hlsRef.current = null;
       if (hls) hls.destroy();
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
       el.onerror = null;
       el.onplaying = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeVideo, videoRef]);
+
+  // Another surface (IPTV pane, overlay full player, Adult/Flexible video)
+  // started playback — release this modal's stream immediately. Events this
+  // very player emitted (matched by playerId) are ignored.
+  useEffect(() => {
+    const onSourceActive = (e) => {
+      const detail = (e && e.detail) || {};
+      if (!detail.source) return;
+      if (detail.playerId && detail.playerId === cinemaIdRef.current) return;
+      const el = videoRef.current;
+      if (hlsRef.current) {
+        try { hlsRef.current.destroy(); } catch (err) {}
+        hlsRef.current = null;
+      }
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+      if (el) {
+        try { el.pause(); } catch (err) {}
+        el.onerror = null;
+        el.onplaying = null;
+      }
+    };
+    window.addEventListener('nek-media-source-active', onSourceActive);
+    return () => window.removeEventListener('nek-media-source-active', onSourceActive);
+  }, []);
 
   return (
     <div className="cinema-page">

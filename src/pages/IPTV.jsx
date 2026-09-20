@@ -96,10 +96,47 @@ async function copyText(text) {
 
 // Embedded pane player: IPTV channels are HLS streams masquerading as random
 // extensions, so hls.js is always given first crack, with a native fallback in
-// case a manifest is really not an m3u8 at all.
+// case a manifest is really not an m3u8 at all. The pane participates in the
+// global media coordinator: it announces itself on play (playerId-tagged) and
+// detaches the instant ANY other player (another keep-alive pane, the overlay
+// full player, an Adult/FreeMovies/Youtube video) starts a stream, so two
+// sources never decode/emit audio at the same time.
+let paneInstanceSeq = 0;
+
 function EmbeddedPlayer({ channel }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
+  const paneIdRef = useRef(`iptv-pane-${++paneInstanceSeq}`);
+  const { notifyMediaPlaying } = usePlayback();
+
+  // Release the pane handle: pause the element and destroy hls.js + clear the
+  // source so no background audio/video leaks from a hidden tab.
+  const detach = useCallback(() => {
+    const el = videoRef.current;
+    if (hlsRef.current) {
+      try { hlsRef.current.destroy(); } catch (err) {}
+      hlsRef.current = null;
+    }
+    if (el) {
+      try { el.pause(); } catch (err) {}
+      el.removeAttribute('src');
+      try { el.load(); } catch (err) {}
+    }
+  }, []);
+
+  // Any playback that started elsewhere claims the media slot: release this
+  // pane's stream immediately. Events this very player emitted (matched by
+  // playerId) are ignored so announcing our own play never self-destructs.
+  useEffect(() => {
+    const onSourceActive = (e) => {
+      const detail = (e && e.detail) || {};
+      if (!detail.source) return;
+      if (detail.playerId && detail.playerId === paneIdRef.current) return;
+      detach();
+    };
+    window.addEventListener('nek-media-source-active', onSourceActive);
+    return () => window.removeEventListener('nek-media-source-active', onSourceActive);
+  }, [detach]);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -132,6 +169,7 @@ function EmbeddedPlayer({ channel }) {
       });
       const play = () => el.play().catch(() => {});
       play();
+      notifyMediaPlaying('iptv', { playerId: paneIdRef.current });
       return () => {
         if (hlsRef.current === hls) hlsRef.current = null;
         try { hls.destroy(); } catch (err) {}
@@ -140,8 +178,10 @@ function EmbeddedPlayer({ channel }) {
     }
     el.src = src;
     el.play().catch(() => {});
+    notifyMediaPlaying('iptv', { playerId: paneIdRef.current });
     return stopNative;
-  }, [channel && channel.videoUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel && channel.videoUrl, notifyMediaPlaying]);
 
   return (
     <div className="iptv-player">
@@ -311,7 +351,9 @@ function IPTV() {
   }, [visibleChannels, selectedChannel]);
 
   const handleSelectChannel = useCallback((ch) => {
-    if (ch) setSelectedChannel(ch);
+    // A fresh spread forces re-attach on repeat clicks of the SAME channel
+    // after another source detached this pane's stream.
+    if (ch) setSelectedChannel((prev) => (prev && prev.id === ch.id && prev === ch ? { ...ch } : ch));
   }, []);
 
   const handleOpenFullPlayer = useCallback((ch) => {

@@ -21,6 +21,32 @@ function isYouTubeMedia(media) {
   );
 }
 
+// ---- Global media-playback coordinator -----------------------------------
+// Every surface that owns a media handle (the IPTV pane preview, the Cinema
+// modal, and the global overlay player opened through `open`/`playVideo`)
+// reports the tab it is playing via notifyMediaPlaying(). The notification is
+// broadcast as a 'nek-media-source-active' window event; keep-alive views that
+// run independent <video>/hls.js handles listen for it and release their own
+// stream the instant anything else starts, so two sources can never play at
+// once (double-audio collisions).
+const ADULT_SITE_HINTS = ['xvideos', 'xnxx', 'pornhub', 'xhamster', 'hentai', 'hanime', 'onlyfans'];
+
+// Map a normalized media payload to the coarse view tab that owns it. This is
+// advisory only — the coordinator never mutates the payload itself.
+function sourceTabOf(media) {
+  if (!media) return null;
+  const s = String(media.sourceSite || '').toLowerCase();
+  const cat = String(media.category || '').toLowerCase();
+  const type = String(media.type || '').toLowerCase();
+  const url = String(media.videoUrl || media.pageUrl || media.webUrl || '');
+  if (!s && !cat && !type && !url) return null;
+  if (type === 'web tv' || s === 'iptv' || cat === 'iptv') return 'iptv';
+  if (media.isAdult || cat === 'adult' || ADULT_SITE_HINTS.some(h => s.includes(h))) return 'adult';
+  if (/classic cinema|archive\.org/.test(s) || /classic|free movie/.test(cat)) return 'free';
+  if (isYouTubeUrl(url)) return 'youtube';
+  return (s.split('.')[0] || cat.split(' ')[0] || 'video').trim() || 'video';
+}
+
 function normalizePlaybackMedia(media) {
   if (!media) return null;
   const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
@@ -65,7 +91,8 @@ const PlaybackContext = createContext({
   close: () => {},
   zapTo: () => {},
   resolving: null,
-  setMediaSession: () => {}
+  setMediaSession: () => {},
+  notifyMediaPlaying: () => {}
 });
 
 export function PlaybackProvider({ children }) {
@@ -188,6 +215,19 @@ export function PlaybackProvider({ children }) {
     return () => { if (unsub) unsub(); };
   }, []);
 
+  // ---- Global media-playback coordinator ----------------------------------
+  // Records which view tab just claimed the media slot and broadcasts a
+  // 'nek-media-source-active' event (with the owning playerId when the caller
+  // is its own embedded player) so every other keep-alive surface can release
+  // its <video>/hls.js handle and never double-play audio.
+  const activeMediaSourceRef = useRef(null);
+  const notifyMediaPlaying = useCallback((sourceTab, opts = {}) => {
+    activeMediaSourceRef.current = sourceTab || null;
+    window.dispatchEvent(new CustomEvent('nek-media-source-active', {
+      detail: { source: sourceTab || null, playerId: opts && opts.playerId ? opts.playerId : null }
+    }));
+  }, []);
+
   const close = useCallback(() => {
     setActiveVideo(null);
     setActiveChannels(null);
@@ -200,13 +240,17 @@ export function PlaybackProvider({ children }) {
   // the prop change) while keeping the zapping list/index in sync.
   const zapTo = useCallback((video, index) => {
     if (!video) return;
+    notifyMediaPlaying(sourceTabOf(video));
     setActiveVideo(video);
     if (Number.isInteger(index)) setActiveChannelIndex(index);
-  }, []);
+  }, [notifyMediaPlaying]);
 
   const open = useCallback((video, opts = {}) => {
     const normed = normalizePlaybackMedia(video);
     if (!normed) return;
+    // Every overlay playback start claims the global media slot, so background
+    // keep-alive panes (IPTV/Cinema) pause & detach their own streams.
+    notifyMediaPlaying(sourceTabOf(normed));
     setActiveVideo(normed);
     if (Array.isArray(opts.channels) && opts.channels.length > 0) {
       setActiveChannels(opts.channels);
@@ -226,7 +270,7 @@ export function PlaybackProvider({ children }) {
     } else {
       setSaveMenuVideo(null);
     }
-  }, []);
+  }, [notifyMediaPlaying]);
 
   // ----- Dynamic stream re-extraction pipeline ------------------------------
   // Favorites/history now persist canonical metadata (id/title/pageUrl) — NOT
@@ -411,8 +455,8 @@ export function PlaybackProvider({ children }) {
   };
 
   const value = useMemo(
-    () => ({ activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession }),
-    [activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession]
+    () => ({ activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession, notifyMediaPlaying }),
+    [activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession, notifyMediaPlaying]
   );
 
   return (
