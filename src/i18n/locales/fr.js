@@ -268,6 +268,9 @@ const fr = {
 
   // TV en direct / IPTV
   'liveTv.noPlaylistsYet': 'Aucune playlist pour l\'instant — ajoutez votre première M3U/M3U8 ci-dessous.',
+  'liveTv.probing': 'Vérification de la disponibilité des flux…',
+  'liveTv.hiddenChannels': 'chaînes masquées (hors ligne/géo-bloquées)',
+  'liveTv.recheck': 'Revérifier',
   'liveTv.refresh': '⟳ Actualiser',
   'liveTv.refreshing': 'Actualisation…',
   'liveTv.addPlaylist': '+ Ajouter une playlist',

@@ -268,6 +268,9 @@ const ko = {
 
   // 라이브 TV / IPTV
   'liveTv.noPlaylistsYet': '아직 재생목록이 없습니다 — 아래에서 첫 번째 M3U/M3U8을 추가하세요.',
+  'liveTv.probing': '스트림 가용성 확인 중…',
+  'liveTv.hiddenChannels': '채널 숨김 (오프라인/지역 차단)',
+  'liveTv.recheck': '다시 확인',
   'liveTv.refresh': '⟳ 새로고침',
   'liveTv.refreshing': '새로고침 중…',
   'liveTv.addPlaylist': '+ 재생목록 추가',

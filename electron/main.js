@@ -184,6 +184,46 @@ function withYtDlpArgs(args) {
   return withJsRuntimeArgs(withFFmpegArgs(args));
 }
 
+// YouTube player_client roster fallback chain. `android,web` yields the richest
+// manifest (every resolution tier up to 2160p with audio), but Google sometimes
+// flags a single client — or its IP — with a "Sign in to confirm you're not a
+// bot" wall. Walk the chain down to the bare default (the pre-1.0.38 behavior)
+// so playback survives transient bot checks instead of failing hard.
+const YT_CLIENT_OVERRIDES = [
+  'youtube:player_client=android,web',
+  'youtube:player_client=web',
+  'youtube:player_client=web_safari',
+  'youtube:player_client=tv',
+  null // bare default — yt-dlp's own client selection
+];
+
+// yt-dlp error fingerprints that a client swap can plausibly fix.
+const RETRIABLE_YT = /sign in to confirm|not a bot|HTTP Error 403|too many requests|\b429\b|player client|nsig|unable to extract.*player|stopped at elapsed/i;
+// Errors no roster will ever fix — surface the first one immediately rather
+// than wasting three extra round-trips.
+const HARD_YT = /video unavailable|private video|members only|has been deleted|removed by the uploader|not available in your country|copyright|cannot be played|this video is not available/i;
+
+async function youtubeDumpJson(url) {
+  let lastErr = null;
+  for (const override of YT_CLIENT_OVERRIDES) {
+    const args = [url, '-j', '--no-playlist'];
+    if (override) args.push('--extractor-args', override);
+    try {
+      return await ytDlp.execPromise(withYtDlpArgs(args));
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err.message || '');
+      if (HARD_YT.test(msg)) throw err;
+      console.warn(`[yt-dlp] YouTube client "${override || 'default'}" failed: ${msg.slice(0, 200)}`);
+    }
+  }
+  if (lastErr && /sign in to confirm|not a bot/i.test(String(lastErr.message || ''))) {
+    lastErr.message = 'YouTube is blocking this connection with its "Sign in to confirm you\'re not a bot" check on every player client. ' +
+      'Try a different network/VPN, retry later, or provide YouTube cookies (Settings → Sign-in cookies). ' + lastErr.message;
+  }
+  throw lastErr;
+}
+
 // True for yt-dlp formats that resolve to an HLS (m3u8) master playlist.
 // The <video> element + hls.js plays these directly, and YouTube's per-tier
 // HLS variants carry BOTH video and audio at every level — so a 4K/1440p
@@ -1750,20 +1790,11 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
     
     let ytDlpArgs;
     if (isYouTube) {
-      // YouTube: dump ALL formats (DASH + per-tier HLS) up to 2160p so the
-      // player menu lists every resolution tier (incl. 1440p (2K) / 2160p
-      // (4K)). The android,web player_client roster keeps the manifest rich
-      // while dodging YouTube's modern-clean throttling (android alone would
-      // cap the tiers); --js-runtimes node (appended by withYtDlpArgs below)
-      // lets yt-dlp evaluate YouTube's EJS player JavaScript. The per-tier
-      // m3u8 (m3u8_native) formats carry video+audio at every height, so
-      // 4K/2K play with sound via hls.js.
-      ytDlpArgs = [
-        url,
-        '-j',
-        '--no-playlist',
-        '--extractor-args', 'youtube:player_client=android,web'
-      ];
+      // YouTube: roster/fallback handled by youtubeDumpJson() (android,web →
+      // web → web_safari → tv → default), which keeps the manifest rich while
+      // surviving "not a bot" walls. --js-runtimes node is appended by
+      // withYtDlpArgs for yt-dlp to evaluate YouTube's EJS player JavaScript.
+      ytDlpArgs = null;
     } else {
       // Other sites: use JSON output with impersonate for Cloudflare bypass.
       // -f 'b' picks the best combined stream (merges video+audio via ffmpeg
@@ -1776,8 +1807,10 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
         '--extractor-args', 'generic:impersonate'
       ];
     }
-    
-    const rawOutput = await ytDlp.execPromise(withYtDlpArgs(ytDlpArgs));
+
+    const rawOutput = isYouTube
+      ? await youtubeDumpJson(url)
+      : await ytDlp.execPromise(withYtDlpArgs(ytDlpArgs));
 
     let info;
     let streamUrl = null;
@@ -3567,6 +3600,79 @@ ipcMain.handle('db:getVideosBySource', async (event, sourceSite) => {
     if (error) return { success: false, error: 'Database not available: ' + error };
     const videos = await db.getVideosBySource(sourceSite);
     return { success: true, data: videos };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// IPTV pre-flight health probe. The renderer feeds the current channel list;
+// each unique stream URL is probed (HEAD, then a tiny ranged GET as fallback)
+// through a bounded concurrency pool so a few hundred channels are checked in
+// seconds. Dead channels (server offline, geo-blocked, wrong token) come back
+// flagged ok:false and the UI hides them from the list.
+ipcMain.handle('iptv:probeChannels', async (event, { channels }) => {
+  try {
+    const list = Array.isArray(channels) ? channels : [];
+    const seen = new Set();
+    const urls = [];
+    for (const ch of list) {
+      const u = (typeof ch === 'string' ? ch : (ch && ch.videoUrl)) || '';
+      if (!u || typeof u !== 'string' || seen.has(u)) continue;
+      seen.add(u);
+      urls.push(u);
+    }
+    if (urls.length === 0) return { success: true, results: [] };
+
+    const axios = require('axios');
+    const baseUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+    const probeOne = async (url) => {
+      const t0 = Date.now();
+      const headers = { 'User-Agent': baseUA };
+      let origin = '';
+      try { origin = new URL(url).origin + '/'; } catch (_e) {}
+      if (origin) headers.Referer = origin;
+      // HEAD first; some playlist/CDN servers reject HEAD, so fall back to a
+      // tiny ranged GET that only pulls the manifest head.
+      for (const method of ['head', 'get']) {
+        try {
+          const res = await axios({
+            method,
+            url,
+            timeout: 6000,
+            headers: method === 'get' ? { ...headers, Range: 'bytes=0-4095' } : headers,
+            maxRedirects: 6,
+            responseType: 'arraybuffer',
+            validateStatus: s => s >= 200 && s < 400
+          });
+          return { ok: true, status: res.status, ms: Date.now() - t0 };
+        } catch (err) {
+          if (method === 'head') continue;
+          const status = (err && err.response && err.response.status) || 0;
+          return { ok: false, status, ms: Date.now() - t0 };
+        }
+      }
+      return { ok: false, status: 0, ms: Date.now() - t0 };
+    };
+
+    // Bounded concurrency pool (12 at a time).
+    const results = new Array(urls.length);
+    const CONCURRENCY = 12;
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, urls.length) }, async () => {
+      while (next < urls.length) {
+        const i = next++;
+        try {
+          results[i] = { url: urls[i], ...(await probeOne(urls[i])) };
+        } catch (e) {
+          results[i] = { url: urls[i], ok: false, status: 0, ms: 0 };
+        }
+      }
+    }));
+
+    const alive = results.filter(r => r.ok).length;
+    console.log(`[iptv:probe] ${alive}/${results.length} channels reachable in ${Math.max(...results.map(r => r.ms)).toFixed(0)}ms`);
+    return { success: true, results };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -5593,6 +5699,7 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
           mainWindow.webContents.executeJavaScript(
             '(' + function () {
               const run = async () => {
+                window.dispatchEvent(new CustomEvent('scrapers-sync-started'));
                 const res = await window.electronAPI?.runScrapers?.();
                 if (res) window.dispatchEvent(new CustomEvent('scrapers-synced', { detail: { silent: true, inserted: res.inserted } }));
               };

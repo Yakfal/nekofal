@@ -268,6 +268,9 @@ const de = {
 
   // Live-TV / IPTV
   'liveTv.noPlaylistsYet': 'Noch keine Wiedergabelisten — füge unten deine erste M3U/M3U8 hinzu.',
+  'liveTv.probing': 'Verfügbarkeit der Streams wird geprüft…',
+  'liveTv.hiddenChannels': 'Sender ausgeblendet (offline/gesperrt)',
+  'liveTv.recheck': 'Erneut prüfen',
   'liveTv.refresh': '⟳ Aktualisieren',
   'liveTv.refreshing': 'Aktualisiere…',
   'liveTv.addPlaylist': '+ Wiedergabeliste hinzufügen',

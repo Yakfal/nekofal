@@ -268,6 +268,9 @@ const ru = {
 
   // Прямые ТВ / IPTV
   'liveTv.noPlaylistsYet': 'Плейлистов пока нет — добавьте первый M3U/M3U8 ниже.',
+  'liveTv.probing': 'Проверка доступности каналов…',
+  'liveTv.hiddenChannels': 'каналов скрыто (офлайн/гео-блок)',
+  'liveTv.recheck': 'Проверить снова',
   'liveTv.refresh': '⟳ Обновить',
   'liveTv.refreshing': 'Обновление…',
   'liveTv.addPlaylist': '+ Добавить плейлист',

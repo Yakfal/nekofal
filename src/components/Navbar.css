@@ -231,58 +231,87 @@
   stroke-width: 2;
 }
 
-/* Sync Scrapers Button */
-.sync-button {
-  display: flex;
+/* Library sync status pill */
+.sync-status {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
-  border: none;
-  border-radius: 8px;
-  color: white;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text-muted);
   font-size: 0.75rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
   white-space: nowrap;
+  user-select: none;
 }
 
-.sync-button:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--accent-hover), var(--accent-hover));
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px var(--accent-soft);
-}
-
-.sync-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.sync-button svg {
-  width: 18px;
-  height: 18px;
-  stroke-width: 2;
+.sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.8);
   flex-shrink: 0;
 }
 
-.sync-button .spin {
-  animation: spin 1s linear infinite;
+.sync-dot.pulse {
+  animation: syncPulse 1.1s ease-in-out infinite;
 }
 
-.sync-tooltip {
-  display: none;
+@keyframes syncPulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
 }
 
-@media (min-width: 640px) {
-  .sync-tooltip {
-    display: inline;
-  }
+.sync-status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+.sync-new {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+@media (max-width: 767px) {
+  .sync-status { display: none; }
+}
+
+/* Quick theme toggle (full entry lives in the ⋮ menu) */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 10px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.theme-toggle:hover {
+  color: var(--text);
+  background: var(--hover-overlay);
+}
+
+@media (min-width: 768px) {
+  .theme-toggle { opacity: 1; }
+}
+
+.theme-toggle svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2;
 }
 
 /* Mobile menu dropdown */

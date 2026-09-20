@@ -5,6 +5,17 @@ import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
 import logoUrl from '../assets/logo.svg';
 import './Navbar.css';
 
+function timeAgo(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 const Navbar = forwardRef(function Navbar(props, ref) {
   const { searchQuery, setSearchQuery } = useSearchContext();
   const { settings, setTheme } = useAppSettings();
@@ -15,6 +26,28 @@ const Navbar = forwardRef(function Navbar(props, ref) {
 
   const isVideoPlayerPage = location.pathname.startsWith('/video/');
   const isLibraryPage = location.pathname === '/library';
+
+  // Live library-sync status. Backed by the `scrapers-sync-started`/`scrapers-synced`
+  // events fired by main's background scraper sync (and by in-app refresh actions).
+  const [syncState, setSyncState] = useState({ syncing: false, lastSynced: null, inserted: 0 });
+
+  useEffect(() => {
+    const onStarted = () => setSyncState(s => ({ ...s, syncing: true }));
+    const onSynced = (e) => {
+      const d = (e && e.detail) || {};
+      setSyncState(s => ({
+        syncing: false,
+        lastSynced: Date.now(),
+        inserted: d.inserted !== undefined ? d.inserted : s.inserted,
+      }));
+    };
+    window.addEventListener('scrapers-sync-started', onStarted);
+    window.addEventListener('scrapers-synced', onSynced);
+    return () => {
+      window.removeEventListener('scrapers-sync-started', onStarted);
+      window.removeEventListener('scrapers-synced', onSynced);
+    };
+  }, []);
 
   // Forward the ref to the menu wrapper
   const menuWrapperRef = useRef(null);
@@ -138,7 +171,43 @@ const Navbar = forwardRef(function Navbar(props, ref) {
           </div>
         )}
 
+        {/* Library sync status — live pill for background scraper syncs */}
+        {!isVideoPlayerPage && (
+          <div
+            className="sync-status"
+            title={syncState.lastSynced ? `Last synced ${timeAgo(syncState.lastSynced)}` : 'Library not synced yet'}
+          >
+            <span className={`sync-dot ${syncState.syncing ? 'pulse' : ''}`} aria-hidden="true" />
+            <span className="sync-status-text">
+              {syncState.syncing
+                ? 'Updating library…'
+                : syncState.lastSynced
+                  ? `Synced ${timeAgo(syncState.lastSynced)}`
+                  : 'Library in sync'}
+              {!syncState.syncing && syncState.lastSynced && syncState.inserted > 0 && (
+                <span className="sync-new">+{syncState.inserted}</span>
+              )}
+            </span>
+          </div>
+        )}
 
+        {/* Theme toggle — quick sun/moon; the full menu entry lives in the ⋮ menu */}
+        {!isVideoPlayerPage && (
+          <button
+            className="theme-toggle"
+            aria-label="Toggle theme"
+            title={settings.theme === 'dark-cyber' ? 'Switch to light theme' : 'Switch to dark theme'}
+            onClick={() => setTheme(settings.theme === 'dark-cyber' ? 'light-sky' : 'dark-cyber')}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              {settings.theme === 'dark-cyber' ? (
+                <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2M5.22 5.22l1.42 1.42m10.72 10.72l1.42 1.42M3 12h2m14 0h2M5.22 18.78l1.42-1.42M17.36 7.64l1.42-1.42M12 8a4 4 0 100 8 4 4 0 000-8z" />
+              ) : (
+                <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+              )}
+            </svg>
+          </button>
+        )}
 
         {/* App Menu - Three dots dropdown */}
         {!isVideoPlayerPage && (

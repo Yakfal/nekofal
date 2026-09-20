@@ -268,6 +268,9 @@ const it = {
 
   // TV dal vivo / IPTV
   'liveTv.noPlaylistsYet': 'Nessuna playlist ancora — aggiungi qui sotto la tua prima M3U/M3U8.',
+  'liveTv.probing': 'Verifica della disponibilità dei canali…',
+  'liveTv.hiddenChannels': 'canali nascosti (offline/bloccati)',
+  'liveTv.recheck': 'Riverifica',
   'liveTv.refresh': '⟳ Aggiorna',
   'liveTv.refreshing': 'Aggiornamento…',
   'liveTv.addPlaylist': '+ Aggiungi playlist',

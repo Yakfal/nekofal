@@ -268,6 +268,9 @@ const ja = {
 
   // ライブTV / IPTV
   'liveTv.noPlaylistsYet': 'プレイリストはまだありません — 下から最初のM3U/M3U8を追加してください。',
+  'liveTv.probing': 'ストリームの可用性を確認中…',
+  'liveTv.hiddenChannels': 'チャンネル非表示（オフライン/地域制限）',
+  'liveTv.recheck': '再確認',
   'liveTv.refresh': '⟳ 更新',
   'liveTv.refreshing': '更新中…',
   'liveTv.addPlaylist': '+ プレイリストを追加',

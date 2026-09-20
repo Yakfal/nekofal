@@ -268,6 +268,9 @@ const zh = {
 
   // 电视直播 / IPTV
   'liveTv.noPlaylistsYet': '还没有播放列表 — 请在下方添加第一个 M3U/M3U8。',
+  'liveTv.probing': '正在检查信号可用性…',
+  'liveTv.hiddenChannels': '个频道已隐藏（离线/区域限制）',
+  'liveTv.recheck': '重新检测',
   'liveTv.refresh': '⟳ 刷新',
   'liveTv.refreshing': '刷新中…',
   'liveTv.addPlaylist': '+ 添加播放列表',

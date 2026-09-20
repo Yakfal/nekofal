@@ -248,6 +248,15 @@ function IPTV() {
   const [copied, setCopied] = useState(false);
   const [favBusy, setFavBusy] = useState(null);
 
+  // Pre-flight stream health (session-scoped): urls proven reachable stay in
+  // okRef, urls that failed go to deadRef and their channels are filtered out
+  // of the list before the user browses. Dead urls can be re-checked anytime
+  // via the chip that appears when anything was hidden.
+  const okRef = useRef(new Set());
+  const deadRef = useRef(new Set());
+  const probeSeqRef = useRef(0);
+  const [probeInfo, setProbeInfo] = useState({ running: false, hidden: 0, checking: 0, newlyDead: 0 });
+
   // Load favorite ids once so each channel card shows the real DB state and
   // toggles update the grid immediately (same IPC path as every other surface).
   useEffect(() => {
@@ -269,6 +278,40 @@ function IPTV() {
     setTimeout(() => setToast(null), 3000);
   }, []);
 
+  // Probe every channel url that is neither known-good nor known-dead this
+  // session; merge results back incrementally and hide freshly-discovered dead
+  // channels. Runs concurrently main-process-side, so only one round-trip per
+  // url happens and the list keeps browsing instantly.
+  // NOTE: must be defined BEFORE loadAll — hook dependency arrays read their
+  // members eagerly, so referencing probeUntested before it initializes would
+  // throw a TDZ ReferenceError at render time.
+  const probeUntested = useCallback(async (cards) => {
+    const api = getApi();
+    if (!api?.probeIptvChannels || !Array.isArray(cards) || cards.length === 0) return;
+    const untested = cards.filter(c => c.videoUrl && !okRef.current.has(c.videoUrl) && !deadRef.current.has(c.videoUrl));
+    if (untested.length === 0) return;
+    const seq = ++probeSeqRef.current;
+    setProbeInfo(prev => ({ ...prev, running: true, checking: untested.length }));
+    try {
+      const res = await api.probeIptvChannels(untested.map(c => ({ title: c.title, videoUrl: c.videoUrl })));
+      if (seq !== probeSeqRef.current) return; // superseded by a newer probe
+      const report = (res?.results || []).reduce((m, r) => { if (r && r.url) m[r.url] = !!r.ok; return m; }, {});
+      let newlyDead = 0;
+      for (const c of untested) {
+        if (report[c.videoUrl] === true) okRef.current.add(c.videoUrl);
+        else if (report[c.videoUrl] === false) { deadRef.current.add(c.videoUrl); newlyDead++; }
+      }
+      if (newlyDead > 0) {
+        setChannels(prev => prev.filter(c => !deadRef.current.has(c.videoUrl)));
+        showToast(`Hidden ${newlyDead} unavailable channel${newlyDead === 1 ? '' : 's'} (offline or geo-blocked)`, 'ok');
+      }
+      setProbeInfo({ running: false, hidden: deadRef.current.size, checking: 0, newlyDead });
+    } catch (err) {
+      console.error('[IPTV] probe failed:', err);
+      setProbeInfo(prev => ({ ...prev, running: false, checking: 0 }));
+    }
+  }, [showToast]);
+
   const loadAll = useCallback(async () => {
     try {
       setLoading(true);
@@ -277,13 +320,28 @@ function IPTV() {
       const src = await api.getIptvSources();
       if (src?.success) setSources(src.data || []);
       const ch = await api.getVideosBySource('IPTV');
-      if (ch?.success) setChannels((ch.data || []).map(toCard));
+      if (ch?.success) {
+        const cards = (ch.data || []).map(toCard);
+        // Forget ok-markers for urls that no longer exist, keep dead-marks
+        // (a vanished channel's url is gone anyway — harmless to keep).
+        okRef.current = new Set(cards.filter(c => okRef.current.has(c.videoUrl)).map(c => c.videoUrl));
+        setChannels(cards.filter(c => !deadRef.current.has(c.videoUrl)));
+        probeUntested(cards);
+      }
     } catch (err) {
       console.error('[IPTV] load failed:', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [probeUntested]);
+
+  // Retest previously-dead channels (their server may be back, or the viewer
+  // switched networks/VPNs).
+  const recheckDead = useCallback(() => {
+    deadRef.current = new Set();
+    setProbeInfo({ running: false, hidden: 0, checking: 0, newlyDead: 0 });
+    loadAll();
+  }, [loadAll]);
 
   useEffect(() => {
     loadAll();
@@ -516,6 +574,23 @@ function IPTV() {
           </div>
         ))}
       </div>
+
+      {/* Stream health status: checking on load, or hidden-channel count with a re-check action */}
+      {(probeInfo.running || probeInfo.hidden > 0) && (
+        <div className={`iptv-probe ${probeInfo.hidden > 0 && !probeInfo.running ? 'has-hidden' : ''}`}>
+          {probeInfo.running ? (
+            <span className="iptv-probe-run">
+              <span className="iptv-probe-spinner" aria-hidden="true" />
+              {t('liveTv.probing')} {probeInfo.checking}
+            </span>
+          ) : (
+            <span className="iptv-probe-done">
+              {probeInfo.hidden} {t('liveTv.hiddenChannels')}
+              <button className="iptv-probe-recheck" onClick={recheckDead}>{t('liveTv.recheck')}</button>
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Channel guide: 8-category tab bar + Xuper two-pane layout */}
       {!loading && categorized.length > 0 && (

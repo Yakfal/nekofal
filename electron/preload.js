@@ -81,6 +81,10 @@ const api = {
   getIptvSources: () => ipcRenderer.invoke('iptv:getSources'),
   removeIptvSource: (sourceId) => ipcRenderer.invoke('iptv:removeSource', sourceId),
 
+  // IPTV pre-flight: probe which channel streams are actually reachable so
+  // dead/geo-blocked channels can be filtered out of the channel list.
+  probeIptvChannels: (channels) => ipcRenderer.invoke('iptv:probeChannels', { channels }),
+
   // yt-dlp bulk extraction (for adult sites, etc.)
   ytDlpBulk: (urls, sourceSite) => ipcRenderer.invoke('scrapers:ytDlpBulk', { urls, sourceSite }),
 
