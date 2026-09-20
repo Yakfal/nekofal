@@ -176,11 +176,17 @@
 
 /* ---- Horizontal category tab bar ----------------------------------------- */
 .iptv-tabs {
+  position: sticky;
+  top: 8px;
+  z-index: 30;
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 10px 0 10px;
-  padding-bottom: 6px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
   overflow-x: auto;
   scrollbar-width: thin;
 }

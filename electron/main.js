@@ -258,6 +258,22 @@ async function ensureYtDlpBinary() {
   }
 }
 
+// v1.0.38: background yt-dlp self-update. Fires a few seconds after startup
+// (never blocks boot) so the binary stays recent and every extractor ships the
+// freshest scripts. `yt-dlp -U` is fully async and any error is non-fatal.
+function scheduleYtDlpUpdate() {
+  setTimeout(async () => {
+    try {
+      if (!ytDlp) await ensureYtDlpBinary();
+      const out = await ytDlp.execPromise(['-U']);
+      const lines = String(out || '').trim().split('\n').map(l => l.trim()).filter(Boolean);
+      console.log('[yt-dlp] updater:', lines.length ? lines[lines.length - 1] : 'up to date');
+    } catch (err) {
+      console.warn('[yt-dlp] startup self-update skipped:', err.message);
+    }
+  }, 4000);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -1734,17 +1750,19 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
     
     let ytDlpArgs;
     if (isYouTube) {
-      // YouTube: dump ALL formats (DASH + per-tier HLS) up to 2160p with the
-      // default client so the player menu lists every resolution tier (incl.
-      // 1440p (2K) / 2160p (4K)). Calling with a restrictive `-f` expression
-      // or a restricted player_client roster reduces the manifest to a single
-      // low-res progressive format, so we deliberately omit both and consume
-      // info.formats directly. The per-tier m3u8 (m3u8_native) formats carry
-      // video+audio at every height, so 4K/2K play with sound via hls.js.
+      // YouTube: dump ALL formats (DASH + per-tier HLS) up to 2160p so the
+      // player menu lists every resolution tier (incl. 1440p (2K) / 2160p
+      // (4K)). The android,web player_client roster keeps the manifest rich
+      // while dodging YouTube's modern-clean throttling (android alone would
+      // cap the tiers); --js-runtimes node (appended by withYtDlpArgs below)
+      // lets yt-dlp evaluate YouTube's EJS player JavaScript. The per-tier
+      // m3u8 (m3u8_native) formats carry video+audio at every height, so
+      // 4K/2K play with sound via hls.js.
       ytDlpArgs = [
         url,
         '-j',
-        '--no-playlist'
+        '--no-playlist',
+        '--extractor-args', 'youtube:player_client=android,web'
       ];
     } else {
       // Other sites: use JSON output with impersonate for Cloudflare bypass.
@@ -5563,8 +5581,31 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
     Menu.setApplicationMenu(null);
     await initializeAppDatabase();
     await ensureYtDlpBinary();
+    scheduleYtDlpUpdate();
     
     isReady = true;
+
+    // v1.0.38: silent background scraper sync. Runs once on startup, then on a
+    // 12h timer, so curated libraries refresh without a manual header button.
+    const silentScraperSync = async () => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.executeJavaScript(
+            '(' + function () {
+              const run = async () => {
+                const res = await window.electronAPI?.runScrapers?.();
+                if (res) window.dispatchEvent(new CustomEvent('scrapers-synced', { detail: { silent: true, inserted: res.inserted } }));
+              };
+              return run();
+            }.toString() + ')()'
+          ).catch(() => {});
+        }
+      } catch (_e) {}
+    };
+    setTimeout(silentScraperSync, 8000);
+    setInterval(silentScraperSync, 12 * 60 * 60 * 1000);
+
+
     if (!mainWindow) createWindow();
     await startVideoServer();
     setupWebRequestHeaders();

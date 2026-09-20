@@ -180,7 +180,12 @@ function EmbeddedPlayer({ channel }) {
       el.load();
       return undefined;
     }
-    const stopNative = () => { el.removeAttribute('src'); try { el.load(); } catch (err) {} };
+    const stopNative = () => {
+      const v = el;
+      try { if (!v.paused) v.pause(); } catch (err) {}
+      v.removeAttribute('src');
+      try { v.load(); } catch (err) {}
+    };
     if (/m3u8/i.test(src) && Hls.isSupported()) {
       const hls = new Hls();
       hlsRef.current = hls;
@@ -199,8 +204,13 @@ function EmbeddedPlayer({ channel }) {
       play();
       notifyMediaPlaying('iptv', { playerId: paneIdRef.current });
       return () => {
-        if (hlsRef.current === hls) hlsRef.current = null;
-        try { hls.destroy(); } catch (err) {}
+        // Teardown on channel switch / tab unmount: detach + destroy hls.js and
+        // blank the element so no background audio/video leaks from a hidden pane.
+        if (hlsRef.current === hls) {
+          try { hls.detachMedia(); } catch (err) {}
+          try { hls.destroy(); } catch (err) {}
+          hlsRef.current = null;
+        }
         stopNative();
       };
     }
@@ -226,10 +236,6 @@ function IPTV() {
   const [sources, setSources] = useState([]);
   const [channels, setChannels] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [addOpen, setAddOpen] = useState(false);
-  const [name, setName] = useState('');
-  const [url, setUrl] = useState('');
-  const [adding, setAdding] = useState(false);
   const { open: openPlayback } = usePlayback();
   const [toast, setToast] = useState(null);
   const [refreshId, setRefreshId] = useState(null);
@@ -424,29 +430,6 @@ function IPTV() {
     }
   }, [showToast]);
 
-  const handleAdd = async (e) => {
-    e.preventDefault();
-    const u = url.trim();
-    if (!u || !/^https?:\/\//i.test(u)) { showToast('Enter a valid http(s) playlist URL', 'err'); return; }
-    setAdding(true);
-    try {
-      const api = getApi();
-      const res = await api.addIptvSource(name.trim() || 'IPTV Playlist', u);
-      if (res?.success) {
-        showToast(`Imported ${res.inserted} channels`);
-        setName(''); setUrl(''); setAddOpen(false);
-        autoSync();
-        window.dispatchEvent(new Event('scrapers-synced'));
-      } else {
-        showToast(res?.error || 'Import failed', 'err');
-      }
-    } catch (err) {
-      showToast('Import failed: ' + err.message, 'err');
-    } finally {
-      setAdding(false);
-    }
-  };
-
   const handleRefresh = async (src) => {
     setRefreshId(src.id);
     try {
@@ -520,9 +503,6 @@ function IPTV() {
 
       {/* Source bar */}
       <div className="iptv-sources">
-        {sources.length === 0 && !loading && (
-          <span className="iptv-empty-hint">{t('liveTv.noPlaylistsYet')}</span>
-        )}
         {sources.map(s => (
           <div key={s.id} className="iptv-source">
             <div className="iptv-source-info">
@@ -535,18 +515,7 @@ function IPTV() {
             <button className="iptv-mini danger" onClick={() => handleRemove(s)}>×</button>
           </div>
         ))}
-        <button className="iptv-addsource" onClick={() => setAddOpen(o => !o)}>
-          {addOpen ? t('liveTv.hide') : t('liveTv.addPlaylist')}
-        </button>
       </div>
-
-      {addOpen && (
-        <form className="iptv-addform" onSubmit={handleAdd}>
-          <input className="iptv-input" placeholder={t('liveTv.nameOptional')} value={name} onChange={e => setName(e.target.value)} />
-          <input className="iptv-input" placeholder="https://example.com/playlist.m3u" value={url} onChange={e => setUrl(e.target.value)} />
-          <button className="iptv-btn primary" disabled={adding}>{adding ? t('liveTv.loading') : t('liveTv.importChannels')}</button>
-        </form>
-      )}
 
       {/* Channel guide: 8-category tab bar + Xuper two-pane layout */}
       {!loading && categorized.length > 0 && (
@@ -668,7 +637,6 @@ function IPTV() {
       {!loading && channels.length === 0 && (
         <div className="iptv-empty">
           <p>{t('liveTv.noChannelsImported')}</p>
-          <p className="iptv-empty-hint">{t('liveTv.addPlaylistHint')}</p>
         </div>
       )}
 

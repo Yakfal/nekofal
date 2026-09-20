@@ -9,7 +9,6 @@ const Navbar = forwardRef(function Navbar(props, ref) {
   const { searchQuery, setSearchQuery } = useSearchContext();
   const { settings, setTheme } = useAppSettings();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [isScraping, setIsScraping] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
@@ -63,29 +62,6 @@ const Navbar = forwardRef(function Navbar(props, ref) {
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, []);
-
-  const handleSyncScrapers = async () => {
-    if (isScraping) return;
-    setIsScraping(true);
-    
-    try {
-      if (window.electronAPI?.runScrapers) {
-        const result = await window.electronAPI.runScrapers();
-        if (result.success) {
-          console.log(`Scrapers synced: ${result.inserted} new videos added`);
-          window.dispatchEvent(new CustomEvent('scrapers-synced', { 
-            detail: { inserted: result.inserted, total: result.totalVideos } 
-          }));
-        } else {
-          console.error('Scraper sync failed:', result.error);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to sync scrapers:', err);
-    } finally {
-      setIsScraping(false);
-    }
-  };
 
   const handleMenuItemClick = (action) => {
     setShowMenu(false);
@@ -162,27 +138,7 @@ const Navbar = forwardRef(function Navbar(props, ref) {
           </div>
         )}
 
-        {/* Sync Scrapers Button */}
-        {!isVideoPlayerPage && (
-          <button 
-            className="sync-button"
-            onClick={handleSyncScrapers}
-            disabled={isScraping}
-            title="Sync Scrapers"
-          >
-            <svg 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke="currentColor"
-              className={isScraping ? 'spin' : ''}
-            >
-              <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M23 4v6h-6" />
-              <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M1 20v-6h6" />
-              <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
-            </svg>
-            <span className="sync-tooltip">Sync Scrapers</span>
-          </button>
-        )}
+
 
         {/* App Menu - Three dots dropdown */}
         {!isVideoPlayerPage && (
