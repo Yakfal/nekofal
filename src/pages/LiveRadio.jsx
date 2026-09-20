@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { bindMediaKey, unbindMediaKey } from '../utils/mediaKeys.js';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
+import { usePersistentPauseOnLeave } from '../contexts/PlaybackContext.jsx';
 import { useLanguage } from '../i18n/LanguageContext.jsx';
 import './LiveRadio.css';
 
@@ -17,8 +18,34 @@ const LiveRadio = () => {
   const audioRef = useRef(null);
   const audioRetryRef = useRef(0);
   const audioTimerRef = useRef(null);
+  const wasPlayingRef = useRef(false);
   const [favoriteSet, setFavoriteSet] = useState(() => new Set());
   const [togglingId, setTogglingId] = useState(null);
+
+  // Tab-switch auto-pause (v1.0.36): leaving /radio mutes the <audio> element
+  // but keeps the active station (and its position), so returning resumes it
+  // automatically — only if it was actually playing when the tab was left.
+  usePersistentPauseOnLeave(
+    '/radio',
+    () => {
+      const audio = audioRef.current;
+      try {
+        if (audio && !audio.paused) wasPlayingRef.current = true;
+        if (audio) audio.pause();
+      } catch (err) {}
+      setPlaying(false);
+    },
+    () => {
+      const audio = audioRef.current;
+      if (wasPlayingRef.current && audio && current && current.streamUrl) {
+        audio.play().catch((err) => {
+          console.warn('[Radio] resume on tab return failed:', err.message);
+        });
+        setPlaying(true);
+      }
+      wasPlayingRef.current = false;
+    }
+  );
 
   // Load favorite ids once (radio stations id == stationuuid) so stars reflect
   // real DB state and toggle immediately through the shared db:toggleFavorite.
@@ -113,6 +140,25 @@ const LiveRadio = () => {
   useEffect(() => {
     return () => stopPlayback();
   }, [stopPlayback]);
+
+  // Global media coordinator (v1.0.36): when any OTHER surface (IPTV pane,
+  // Cinema modal, overlay full player) starts playback, yield the slot — pause
+  // the <audio> element but keep the station so tuning back in resumes it.
+  // A later tab return must not auto-play on top of that other source, so the
+  // pending-resume flag is cleared here too.
+  useEffect(() => {
+    const onSourceActive = (e) => {
+      const detail = (e && e.detail) || {};
+      if (!detail.source) return;
+      wasPlayingRef.current = false;
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch (err) {}
+      }
+      setPlaying(false);
+    };
+    window.addEventListener('nek-media-source-active', onSourceActive);
+    return () => window.removeEventListener('nek-media-source-active', onSourceActive);
+  }, []);
 
   const playStation = (station) => {
     if (!audioRef.current) return;

@@ -42,6 +42,98 @@ const historyToCard = (h) => ({
   isAdult: h.isAdult || 0
 });
 
+const toIptvCard = (item) => ({
+  id: item.id,
+  videoTitle: item.title,
+  title: item.title,
+  category: item.category || 'Uncategorized',
+  thumbnailUrl: item.thumbnailUrl || '',
+  videoUrl: item.videoUrl,
+  duration: item.duration || 0,
+  isHLS: !!item.httpHeaders || /(\.m3u8|m3u8)/i.test(item.videoUrl || ''),
+  sourceSite: 'IPTV',
+  type: 'Web TV',
+  httpHeaders: item.httpHeaders,
+  lastPosition: item.lastPosition || 0,
+  isAdult: item.isAdult || 0
+});
+
+const favToCard = (f) => ({
+  id: f.media_id || f.id,
+  videoTitle: f.title || f.videoTitle || 'Untitled',
+  category: f.sourceSite || f.category || f.type || 'Favorite',
+  thumbnailUrl: f.thumbnailUrl || '',
+  videoUrl: f.videoUrl || f.pageUrl || '',
+  pageUrl: f.pageUrl || '',
+  duration: f.duration || 0,
+  isHLS: !!f.isHLS,
+  sourceSite: f.sourceSite || f.provider || '',
+  type: f.type || 'Favorite',
+  artist: f.artist || f.provider || '',
+  isAdult: f.isAdult || 0
+});
+
+// Live TV spotlight (v1.0.36): the user's own IPTV channels surfaced at the top
+// of the Home feed. Highlights the most recently watched channel with a LIVE
+// pill, then a strip of sibling channels — one click drops straight into a
+// stream without opening the Live TV tab. Hidden entirely when no sources are
+// imported (the caller passes an empty array).
+const LiveTvSpotlight = ({ channels, onPlay, onOpenAll }) => {
+  const { t } = useLanguage();
+  if (!channels || channels.length === 0) return null;
+  const featured = channels[0] || null;
+  const strip = channels.slice(1, 9);
+  return (
+    <section className="home-tv">
+      <div className="home-tv-head">
+        <div>
+          <h3 className="home-tv-head-title">{t('home.liveTv')}</h3>
+          <p className="home-tv-head-sub">{t('home.liveTvSubtitle')}</p>
+        </div>
+        <button type="button" className="home-tv-open" onClick={onOpenAll}>
+          {t('nav.liveChannels')} →
+        </button>
+      </div>
+
+      {featured && (
+        <button type="button" className="home-tv-featured" onClick={() => onPlay(featured)}>
+          <span className="home-tv-live-pill">● LIVE</span>
+          <span className="home-tv-featured-name" title={featured.videoTitle}>
+            {featured.videoTitle}
+          </span>
+          <span className="home-tv-featured-meta">{featured.category}</span>
+          {featured.thumbnailUrl && (
+            <img
+              className="home-tv-featured-logo"
+              src={featured.thumbnailUrl}
+              alt=""
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            />
+          )}
+        </button>
+      )}
+
+      {strip.length > 0 && (
+        <div className="home-tv-strip">
+          {strip.map((ch) => (
+            <button key={ch.id} type="button" className="home-tv-chip" onClick={() => onPlay(ch)}>
+              {ch.thumbnailUrl && (
+                <img
+                  className="home-tv-chip-logo"
+                  src={ch.thumbnailUrl}
+                  alt=""
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                />
+              )}
+              <span className="home-tv-chip-name" title={ch.videoTitle}>{ch.videoTitle}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+};
+
 const formatDuration = (seconds) => {
   if (!seconds || seconds <= 0) return '';
   const h = Math.floor(seconds / 3600);
@@ -113,6 +205,10 @@ const Discover = () => {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [fallbacks, setFallbacks] = useState({ popular: [], news: [] });
   const [fallbacksLoading, setFallbacksLoading] = useState(false);
+  const [iptvChannels, setIptvChannels] = useState([]);
+  const [favorites, setFavorites] = useState([]);
+  const [weights, setWeights] = useState({ genre: [], artist: [], tag: [] });
+  const [recLoading, setRecLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -167,8 +263,57 @@ const Discover = () => {
       }
     };
 
+    const loadIptv = async () => {
+      if (!api?.getVideosBySource) return;
+      try {
+        const res = await api.getVideosBySource('IPTV');
+        if (alive && res?.success && Array.isArray(res.data)) {
+          setIptvChannels(res.data.map(toIptvCard).filter((v) => v.videoUrl));
+        }
+      } catch (err) {
+        console.warn('[Home] IPTV channels load failed:', err.message);
+      }
+    };
+
+    const loadFavorites = async () => {
+      if (!api?.getFavorites) return;
+      try {
+        const res = await api.getFavorites();
+        if (alive && res?.success && Array.isArray(res.data)) setFavorites(res.data);
+      } catch (err) {
+        console.warn('[Home] Favorites load failed:', err.message);
+      }
+    };
+
+    const baseWeights = { genre: [], artist: [], tag: [] };
+    const loadWeights = async () => {
+      if (!api?.getTopMediaWeights) { if (alive) setRecLoading(false); return; }
+      try {
+        const [g, a, t] = await Promise.all([
+          api.getTopMediaWeights({ scope: 'genre', limit: 8 }),
+          api.getTopMediaWeights({ scope: 'artist', limit: 6 }),
+          api.getTopMediaWeights({ scope: 'tag', limit: 12 })
+        ]);
+        if (alive) {
+          setWeights({
+            genre: g?.success ? (g.data || []) : [],
+            artist: a?.success ? (a.data || []) : [],
+            tag: t?.success ? (t.data || []) : []
+          });
+        }
+      } catch (err) {
+        console.warn('[Home] Media weights load failed:', err.message);
+        if (alive) setWeights(baseWeights);
+      } finally {
+        if (alive) setRecLoading(false);
+      }
+    };
+
     loadTrending();
     loadHistory();
+    loadIptv();
+    loadFavorites();
+    loadWeights();
     const onSync = () => loadHistory();
     window.addEventListener('scrapers-synced', onSync);
     window.addEventListener('history-synced', onSync);
@@ -199,6 +344,59 @@ const Discover = () => {
   // Spotlight = top trending item, else the first curated fallback stream.
   const spotlight = visibleTrending[0] || visibleFallbackPopular[0] || null;
 
+  // Live TV spotlight ordering: most recently watched channel first so the big
+  // LIVE pill always points at the thing you were just watching.
+  const liveTvSorted = useMemo(
+    () => [...filterFamily(iptvChannels)].sort((a, b) => (b.lastPosition || 0) - (a.lastPosition || 0)),
+    [iptvChannels, filterFamily]
+  );
+
+  // "Recommended For You" (v1.0.36): rank watch history + favorites against the
+  // genre/artist/tag media weights, so continuing playback feeds the shelf with
+  // real signal. No weights stored yet → empty list → shelf shows the hint.
+  const recommended = useMemo(() => {
+    const genre = new Map();
+    (weights.genre || []).forEach((w) => {
+      const k = String(w.genre || '').toLowerCase();
+      if (k) genre.set(k, Math.max(genre.get(k) || 0, Number(w.score) || 0));
+    });
+    const artist = new Map();
+    (weights.artist || []).forEach((w) => {
+      const k = String(w.artist || '').toLowerCase();
+      if (k) artist.set(k, Math.max(artist.get(k) || 0, Number(w.score) || 0));
+    });
+    const tags = (weights.tag || []).map((w) => String(w.tag || '').toLowerCase()).filter(Boolean);
+    if (!genre.size && !artist.size && tags.length === 0) return [];
+
+    const candidates = [...visibleHistory, ...favorites.map(favToCard)];
+    const seen = new Set();
+    const scored = [];
+
+    for (const c of candidates) {
+      if (familyMode && isAdultMedia(c)) continue;
+      const key = c.videoUrl || c.pageUrl || c.id;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+
+      let s = 0;
+      const hay = [c.category, c.sourceSite, c.type, c.artist]
+        .filter(Boolean)
+        .map((x) => String(x).toLowerCase());
+      for (const h of hay) {
+        if (genre.has(h)) s += genre.get(h);
+        if (artist.has(h)) s += artist.get(h);
+      }
+      const title = String(c.videoTitle || '').toLowerCase();
+      for (const tg of tags) {
+        if (tg && title.includes(tg)) s += 2;
+      }
+      if (s > 0) scored.push({ c, s });
+    }
+
+    scored.sort((a, b) => b.s - a.s);
+    return scored.slice(0, 14).map((x) => x.c);
+  }, [visibleHistory, favorites, weights, familyMode]);
+
   const handleTile = useCallback((tile) => {
     if (tile.route) { navigate(tile.route); return; }
     if (searchRef.current?.runSearch) searchRef.current.runSearch(tile.query);
@@ -223,6 +421,8 @@ const Discover = () => {
 
   const shelves = (
     <>
+      <LiveTvSpotlight channels={liveTvSorted} onPlay={playVideo} onOpenAll={() => navigate('/iptv')} />
+
       <HeroBanner item={spotlight} loading={trendingLoading} onPlay={playVideo} />
 
       <MediaShelf
@@ -231,6 +431,15 @@ const Discover = () => {
         items={visibleHistory}
         loading={historyLoading}
         onSelectVideo={playVideo}
+      />
+
+      <MediaShelf
+        title={t('home.recommended')}
+        subtitle={t('home.recommendedSubtitle')}
+        items={recommended}
+        loading={recLoading}
+        onSelectVideo={playVideo}
+        emptyHint={t('home.recommendedEmptyHint')}
       />
 
       <MediaShelf

@@ -1682,32 +1682,35 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
       }
     }
 
-    // Zhentube: wrapper pages break yt-dlp's generic extractor, so extract the
-    // real embed/direct URL ourselves first. A direct .mp4/.m3u8 goes straight
-    // to the player; an embed-iframe URL is handed back to yt-dlp below (its
+    // Wrapper sites (Zhentube / HentaiHaven / Uncensored-Hentai): the video
+    // page is a thin shell around a third-party stream host, and its DOM is
+    // littered with ad-network iframes. Extract the real stream ourselves first
+    // (ad overlays filtered out): a direct .mp4/.m3u8 goes straight to the
+    // player; a media-host embed URL is handed back to yt-dlp below (its
     // dedicated streamtape/doodstream/mp4upload extractors handle those).
-    if (/zhentube/i.test(url)) {
+    if (/^https?:/i.test(url) && isWrapperSiteUrl(url)) {
+      const wrapperOrigin = (() => { try { return new URL(url).origin + '/'; } catch { return ''; } })();
       try {
-        const zt = await resolveZhentubeStream(url);
-        if (zt && zt.direct) {
-          console.log(`[zhentube] direct ${url} -> ${zt.streamUrl}`);
+        const wrap = await resolveEmbeddedPageStream(url);
+        if (wrap && wrap.direct) {
+          console.log(`[wrapper] direct ${url} -> ${wrap.streamUrl}`);
           return {
             success: true,
-            streamUrl: zt.streamUrl,
-            isHls: /\.m3u8/i.test(zt.streamUrl),
-            extractor: 'zhentube-direct',
+            streamUrl: wrap.streamUrl,
+            isHls: /\.m3u8/i.test(wrap.streamUrl),
+            extractor: 'wrapper-direct',
             httpHeaders: {
               'User-Agent': PH_UA,
-              'Referer': 'https://zhentube.ru/'
+              'Referer': wrapperOrigin
             }
           };
         }
-        if (zt && zt.embedUrl) {
-          console.log(`[zhentube] embed ${url} -> ${zt.embedUrl}`);
-          url = zt.embedUrl;
+        if (wrap && wrap.embedUrl) {
+          console.log(`[wrapper] embed ${url} -> ${wrap.embedUrl}`);
+          url = wrap.embedUrl;
         }
-      } catch (ztErr) {
-        console.warn(`[zhentube] extraction failed (letting yt-dlp try): ${ztErr.message}`);
+      } catch (wrapErr) {
+        console.warn(`[wrapper] extraction failed (letting yt-dlp try): ${wrapErr.message}`);
       }
     }
     
@@ -2287,20 +2290,21 @@ ipcMain.handle('video:download', async (event, video) => {
       }
     }
 
-    // Zhentube: swap the wrapper page for the extracted direct/embed URL so
-    // yt-dlp downloads from the real stream host.
-    if (/zhentube/i.test(String(url))) {
+    // Wrapper sites (Zhentube / HentaiHaven / Uncensored-Hentai): swap the
+    // ad-wrapped page for the extracted direct/embed URL so yt-dlp downloads
+    // from the real stream host. Ad-network iframes are filtered out first.
+    if (/^https?:/i.test(String(url)) && isWrapperSiteUrl(String(url))) {
       try {
-        const zt = await resolveZhentubeStream(url);
-        if (zt && zt.direct) {
-          console.log(`[Download] zhentube direct ${url} -> ${zt.streamUrl}`);
-          targetUrl = zt.streamUrl;
-        } else if (zt && zt.embedUrl) {
-          console.log(`[Download] zhentube embed ${url} -> ${zt.embedUrl}`);
-          targetUrl = zt.embedUrl;
+        const wrap = await resolveEmbeddedPageStream(String(url));
+        if (wrap && wrap.direct) {
+          console.log(`[Download] wrapper direct ${url} -> ${wrap.streamUrl}`);
+          targetUrl = wrap.streamUrl;
+        } else if (wrap && wrap.embedUrl) {
+          console.log(`[Download] wrapper embed ${url} -> ${wrap.embedUrl}`);
+          targetUrl = wrap.embedUrl;
         }
-      } catch (ztErr) {
-        console.warn(`[Download] zhentube extraction failed (downloading page anyway): ${ztErr.message}`);
+      } catch (wrapErr) {
+        console.warn(`[Download] wrapper extraction failed (downloading page anyway): ${wrapErr.message}`);
       }
     }
 
@@ -3601,6 +3605,29 @@ function isAdNetworkUrl(url) {
   return AD_NETWORK_RE.test(String(url || ''));
 }
 
+// Ad overlays on wrapper sites (PopAds, ExoClick, AdSterra, JuicyAds…) hide
+// behind generic <iframe src> tags too, sometimes with ad-only parameters in
+// the query string. Anything matching an ad network OR an ad parameter pattern
+// is treated as an overlay and never returned as a stream/embed candidate.
+const AD_IFRAME_PARAMS = /(?:popunder|popads|exoclick|adsterra|adspaces|juicyads|doubleclick|adform|traffichaus|trafficjunky|pagead|googlesyndication)|\b(?:pub_ad|pp_ads|pm_ads?)\b/i;
+
+function isAdIframeUrl(url) {
+  const u = String(url || '');
+  return isAdNetworkUrl(u) || AD_IFRAME_PARAMS.test(u);
+}
+
+// Wrapper sites: the video page is a thin shell around a third-party stream
+// host, and yt-dlp's "first iframe" heuristic can land on an ad overlay. These
+// are routed through resolveEmbeddedPageStream() before yt-dlp ever sees them.
+function isWrapperSiteUrl(u) {
+  try {
+    const host = new URL(String(u || '')).hostname.toLowerCase();
+    return /zhentube|hentaihaven|uncensored/i.test(host);
+  } catch (_e) {
+    return false;
+  }
+}
+
 const SCRAPER_TITLE_BLACKLIST = [
   'xnxx gold', 'top creators live', 'new channel', 'liked', 'autoplay', 'videos i like',
   'uncensored hentai', 'ai hentai', 'latest releases', 'most popular', 'most liked',
@@ -3608,7 +3635,10 @@ const SCRAPER_TITLE_BLACKLIST = [
   'clear', 'pick your poison', 'rta', 'dmca', 'faq', 'home'
 ];
 
-const SCRAPE_METRIC_TITLE = /^(?:\d{1,3}(?:\.\d{1,2})?[kmhKMH]?|\d{1,2}:\d{2})$/;
+// Duration-only strings that show up as the anchor text on xHamster / XVideos
+// thumb cards (e.g. "5m 30s", "12:34", "1,000") are never real titles — reject
+// them so they never bubble up as a video name.
+const SCRAPE_METRIC_TITLE = /^(?:\d{1,3}(?:\.\d{1,2})?[kmhKMH]?|\d{1,2}:\d{2}|\d+h\s*\d+m\s*\d*s|\d+m\s*\d+s|\d+s)$/;
 
 function isScrapeJunkUrl(url) {
   const u = String(url || '');
@@ -3638,12 +3668,18 @@ function scrapeThumbUrl(img) {
 // …). Try the card's own title attribute first, then its poster <img alt>, then
 // the raw text content — and reject anything that is empty, "untitled"/"Image",
 // or shorter than 4 characters so category/avatar/chip cards never leak in.
+// v1.0.36: xHamster rotates its title anchor between .title-link and
+// .video-title, so the anchor's title/text is tried before the whole-block text.
 function cleanThumbTitle(block) {
+  const anchor = block.find('.title-link a, .video-title a, .title-link, .video-title, a.a-title, .title a').first();
+  const anchored = anchor.length
+    ? String(anchor.attr('title') || anchor.text().replace(/\s+/g, ' ').trim() || '')
+    : '';
   const own = String(block.attr && block.attr('title') ? block.attr('title') : '');
   const img = block.find('img').first();
   const alt = String(img.attr('alt') || '');
   const text = String(block.text().replace(/\s+/g, ' ').trim() || '');
-  const title = (own || alt || text).trim().substring(0, 200);
+  const title = (anchored || own || alt || text).trim().substring(0, 200);
   if (isScrapeJunkTitle(title)) return '';
   return title;
 }
@@ -3690,6 +3726,10 @@ function normalizeSearchEntry(entry, fallbackSite) {
 const HANIME_API = 'https://hanime.tv/api/v8';
 const HANIME_SEARCH_API = 'https://search.htv-services.com/';
 const STEALTH_TURNSTILE_SETTLE_MS = 3000;
+// Hentaimama's Turnstile sizing needs a longer settle than the shared default:
+// the challenge has to fully clear AND the WP/DLE grid re-render before the DOM
+// fallback parser can safely read the result cards.
+const HENTAIMAMA_SETTLE_MS = 7000;
 
 // Cloudflare-bypass header block for the offscreen webview sniff fallback.
 // Presenting a full desktop-browser header set on the initial page load (plus
@@ -3707,15 +3747,32 @@ const HANIME_SNIFF_HEADERS =
   'DNT: 1\r\n';
 
 function hanimeHeaders(cookieHeader, browser = false) {
+  // Present a full browser-fetch header set so htv-services (search) and the
+  // v8 API see a genuine Chrome XHR: Sec-CH-UA family, fetch-context hints and
+  // the cross-origin origin/referer of hanime.tv. The cleared cf_clearance /
+  // __cf_bm cookies from session.defaultSession ride along as Cookie when the
+  // stealth browser has unlocked them.
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Origin': browser ? '' : 'https://hanime.tv',
-    'Referer': browser ? 'https://hanime.tv/' : 'https://hanime.tv/',
-    'Content-Type': 'application/json'
+    'Origin': 'https://hanime.tv',
+    'Referer': 'https://hanime.tv/',
+    'Content-Type': 'application/json',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site',
+    'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="122", "Chromium";v="122"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'X-Requested-With': 'XMLHttpRequest'
   };
-  if (browser) delete headers.Origin;
+  // browser === true simulates the site's own in-page fetch (no cross-origin
+  // Origin / XHR marker) — used by the v8 video resolver.
+  if (browser) {
+    delete headers.Origin;
+    delete headers['X-Requested-With'];
+  }
   if (cookieHeader) headers.Cookie = cookieHeader;
   return headers;
 }
@@ -4089,28 +4146,48 @@ async function searchHanime(query, count = 25) {
   throw e;
 }
 
-// ---- Zhentube resolver ------------------------------------------------------
-// Zhentube video pages are thin wrappers that embed the real stream from a
-// third-party host (mp4upload, doodstream/streamtape, filemoon, …) via an
-// <iframe>, or expose an HTML5 <video src> directly. yt-dlp's generic
-// extractor fails on the wrapper page, so resolve the embed/direct URL first:
-//   - a direct .mp4/.m3u8 <video>/<source> URL is returned as-is for the
-//     frontend player;
-//   - an iframe pointing at a known embed host is returned so yt-dlp can use
-//     its dedicated extractor (streamtape/doodstream/mp4upload are supported).
-const ZHENTUBE_EMBED_HOSTS = /(?:streamtape|doodstream|dood\.|mp4upload|filemoon|goo\.armygum|speedostream|vidsrc|ok\.ru|mystream|netu|mixdrop|vhaven|akstream)/i;
+// ---- Wrapper-page stream resolution (ad-bypass) ------------------------------
+// Zhentube / HentaiHaven / Uncensored-Hentai video pages are thin wrappers: the
+// real stream (mp4upload, vhaven, doodstream, streamtape, mixdrop, …) lives in
+// an <iframe> next to a forest of ad-network overlays (PopAds, ExoClick,
+// AdSterra, JuicyAds…). yt-dlp's generic extractor walks the top-level page, can
+// pick an ad overlay as "the stream", and on the wrapper sites usually fails
+// outright. So we resolve the real media ourselves, strictly ignoring the ad
+// layer, in this order:
+//   1. HTML5 media served by the page (<video src>/<source src>, <object data>,
+//      plain <a href> download links) — .mp4/.m3u8/.m3u/.webm;
+//   2. iframes/embeds whose URL is a direct media file or a KNOWN embed host —
+//      never an ad network, never a URL carrying ad parameters;
+//   3. a deep dive into the chosen embed page (vhaven/mixdrop often expose an
+//      HTML5 <video> with a real .mp4 behind the iframe);
+//   4. any remaining external http(s) iframe as a last resort, still ad-filtered.
+// A direct .mp4/.m3u8 is returned for the frontend player; a media-host embed is
+// handed to yt-dlp whose dedicated streamtape/doodstream/mp4upload extractors
+// support those hosts.
+const EMBED_MEDIA_HOSTS = /(?:mp4upload|doodstream|dood\.|streamtape|filemoon|goo\.armygum|speedostream|vidsrc|ok\.ru|mystream|netu|mixdrop|vhaven|akstream)/i;
 
-async function resolveZhentubeStream(pageUrl) {
+async function resolveEmbeddedPageStream(pageUrl, opts = {}) {
   const cheerio = require('cheerio');
+  const depth = Number(opts.depth) || 0;
+  if (depth > 3) throw new Error('Wrapper chain too deep: ' + pageUrl);
+
+  let referer = String(opts.referer || '');
+  let domain = '';
+  try {
+    const parsedHost = new URL(pageUrl).hostname;
+    domain = parsedHost;
+    if (!referer) referer = `https://${parsedHost}/`;
+  } catch (_e) { referer = referer || ''; }
+
   const browserHeaders = {
     'User-Agent': PH_UA,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://zhentube.ru/',
+    'Referer': referer,
     'Upgrade-Insecure-Requests': '1',
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-Site': 'cross-site',
     'DNT': '1'
   };
 
@@ -4125,34 +4202,80 @@ async function resolveZhentubeStream(pageUrl) {
   if (!html || html.length < 200) throw new Error('Empty or challenge page returned by ' + pageUrl);
   const $ = cheerio.load(html);
   const absOf = (u) => { try { return new URL(u, pageUrl).href; } catch { return ''; } };
+  const isMediaFile = (src) => /\.(?:mp4|m3u8|m3u|webm|ts)(?:[?#].*)?$/i.test(String(src || ''));
+  const hosted = (u) => { try { return new URL(u).hostname === domain; } catch { return false; } };
+  const pickDirect = (list) => list.find(hosted) || list[0];
 
-  // 1) HTML5 media tags — directly playable, no yt-dlp required.
-  let direct = '';
-  $('video[src], video source[src], source[src*=".mp4"], source[src*=".m3u8"]').each((_i, el) => {
-    if (direct) return;
-    const src = absOf($(el).attr('src') || '');
-    if (src && !isAdNetworkUrl(src) && /\.(?:mp4|m3u8)(?:[?#].*)?$/i.test(src)) direct = src;
+  // 1) Direct media tags, <object data> and plain download links.
+  const directCandidates = [];
+  const seenDirect = new Set();
+  const pushDirect = (raw) => {
+    const abs = absOf(raw);
+    if (abs && !seenDirect.has(abs) && !isAdIframeUrl(abs) && !isScrapeJunkUrl(abs) && isMediaFile(abs)) {
+      seenDirect.add(abs);
+      directCandidates.push(abs);
+    }
+  };
+  $('video[src], video > source[src], source[src], object[data], audio[src], video source[data-src], video[data-src]').each((_i, el) => {
+    const raw = $(el).attr('src') || $(el).attr('data') || $(el).attr('data-src') || '';
+    pushDirect(raw);
   });
-  if (direct) return { direct: true, streamUrl: direct };
+  if (directCandidates.length === 0) {
+    // Some wrapper themes publish the video as a download-style <a href> link.
+    $('a[href]').each((_i, el) => {
+      const raw = String($(el).attr('href') || '');
+      if (isMediaFile(raw)) pushDirect(raw);
+    });
+  }
+  if (directCandidates.length) {
+    return { direct: true, streamUrl: pickDirect(directCandidates) };
+  }
 
-  // 2) iframes to known embed hosts — hand to yt-dlp's dedicated extractor.
-  let embed = '';
-  $('iframe[src]').each((_i, el) => {
-    if (embed) return;
-    const src = absOf($(el).attr('src') || '');
-    if (src && !isAdNetworkUrl(src) && ZHENTUBE_EMBED_HOSTS.test(src)) embed = src;
+  // 2) iframes/embeds: accept direct media files and KNOWN media hosts, and
+  //    reject anything that smells like an ad overlay.
+  const embedCandidates = [];
+  const seenEmbed = new Set();
+  $('iframe[src], embed[src], object[data]').each((_i, el) => {
+    const raw = $(el).attr('src') || $(el).attr('data') || '';
+    const abs = absOf(raw);
+    if (!abs || seenEmbed.has(abs) || isAdIframeUrl(abs)) return;
+    seenEmbed.add(abs);
+    if (isMediaFile(abs)) { seenDirect.add(abs); directCandidates.push(abs); return; }
+    if (EMBED_MEDIA_HOSTS.test(abs)) embedCandidates.push(abs);
   });
-  if (embed) return { embedUrl: embed };
+  if (directCandidates.length) {
+    return { direct: true, streamUrl: pickDirect(directCandidates) };
+  }
+  // Prefer a same-host/self-hosted embed, then media hosts in page order.
+  const embed = embedCandidates.find(hosted) || embedCandidates[0] || '';
 
-  // 3) Last resort: any external http(s) iframe (generic embed hosts change).
-  $('iframe[src]').each((_i, el) => {
-    if (embed) return;
-    const src = absOf($(el).attr('src') || '');
-    if (src && /^https?:/i.test(src) && !isAdNetworkUrl(src) && !isScrapeJunkUrl(src)) embed = src;
+  // 3) Deep dive: the embed page itself may surface a real HTML5 <video>.
+  if (embed) {
+    try {
+      const deep = await resolveEmbeddedPageStream(embed, { referer: pageUrl, depth: depth + 1 });
+      if (deep && deep.direct) {
+        return { direct: true, streamUrl: deep.streamUrl };
+      }
+    } catch (_e) { /* embed is flaky/gone — hand the embed URL to yt-dlp below */ }
+    return { embedUrl: embed };
+  }
+
+  // 4) Last resort: any external http(s) iframe (generic embed hosts change).
+  //    Ad networks are still filtered out — never an ad URL as the "stream".
+  let lastResort = '';
+  $('iframe[src], embed[src]').each((_i, el) => {
+    if (lastResort) return;
+    const abs = absOf($(el).attr('src') || '');
+    if (abs && /^https?:/i.test(abs) && !isAdIframeUrl(abs) && !isScrapeJunkUrl(abs)) lastResort = abs;
   });
-  if (embed) return { embedUrl: embed };
+  if (lastResort) return { embedUrl: lastResort };
 
   throw new Error('No video source or embed found in ' + pageUrl);
+}
+
+// Backwards-compatible alias used by the download handler.
+async function resolveZhentubeStream(pageUrl) {
+  return resolveEmbeddedPageStream(pageUrl, { referer: 'https://zhentube.ru/' });
 }
 
 // XVideos actively blocks headless tooling (Axios/undici TLS fingerprints and
@@ -4200,8 +4323,10 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
     if (!/^https?:/i.test(abs)) return;
     if (isScrapeJunkUrl(abs)) return;
     // Title: anchor title attr first, then its text, then link title/poster
-    // alt — and reject menu/login junk, metric-only or <4 char strings.
-    const titleEl = block.find('.title a, .p a, p a').first();
+    // alt — covering the title anchors xvideos rotates between (.title a,
+    // .title-link, a.a-title, .video-title). Reject menu/login junk,
+    // metric-only or <4 char strings.
+    const titleEl = block.find('.title a, .p a, p a, a.a-title, .title-link, .video-title, .video-title a, .story-title a').first();
     let title = (
       String(titleEl.attr('title') || '') ||
       String(titleEl.text().replace(/\s+/g, ' ').trim() || '') ||
@@ -4611,10 +4736,12 @@ async function xnxxSearchHtml(searchUrl, count = 25) {
     // Strict: only real /video-{id} (classic) or /video/{slug} result pages.
     if (!/\/video-|\/video\//i.test(abs)) return;
     if (isScrapeJunkUrl(abs)) return;
-    // v1.0.35: expanded title resolution — anchor title attr -> anchor text ->
-    // poster alt -> card title attr. Reject outright when the result is empty,
-    // "untitled"/"Image", purely metric/duration text, or under 4 characters.
-    const titleEl = block.find('.title a, p a').first();
+    // v1.0.36: expanded title resolution across the anchors xNXX uses
+    // (.title a, .thumb-under a, .title-link, a.a-title, .video-title) — anchor
+    // title attr -> anchor text -> poster alt -> card title attr. Reject outright
+    // when the result is empty, "untitled"/"Image"/"Image source" (brand-new
+    // /video/ slugs default to those), purely metric/duration text, or <4 chars.
+    const titleEl = block.find('.title a, p a, .thumb-under a, .thumb-under .name a, a.a-title, .title-link, .video-title a').first();
     const title = (
       String(titleEl.attr('title') || '') ||
       String(titleEl.text().replace(/\s+/g, ' ').trim() || '') ||
@@ -4733,12 +4860,17 @@ async function hentaiHavenSearchHtml(searchUrl, count = 25) {
 }
 
 // ---- Hentaimama search ------------------------------------------------------
-// Hentaimama is a JS-rendered WP theme, so scrape it in the stealth (real
-// browser) window and extract ONLY article post-card containers (.site-content
-// grid items, article.post) — clean video page links, no nav/footer junk.
+// Hentaimama is a JS-rendered WP/DLE theme, so scrape it in the stealth (real
+// browser) window and extract ONLY article post-card containers — clean video
+// page links, no nav/footer junk. The grid can re-render while Turnstile
+// settles, so the extractor covers both WP (.site-content .grid-item,
+// article.post) and DLE (short-item / video-item) template families, and the
+// caller re-polls the DOM until cards appear.
 const HENTAIMAMA_EXTRACT_SCRIPT = `
 var out = [];
-var items = [].slice.call(document.querySelectorAll('article.post, article.post-card, .site-content .grid-item, .post-card'));
+var items = [].slice.call(document.querySelectorAll(
+  'article.post, article.post-card, .site-content .grid-item, .post-card, .short-item, .video-item, .short, .movie-item, .main-box .item, .items .post'
+));
 for (var i = 0; i < items.length; i++) {
   var b = items[i];
   var a = b.querySelector('a[href]');
@@ -4751,7 +4883,7 @@ for (var i = 0; i < items.length; i++) {
   var img = b.querySelector('img');
   var thumb = img ? (img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '') : '';
   var alt = img ? img.getAttribute('alt') : '';
-  var head = b.querySelector('.post-title a, .entry-title a, .title a, .post-title, h2, h3, h4');
+  var head = b.querySelector('.post-title a, .entry-title a, .title a, .post-title, .video-title, h2, h3, h4');
   var title = (a.getAttribute('title') || alt || (head ? head.textContent.trim() : '') || b.textContent.replace(/\\\\s+/g, ' ').trim() || '').slice(0, 200);
   var d = ((b.querySelector('.duration, .time, .date') || {}).textContent || '').trim();
   out.push({ title: title, thumb: thumb, url: abs, duration: d });
@@ -4762,10 +4894,26 @@ return { out: out, href: location.href, title: document.title };
 
 async function hentaiMamaStealthSearch(searchUrl, count = 25) {
   const win = ensureStealthWindow();
-  const load = await loadInStealth(searchUrl, { pauseAfterLoadMs: STEALTH_TURNSTILE_SETTLE_MS, challengeTimeoutMs: 20000 });
+  // Hentaimama's Turnstile needs a longer settle than the shared default, so
+  // the challenge clears AND the JS grid re-renders before the DOM is read.
+  const load = await loadInStealth(searchUrl, { pauseAfterLoadMs: HENTAIMAMA_SETTLE_MS, challengeTimeoutMs: 25000 });
   if (!load.success) throw new Error('Hentaimama stealth load failed: ' + load.error);
   const code = HENTAIMAMA_EXTRACT_SCRIPT.replace('__LIMIT__', String(count || 25));
-  const extracted = await evalInStealth(code, 8000);
+
+  // DOM fallback parser: re-poll until the rendered grid actually appears
+  // (slow WP/DLE grid paints + lazy card loading), then accept the first
+  // non-empty, junk-filtered read.
+  let extracted = null;
+  for (let i = 0; i < 6; i++) {
+    if (win.isDestroyed()) break;
+    extracted = await evalInStealth(code, 8000);
+    if (extracted && extracted.__stealthError) {
+      throw new Error('Hentaimama DOM extraction failed: ' + extracted.__stealthError);
+    }
+    const list = (extracted && Array.isArray(extracted.out)) ? extracted.out : [];
+    if (list.some((r) => r && r.url && !isScrapeJunkUrl(r.url))) break;
+    await sleep(1200);
+  }
   const list = (extracted && Array.isArray(extracted.out)) ? extracted.out : [];
   if (extracted && extracted.__stealthError) {
     throw new Error('Hentaimama DOM extraction failed: ' + extracted.__stealthError);

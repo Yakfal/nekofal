@@ -245,12 +245,37 @@ export function PlaybackProvider({ children }) {
     if (Number.isInteger(index)) setActiveChannelIndex(index);
   }, [notifyMediaPlaying]);
 
+  // Feed the recommendation engine (v1.0.36): every overlay playback start
+  // nudges the genre/artist/tag media weights that power Home's
+  // "Recommended For You" shelf. Fire-and-forget — a slow DB write must never
+  // delay playback. YouTube-only items only bump the genre (their programmer
+  // "artist" is noise), and generic booleans/types are never recorded.
+  const recordWeights = useCallback((media) => {
+    const api = window.api || window.electronAPI;
+    if (!api?.addMediaWeight) return;
+    const payload = {};
+    const genre = String(media.category || media.type || '').trim();
+    if (genre) payload.genre = genre;
+    const artist = String(media.artist || '').trim();
+    if (artist) payload.artist = artist;
+    const tags = Array.isArray(media.tags) ? media.tags.map((x) => String(x).trim()).filter(Boolean) : [];
+    const type = String(media.type || '').trim();
+    if (!tags.length && type && !/web tv|history|local media|favorite/i.test(type) && type.length >= 2 && type.length <= 40) {
+      tags.push(type);
+    }
+    const tag = tags[0] || '';
+    if (tag) payload.tag = tag;
+    if (!payload.genre && !payload.artist && !payload.tag) return;
+    api.addMediaWeight(payload).catch(() => {});
+  }, []);
+
   const open = useCallback((video, opts = {}) => {
     const normed = normalizePlaybackMedia(video);
     if (!normed) return;
     // Every overlay playback start claims the global media slot, so background
     // keep-alive panes (IPTV/Cinema) pause & detach their own streams.
     notifyMediaPlaying(sourceTabOf(normed));
+    recordWeights(normed);
     setActiveVideo(normed);
     if (Array.isArray(opts.channels) && opts.channels.length > 0) {
       setActiveChannels(opts.channels);
@@ -270,7 +295,7 @@ export function PlaybackProvider({ children }) {
     } else {
       setSaveMenuVideo(null);
     }
-  }, [notifyMediaPlaying]);
+  }, [notifyMediaPlaying, recordWeights]);
 
   // ----- Dynamic stream re-extraction pipeline ------------------------------
   // Favorites/history now persist canonical metadata (id/title/pageUrl) — NOT
@@ -501,5 +526,39 @@ export function PlaybackProvider({ children }) {
 }
 
 export function usePlayback() { return useContext(PlaybackContext); }
+
+// ---- Tab-switch auto-pause (v1.0.36) ---------------------------------------
+// Keep-alive views stay mounted (display:none) when the user switches tabs, so
+// their <video>/hls.js/<audio> handles keep decoding in the background. This
+// hook bridges AppLayout's 'nek-view-changed' broadcast to any surface that
+// owns a media handle:
+//   - leaving the tab  -> pause() once (the handle is KEPT so position and
+//     quality survive; nothing is destroyed — that is what the other-source
+//     coordinator does, and it must not run here);
+//   - returning to it  -> resume() once, and only if pause() was actually
+//     applied while the tab was hidden.
+// Both callbacks are try/caught so a moving DOM (channel switch, modal teardown)
+// can never break the tab switch.
+export function usePersistentPauseOnLeave(viewPath, pause, resume) {
+  const hiddenRef = useRef(false);
+  useEffect(() => {
+    const onViewChanged = (e) => {
+      const detail = (e && e.detail) || {};
+      const active = String(detail.view || '');
+      if (!active) return;
+      const mine = String(viewPath) === active;
+      if (!mine && !hiddenRef.current) {
+        hiddenRef.current = true;
+        if (pause) { try { pause(); } catch (err) {} }
+      } else if (mine && hiddenRef.current) {
+        hiddenRef.current = false;
+        if (resume) { try { resume(); } catch (err) {} }
+      }
+    };
+    window.addEventListener('nek-view-changed', onViewChanged);
+    return () => window.removeEventListener('nek-view-changed', onViewChanged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewPath]);
+}
 
 export default PlaybackContext;

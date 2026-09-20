@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Hls from 'hls.js';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
 import { useLanguage } from '../i18n/LanguageContext.jsx';
-import { usePlayback } from '../contexts/PlaybackContext.jsx';
+import { usePlayback, usePersistentPauseOnLeave } from '../contexts/PlaybackContext.jsx';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
 import { IPTV_LANGUAGE_FEEDS, importLanguageFeed } from '../services/iptvService.js';
 import isAdultMedia from '../utils/contentSafety.js';
@@ -107,7 +107,32 @@ function EmbeddedPlayer({ channel }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const paneIdRef = useRef(`iptv-pane-${++paneInstanceSeq}`);
+  const wasPlayingRef = useRef(false);
   const { notifyMediaPlaying } = usePlayback();
+
+  // Tab-switch auto-pause (v1.0.36): leaving /iptv pauses the pane WITHOUT
+  // destroying its hls.js handle, so the channel, timestamp and quality tier
+  // survive; returning resumes it exactly where it left off (only if it was
+  // actually playing when the tab was left). This is deliberately gentler than
+  // detach() — which is reserved for other-source playback below.
+  usePersistentPauseOnLeave(
+    '/iptv',
+    () => {
+      const el = videoRef.current;
+      if (!el) return;
+      try { if (!el.paused) wasPlayingRef.current = true; el.pause(); } catch (err) {}
+      if (hlsRef.current) { try { hlsRef.current.stopLoad(); } catch (err) {} }
+    },
+    () => {
+      const el = videoRef.current;
+      if (!el) return;
+      if (hlsRef.current) { try { hlsRef.current.startLoad(); } catch (err) {} }
+      if (wasPlayingRef.current && (hlsRef.current || el.currentSrc)) {
+        try { el.play(); } catch (err) {}
+      }
+      wasPlayingRef.current = false;
+    }
+  );
 
   // Release the pane handle: pause the element and destroy hls.js + clear the
   // source so no background audio/video leaks from a hidden tab.
@@ -122,6 +147,9 @@ function EmbeddedPlayer({ channel }) {
       el.removeAttribute('src');
       try { el.load(); } catch (err) {}
     }
+    // Another source owns the media slot now — a later tab return must NOT
+    // auto-resume a stream that no longer exists.
+    wasPlayingRef.current = false;
   }, []);
 
   // Any playback that started elsewhere claims the media slot: release this

@@ -71,6 +71,14 @@ const AppLayout = () => {
     }
   }, [activeView]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Broadcast the active tab to every keep-alive media surface (IPTV pane,
+  // Live Radio, Cinema). They listen for this and pause their stream when this
+  // view is no longer the active one — preserving position/quality because the
+  // handle itself is never destroyed, just muted for the background.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('nek-view-changed', { detail: { view: activeView } }));
+  }, [activeView]);
+
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth >= 960 && !isSidebarCollapsed) return;

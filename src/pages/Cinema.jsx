@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Hls from 'hls.js';
 import { autoSync, favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
 import { useLanguage } from '../i18n/LanguageContext.jsx';
-import { usePlayback } from '../contexts/PlaybackContext.jsx';
+import { usePlayback, usePersistentPauseOnLeave } from '../contexts/PlaybackContext.jsx';
 import './Cinema.css';
 
 const SEARCH_URL = 'https://archive.org/advancedsearch.php';
@@ -55,7 +55,30 @@ function Cinema() {
   const cinemaIdRef = useRef(`cinema-${++cinemaInstanceSeq}`);
   const retryAttemptRef = useRef(0);
   const retryTimerRef = useRef(null);
+  const wasPlayingRef = useRef(false);
   const { notifyMediaPlaying } = usePlayback();
+
+  // Tab-switch auto-pause (v1.0.36): leaving /cinema pauses the in-page modal
+  // player WITHOUT tearing down hls.js, so the title, timestamp and quality
+  // tier survive; returning resumes it only if it was playing when left.
+  usePersistentPauseOnLeave(
+    '/cinema',
+    () => {
+      const el = videoRef.current;
+      if (!el) return;
+      try { if (!el.paused) wasPlayingRef.current = true; el.pause(); } catch (err) {}
+      if (hlsRef.current) { try { hlsRef.current.stopLoad(); } catch (err) {} }
+    },
+    () => {
+      const el = videoRef.current;
+      if (!el) return;
+      if (hlsRef.current) { try { hlsRef.current.startLoad(); } catch (err) {} }
+      if (wasPlayingRef.current && (hlsRef.current || el.currentSrc)) {
+        try { el.play(); } catch (err) {}
+      }
+      wasPlayingRef.current = false;
+    }
+  );
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -317,6 +340,9 @@ function Cinema() {
         el.onerror = null;
         el.onplaying = null;
       }
+      // Another source owns the media slot now — cancel any pending
+      // auto-resume so returning to /cinema never double-plays with it.
+      wasPlayingRef.current = false;
     };
     window.addEventListener('nek-media-source-active', onSourceActive);
     return () => window.removeEventListener('nek-media-source-active', onSourceActive);
