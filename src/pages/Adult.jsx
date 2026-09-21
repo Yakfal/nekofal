@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import VideoSearchSection from '../components/VideoSearchSection.jsx';
 import { useLanguage } from '../i18n/LanguageContext.jsx';
+import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
 import './Adult.css';
 
 const STORAGE_KEY = 'pmh-adult-sites';
@@ -43,6 +44,7 @@ const loadSites = () => {
 
 const Adult = () => {
   const { t } = useLanguage();
+  const { settings } = useAppSettings();
   const [sites, setSites] = useState(loadSites);
   const [activeId, setActiveId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -116,7 +118,7 @@ const Adult = () => {
         </div>
 
         <div className="adult-presets">
-          {PRESETS.map(p => {
+          {!settings.familyMode && PRESETS.map(p => {
             const exists = sites.some(s => s.searchTemplate === p.searchTemplate);
             return (
               <button key={p.name} className="adult-preset" onClick={() => addPreset(p)} disabled={exists}>
@@ -168,7 +170,7 @@ const Adult = () => {
               </p>
             )}
             <p className="adult-hint">
-              {t('adult.tip')}
+              {settings.familyMode ? t('adult.tipFamily') : t('adult.tip')}
             </p>
           </div>
         )}

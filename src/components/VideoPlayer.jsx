@@ -10,6 +10,11 @@ import './VideoPlayer.css';
 // Declared with `var` so the output has no block-scoped bindings at module
 // level, which is what makes Temporal Dead Zone errors impossible at runtime.
 var EXTRACTION_TIMEOUT_MS = 30000;
+// Stealth-driven providers (hanime) must load a full browser session,
+// clear Cloudflare/Turnstile and wait for the Astro player to hydrate before
+// any /hls/ master is emitted, so grant them extra headroom (the sniff
+// window lives ~20s and can run longer-than-average on slow loads).
+var STEALTH_EXTRACTION_TIMEOUT_MS = 65000;
 var PREF_KEY = 'pmh-preferences';
 var SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
@@ -1091,17 +1096,20 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         console.log('[VideoPlayer] Extracting stream for:', streamUrl);
         
         try {
+          const extractionTimeLimit = /hanime\.tv/i.test(streamUrl)
+            ? STEALTH_EXTRACTION_TIMEOUT_MS
+            : EXTRACTION_TIMEOUT_MS;
           const result = await withTimeout(
             api.extractStream(streamUrl),
-            EXTRACTION_TIMEOUT_MS,
-            new Error('Extraction timeout (10s)')
+            extractionTimeLimit,
+            new Error('Extraction timed out')
           );
           
           // Normalize the two possible success shapes:
           //  - { success, data: { videoUrl, httpHeaders, isHLS, qualityLevels, ... } }
           //  - { success, streamUrl, isHls }  (main's direct-media fast path)
           const extraction = result && result.success && (result.data?.videoUrl || result.streamUrl)
-            ? (result.data?.videoUrl ? result.data : { videoUrl: result.streamUrl, isHLS: !!result.isHls, httpHeaders: null, qualityLevels: [] })
+            ? (result.data?.videoUrl ? result.data : { videoUrl: result.streamUrl, isHLS: !!result.isHls, httpHeaders: result.httpHeaders || null, qualityLevels: [] })
             : null;
 
           if (extraction && extraction.videoUrl) {
@@ -1110,6 +1118,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             const isValidMedia = /\.(mp4|webm|m3u8|ts|m4s|mkv|m4v|mov|avi)(\?|$)/i.test(extractedUrl) 
               || extractedUrl.includes('googlevideo.com') 
               || extractedUrl.includes('videoplayback')
+              || /\/hls\//i.test(extractedUrl)
+              || extraction.isHLS
               || (extractedUrl.startsWith('http://localhost:') && extractedUrl.includes('/video/proxy/stream'));
             
             if (!isValidMedia) {

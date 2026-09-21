@@ -38,6 +38,13 @@ const credentialVault = require('./credentialVault');
 app.setName('Nekofal');
 app.setPath('userData', path.join(app.getPath('appData'), 'yakfal-hub'));
 
+// Steady rendering: hardware acceleration can wedge the main-thread message
+// pump on some GPU/driver combos the moment a hardware-decoded stream starts
+// (observed as a full app freeze right as hanime playback begins, with the
+// remote-debugging and video-server HTTP endpoints going dead while every
+// process lingers). Software decode is fully adequate for this UI.
+app.disableHardwareAcceleration();
+
 // Nekofal falling-cat icon: at runtime prefer the built copy (build/icon.png,
 // which vite copies from public/ on every build), falling back to source.
 function appIconPath() {
@@ -664,25 +671,38 @@ function setupWebRequestHeaders() {
   // Handle redirects to preserve headers
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
-    
-    // Remove restrictive CORS headers from response
-    if (responseHeaders['Access-Control-Allow-Origin']) {
+
+    // CORS stamp: only touch responses that actually need it for the
+    // renderer's hls.js/xhr fetches (master playlists, keys, segments —
+    // e.g. hanime/tokyoinsider send no/odd Access-Control-Allow-Origin).
+    // Leave documents and CDN subresources (scripts, fonts, images) with
+    // their ORIGINAL headers: stamping there was breaking page loads,
+    // because Electron MERGES the returned headers with the originals
+    // (it does not replace them), so setting the same key produced
+    // "Access-Control-Allow-Origin: *, *" — a header with multiple values
+    // that Chrome rejects, skull-blocking the site's own CDN scripts.
+    // Deletes must come FIRST to fully replace a pre-existing header.
+    const resourceType = details.resourceType || '';
+    if (resourceType === 'xmlhttprequest' || resourceType === 'fetch' || resourceType === 'media') {
+      for (const key of Object.keys(responseHeaders)) {
+        const lower = key.toLowerCase();
+        if (lower === 'access-control-allow-origin' ||
+            lower === 'access-control-allow-credentials' ||
+            lower === 'access-control-allow-methods' ||
+            lower === 'access-control-allow-headers') {
+          delete responseHeaders[key];
+        }
+      }
       responseHeaders['Access-Control-Allow-Origin'] = ['*'];
-    }
-    if (responseHeaders['Access-Control-Allow-Credentials']) {
       responseHeaders['Access-Control-Allow-Credentials'] = ['true'];
-    }
-    if (responseHeaders['Access-Control-Allow-Methods']) {
       responseHeaders['Access-Control-Allow-Methods'] = ['GET, POST, OPTIONS, HEAD'];
-    }
-    if (responseHeaders['Access-Control-Allow-Headers']) {
       responseHeaders['Access-Control-Allow-Headers'] = ['*'];
     }
-    
+
     // Allow all content to be embedded
     delete responseHeaders['X-Frame-Options'];
     delete responseHeaders['Content-Security-Policy'];
-    
+
     callback({ responseHeaders });
   });
 
@@ -708,6 +728,13 @@ const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms) || 0
 const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 let stealthWindow = null;
+// Hanime (Astro SPA) uses client:visible islands — a window positioned off
+// screen (x:-10000) never gets an IntersectionObserver intersection, so its
+// player never hydrates and no /hls/ master is ever requested. For those
+// sites the sniff must run in a window that is ON screen; this one is fully
+// invisible (opacity 0, focusable:false, audio muted, skipTaskbar) so the
+// user never sees it.
+let visibleSniffWindow = null;
 
 function ensureStealthWindow() {
   if (stealthWindow && !stealthWindow.isDestroyed()) return stealthWindow;
@@ -743,13 +770,72 @@ function ensureStealthWindow() {
 }
 
 function destroyStealthWindow() {
+  // Deferred, graceful teardown: a visible sniff window is often in the middle
+  // of video.js/hls playback when the resolver finishes. Destroying a
+  // BrowserWindow whose renderer is actively decoding can deadlock the whole
+  // browser process on some builds — so first sail the page to about:blank
+  // (stops the media pipeline) and only destroy 4s later.
   if (stealthWindow && !stealthWindow.isDestroyed()) {
-    try {
-      stealthWindow.webContents.stop();
-      stealthWindow.destroy();
-    } catch (_err) { /* already tearing down */ }
+    try { stealthWindow.webContents.loadURL('about:blank'); } catch (_err) {}
+    const w = stealthWindow;
+    setTimeout(() => { try { if (w && !w.isDestroyed()) w.destroy(); } catch (_err) {} }, 4000);
   }
   stealthWindow = null;
+  if (visibleSniffWindow && !visibleSniffWindow.isDestroyed()) {
+    try { visibleSniffWindow.webContents.loadURL('about:blank'); } catch (_err) {}
+    const w = visibleSniffWindow;
+    setTimeout(() => { try { if (w && !w.isDestroyed()) w.destroy(); } catch (_err) {} }, 4000);
+  }
+  visibleSniffWindow = null;
+}
+
+// On-screen sniff window for sites whose player only hydrates when its island
+// actually intersects the viewport (hanime.tv after its Astro rewrite). It is
+// genuinely visible (IntersectionObserver ignores opacity-0 / off-screen
+// windows), but small, taskbar-hidden, muted, undermost and never focused, so
+// the user barely notices it for the ~3-8s a resolve takes. Reuses the default
+// session so cf_clearance / __cf_bm cookies acquired here persist for the next
+// video load.
+function ensureVisibleSniffWindow() {
+  if (visibleSniffWindow && !visibleSniffWindow.isDestroyed()) {
+    console.info('[VisibleSniff] reusing existing window');
+    return visibleSniffWindow;
+  }
+  const { screen } = require('electron');
+  const wa = (screen.getPrimaryDisplay() || {}).workArea || { x: 0, y: 0, width: 1280, height: 720 };
+  visibleSniffWindow = new BrowserWindow({
+    width: 1180,
+    height: 820,
+    x: wa.x + wa.width - 1200,
+    y: wa.y + wa.height - 860,
+    show: false,
+    frame: false,
+    transparent: false,
+    skipTaskbar: true,
+    focusable: true,
+    alwaysOnTop: false,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#0B0F17',
+    webPreferences: {
+      backgroundThrottling: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  // showInactive() maps the window onto the desktop WITHOUT stealing focus —
+  // crucial: focusable:false or opacity-0 windows can be skipped by Chromium's
+  // compositor, so IntersectionObserver (Astro client:visible) never fires and
+  // the player never hydrates. A real on-screen window is required.
+  visibleSniffWindow.showInactive();
+  console.info(`[VisibleSniff] created at ${JSON.stringify(visibleSniffWindow.getBounds())} shown=${visibleSniffWindow.isVisible()}`);
+  try { visibleSniffWindow.webContents.setAudioMuted(true); } catch (_e) { /* mute unsupported */ }
+  visibleSniffWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  visibleSniffWindow.on('closed', () => { visibleSniffWindow = null; });
+  return visibleSniffWindow;
 }
 
 async function getSessionCookies(url) {
@@ -782,10 +868,10 @@ async function getSessionCookieHeader(url) {
   return relevant.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-async function evalInStealth(js, timeoutMs = 8000) {
-  const win = ensureStealthWindow();
+async function evalInStealth(js, timeoutMs = 8000, win = null) {
+  const target = win || ensureStealthWindow();
   const result = await Promise.race([
-    win.webContents.executeJavaScript(`(function(){ try { ${js} } catch (e) { return { __stealthError: String(e && e.message || e) }; } })()`),
+    target.webContents.executeJavaScript(`(function(){ try { ${js} } catch (e) { return { __stealthError: String(e && e.message || e) }; } })()`),
     sleep(timeoutMs).then(() => ({ __stealthError: 'eval timeout' }))
   ]);
   return result;
@@ -835,7 +921,7 @@ async function waitForCloudflare(win, challengeTimeoutMs = 20000) {
 }
 
 async function loadInStealth(url, opts = {}) {
-  const win = ensureStealthWindow();
+  const win = opts.win || ensureStealthWindow();
   const timeoutMs = opts.timeoutMs || 30000;
   const result = {
     success: false,
@@ -868,7 +954,7 @@ async function loadInStealth(url, opts = {}) {
       let title = '';
       let href = url;
       try {
-        const meta = await evalInStealth('return { t: document.title || "", h: location.href };', 3000);
+        const meta = await evalInStealth('return { t: document.title || "", h: location.href };', 3000, win);
         if (meta && typeof meta === 'object' && !meta.__stealthError) {
           title = String(meta.t || '');
           href = String(meta.h || url);
@@ -898,7 +984,11 @@ function installStreamSniffer() {
     callback({});
     const url = String(details.url || '');
     const isMedia = details.resourceType === 'media' || STREAM_SNIFF_RE.test(url);
-    if (!isMedia || url.startsWith('http://localhost')) return;
+    // During an active sniff, also capture XHR/fetch requests: tokenized HLS
+    // masters (e.g. hanime.tv/hls/<id>/<token>) carry NO file extension, so a
+    // pure extension regex misses them even though they are the manifest.
+    const isRelevant = isMedia || (!!activeSniff && ['xhr', 'fetch', 'raw'].includes(details.resourceType));
+    if (!isRelevant || url.startsWith('http://localhost')) return;
 
     const entry = { url, resourceType: details.resourceType || 'unknown', at: Date.now(), webContentsId: details.webContentsId };
     sniffedRecent.push(entry);
@@ -949,11 +1039,19 @@ function pickUsableStreams(captured) {
 // itself). The offscreen window is destroyed immediately on resolution, and
 // cf_clearance/__cf_bm cookies persist in session.defaultSession for the
 // next (challenge-free) load.
-async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoadMs = 1500, match, probe, extraHeaders } = {}) {
+async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoadMs = 1500, match, probe, extraHeaders, visibleWindow = false, keepAlive = false } = {}) {
   const pageUrl$ = String(pageUrl || '').trim();
   if (!/^https?:\/\//i.test(pageUrl$)) return { success: false, error: 'Invalid URL' };
-  const win = ensureStealthWindow();
+  // Some sites (hanime.tv since its Astro rewrite) only boot their player when
+  // it intersects a real on-screen viewport — an off-screen window's
+  // IntersectionObserver never fires. Route those through the invisible
+  // on-screen sniff window.
+  const win = visibleWindow ? ensureVisibleSniffWindow() : ensureStealthWindow();
   const sessionId = 'sniff-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  console.info(`[sniff:${sessionId}] window=${visibleWindow ? 'visible' : 'hidden'} wcId=${win && !win.isDestroyed() ? win.webContents.id : -1}`);
+  if (win && !win.isDestroyed()) {
+    try { console.info(`[sniff:${sessionId}] bounds=${JSON.stringify(win.getBounds())}`); } catch (_e) {}
+  }
   const captured = [];
   let earlyUrl = null;
   let settled = false;
@@ -973,7 +1071,24 @@ async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoad
     // The manifest/CDN URL is known — tear the offscreen browser down now so
     // it never blocks quit or lingers holding resources. Session cookies
     // (cf_clearance / __cf_bm) live in defaultSession, not the window.
-    destroyStealthWindow();
+    // keepAlive (hanime): destroying a window whose renderer is actively
+    // decoding video.js output can deadlock the browser process, so instead
+    // park the sniff window off-screen and let it keep quietly buffering —
+    // it is torn down on app quit via the 'before-quit' handler.
+    try {
+      if (win && !win.isDestroyed() && win.webContents.debugger.isAttached()) {
+        win.webContents.debugger.detach();
+      }
+    } catch (_e) { /* detach best-effort */ }
+    if (keepAlive && win && !win.isDestroyed()) {
+      // Keep the (already invisible: show:false + opacity 0) sniff window
+      // alive and reusable — destroying a renderer that is mid video.js
+      // decode can deadlock the browser process, and parking it off-screen
+      // would defeat IntersectionObserver hydration for the NEXT sniff.
+      // A before-quit handler tears it down when the app exits.
+    } else {
+      destroyStealthWindow();
+    }
     if (settle) settle({ success: true, sessionId, pageUrl: pageUrl$, streams, matchedUrl: earlyUrl, ...extra });
   };
 
@@ -986,6 +1101,9 @@ async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoad
         // webRequest hook is global, so the main window's own HLS/stream
         // requests must never trigger a premature early return.
         if (win && !win.isDestroyed() && entry.webContentsId && entry.webContentsId !== win.webContents.id) return;
+        if (activeSniff && entry.url && (/hanime\.tv\/hls\//i.test(entry.url) || /\.m3u8/i.test(entry.url))) {
+          console.info(`[sniff:${sessionId}] candidate`, entry.resourceType, String(entry.url).slice(0, 160));
+        }
         try {
           if (match && typeof match === 'function' && match(entry)) {
             earlyUrl = entry.url;
@@ -1009,12 +1127,48 @@ async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoad
     }, pauseAfterLoadMs);
   };
 
-  loadInStealth(pageUrl$, { pauseAfterLoadMs, challengeTimeoutMs: 20000, timeoutMs: Math.max(timeoutMs, 25000), extraHeaders })
+  // Watchdog FIRST: never block the caller past timeoutMs even if the shim
+  // attach, load, or probe below hangs.
+  setTimeout(() => { if (!settled) finish({ error: 'sniff timeout' }); }, timeoutMs);
+
+  // Visible islands hydrate fine in Electron (IntersectionObserver fires on
+  // the island children — verified live), so NO IO shim / debugger attach is
+  // needed here. (The old shim used webContents.debugger, which on some
+  // Electron builds wedged the remote-debugging HTTP server the moment a
+  // manifest was captured — port 9223 went permanently dead. Never attach the
+  // in-process debugger during a sniff.)
+
+  loadInStealth(pageUrl$, { pauseAfterLoadMs, challengeTimeoutMs: 20000, timeoutMs: Math.max(timeoutMs, 25000), extraHeaders, win })
     .then(scheduleProbe)
     .catch(() => { /* load failure handled by loadInStealth's own timeout */ });
 
-  // Watchdog: never block the caller past timeoutMs.
-  setTimeout(() => { if (!settled) finish({ error: 'sniff timeout' }); }, timeoutMs);
+  // Visible-window sniff (hanime Astro): after the island hydrates, send REAL
+  // (trusted) input events — js .click() does not count as user activation, so
+  // the site's autoplay-gated HLS player never emits its /hls/<id>/<token>
+  // master without a genuine mouse click.
+  if (visibleWindow && win) {
+    (async () => {
+      await sleep(4500);
+      if (settled || !win || win.isDestroyed()) return;
+      let ready = false;
+      try {
+        const st = await win.webContents.executeJavaScript(`(function(){ return { videos: document.querySelectorAll('video').length, tech: !!document.querySelector('.vjs-tech'), player: !!window.htv_player }; })()`);
+        ready = !!(st && (st.videos > 0 || st.tech || st.player));
+        console.info(`[sniff:${sessionId}] hydration check: ${JSON.stringify(st || {})}`);
+      } catch (_e) { /* hydration check failed */ }
+      if (settled) return;
+      const b = win.getBounds();
+      const x = Math.round((b.width || 1180) * 0.5);
+      const y = Math.round((b.height || 820) * 0.42);
+      try {
+        win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+        console.info(`[sniff:${sessionId}] sent real click at ${x},${y} ready=${ready}`);
+      } catch (_e) { console.warn(`[sniff:${sessionId}] sendInputEvent failed: ${_e.message}`); }
+    })().catch(() => { /* ignore */ });
+  }
 
   return new Promise((resolve) => { settle = resolve; });
 }
@@ -1688,7 +1842,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
         return {
           success: true,
           streamUrl: info.m3u8,
-          isHls: /\.m3u8/i.test(info.m3u8),
+          isHls: typeof info.isHls === 'boolean' ? info.isHls : /(\.m3u8|hanime\.tv\/hls\/)/i.test(info.m3u8),
           extractor: info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8',
           title: info.title,
           duration: info.duration,
@@ -4146,33 +4300,74 @@ async function hanimeV8Video(slug) {
 }
 
 // Resolve a hanime.tv page URL to its playable master playlist.
+// The legacy `/api/v8/video` endpoint is deprecated (returns 404 for every
+// slug) and the current site is an Astro SPA that serves its master playlist
+// from a tokenized URL with NO `.m3u8` extension:
+//   https://hanime.tv/hls/<video_id>/<token>
+// (video.js fetches that, then AES-128 segments from *.htv-hydaelyn-*.com).
+// So the only reliable resolver is the offscreen stealth browser: load the
+// page, let the site's own player emit the master request, and capture it.
 async function resolveHanimeStream(pageUrl) {
   const m = /hanime\.tv\/videos\/hentai\/([a-zA-Z0-9_-]+)/i.exec(String(pageUrl || ''));
   const slug = m ? m[1] : '';
   if (!slug) throw new Error('Not a hanime.tv video URL');
+  // First try the old v8 API in case it comes back (cheap: 404 returns fast);
+  // the vast majority of the time it is dead and we go straight to sniffing.
   try {
     const info = await hanimeV8Video(slug);
     if (info.m3u8) return { ...info, slug };
   } catch (v8Err) {
     console.warn(`[resolveHanimeStream] v8 video failed (trying stealth sniff): ${v8Err.message}`);
   }
-  // Stealth fallback: render the page in the offscreen browser and wait (up to
+  // Stealth sniff: render the page in the offscreen browser and wait (up to
   // 20s) for Cloudflare/Turnstile to clear in the background, intercepting the
-  // master .m3u8 the site's HLS player requests as soon as it appears — the
+  // master playlist the site's HLS player requests as soon as it appears — the
   // resolver tears the offscreen window down the instant a valid manifest is
-  // captured instead of waiting out a fixed timer. cf_clearance / __cf_bm (and
-  // any v8 session cookies) persist in session.defaultSession, so the *next*
-  // video load on this machine skips the challenge entirely.
+  // captured instead of waiting out a fixed timer. cf_clearance / __cf_bm
+  // cookies persist in session.defaultSession, so the *next* video load on
+  // this machine skips the challenge entirely.
+  const isMaster = (u) => /\.m3u8/i.test(u) || /hanime\.tv\/hls\//i.test(u);
+  // The Astro player needs a play interaction before video.js emits its
+  // /hls/<id>/<token> master request; nudge (click overlay + force muted
+  // play) every ~1.2s for as long as the sniff window lives.
+  const HANIME_PLAY_NUDGE = `
+var __p0 = Date.now();
+async function __nudge(){
+  while (Date.now() - __p0 < 16000) {
+    try {
+      var ov = [].slice.call(document.querySelectorAll('div')).filter(function(d){ return d.className && /(^|\\s)absolute(\\s|$)/.test(String(d.className)) && /z-2[0-9]/.test(String(d.className)) && d.clientHeight > 0; }).sort(function(a,b){ return b.clientHeight - a.clientHeight; });
+      if (ov.length) { try { ov[0].click(); } catch(e){} }
+      var vids = [].slice.call(document.querySelectorAll('video'));
+      for (var i=0;i<vids.length;i++){ try { vids[i].muted = true; var p = vids[i].play(); if (p && p.catch) p.catch(function(){}); } catch(e){} }
+      var m = performance.getEntriesByType('resource').map(function(r){ return r.name; }).filter(function(u){ return u.indexOf('/hls/') > -1; });
+      if (m.length) return m[0];
+    } catch(e){}
+    await new Promise(function(r){ setTimeout(r, 1200); });
+  }
+  return null;
+}
+__nudge();
+`;
   const sniff = await sniffWithEarlyReturn(pageUrl, {
     timeoutMs: 20000,
+    visibleWindow: true,
+    keepAlive: true,
     extraHeaders: HANIME_SNIFF_HEADERS,
-    match: (e) => /\.m3u8/i.test(String(e.url || ''))
+    probe: async (win) => {
+      if (!win || win.isDestroyed()) return null;
+      try { return await evalInStealth(HANIME_PLAY_NUDGE, 17000, win); } catch (_e) { return null; }
+    },
+    match: (e) => isMaster(String(e.url || ''))
       || /hanime\.tv\/api\/v8\/video/i.test(String(e.url || ''))
       || /v2\.hanime\.tv/i.test(String(e.url || ''))
   });
-  const m3u8 = sniff.matchedUrl || (sniff.streams && sniff.streams.find(s => /\.m3u8/i.test(String(s || '')))) || null;
-  if (!m3u8) throw new Error('No .m3u8 manifest found for ' + slug);
-  return { id: `hanime-${slug}`, slug, m3u8, canPlay: true, title: '', thumbnailUrl: '', duration: 0, viaSniff: true };
+  // Prefer the captured master playlist; never a .html segment URL.
+  const m3u8 = (sniff.matchedUrl && isMaster(sniff.matchedUrl) && sniff.matchedUrl)
+    || (sniff.streams && sniff.streams.find(s => isMaster(String(s || ''))))
+    || null;
+  if (!m3u8) throw new Error('No playable manifest found for ' + slug);
+  console.info(`[resolveHanimeStream] captured manifest via sniff: ${String(m3u8).slice(0, 140)}`);
+  return { id: `hanime-${slug}`, slug, m3u8, canPlay: true, isHls: true, title: '', thumbnailUrl: '', duration: 0, viaSniff: true };
 }
 
 // ---- Pornhub resolver ----------------------------------------------------
@@ -5752,4 +5947,10 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
     if (!mainWindow && process.env.NODE_ENV === 'development') {
       createWindow();
     }
+  });
+
+  app.on('before-quit', () => {
+    // Keep-alive sniff windows are parked (never destroyed at resolve time);
+    // make sure they are torn down when the app actually exits.
+    try { destroyStealthWindow(); } catch (_err) { /* app is quitting */ }
   });

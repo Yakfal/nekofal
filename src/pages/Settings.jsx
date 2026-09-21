@@ -1095,7 +1095,7 @@ const Settings = () => {
         </div>
 
         <p className="form-hint" style={{ marginBottom: '16px' }}>
-          {t('settings.ytdlpIntro')}
+          {settings.familyMode ? t('settings.ytdlpIntroFamily') : t('settings.ytdlpIntro')}
         </p>
 
         <form className="settings-form" onSubmit={handleScrapeAdultSite}>
@@ -1105,7 +1105,7 @@ const Settings = () => {
               id="adult-name"
               type="text"
               className="form-input"
-              placeholder={t('settings.sourceNamePlaceholder')}
+              placeholder={settings.familyMode ? t('settings.sourceNamePlaceholderFamily') : t('settings.sourceNamePlaceholder')}
               value={adultSiteName}
               onChange={(e) => setAdultSiteName(e.target.value)}
             />
