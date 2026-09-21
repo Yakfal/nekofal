@@ -995,18 +995,21 @@ function installStreamSniffer() {
     if (sniffedRecent.length > 300) sniffedRecent = sniffedRecent.slice(-300);
 
     // During an active sniff session, collect + announce to the renderer.
-    if (activeSniff) {
-      activeSniff.captured.push(entry);
+    const sniff = activeSniff;
+    if (sniff) {
+      sniff.captured.push(entry);
       // Early-return hook: let the resolver resolve the instant a matching
       // stream URL is captured instead of waiting out its full timeout.
-      if (typeof activeSniff.onCapture === 'function') {
-        try { activeSniff.onCapture(entry); } catch (_e) { /* hook errors ignored */ }
+      // NOTE: the hook may call finish() synchronously, which clears the
+      // global activeSniff — always use the local `sniff` snapshot below.
+      if (typeof sniff.onCapture === 'function') {
+        try { sniff.onCapture(entry); } catch (_e) { /* hook errors ignored */ }
       }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('stream:sniffed', {
-          sessionId: activeSniff.sessionId,
-          pageUrl: activeSniff.pageUrl,
-          streams: activeSniff.captured.map(e => e.url),
+          sessionId: sniff.sessionId,
+          pageUrl: sniff.pageUrl,
+          streams: sniff.captured.map(e => e.url),
           at: entry.at
         });
       }
