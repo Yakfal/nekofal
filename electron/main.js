@@ -870,11 +870,34 @@ async function getSessionCookieHeader(url) {
 
 async function evalInStealth(js, timeoutMs = 8000, win = null) {
   const target = win || ensureStealthWindow();
-  const result = await Promise.race([
-    target.webContents.executeJavaScript(`(function(){ try { ${js} } catch (e) { return { __stealthError: String(e && e.message || e) }; } })()`),
-    sleep(timeoutMs).then(() => ({ __stealthError: 'eval timeout' }))
-  ]);
-  return result;
+  // Scripts come in two shapes:
+  //   (a) a statement body ending in `return <value>;` (legacy generic extract)
+  //   (b) an IIFE/expression whose VALUE is the result (slice-grid, hanime htv,
+  //       page-state probe, ...). The bare `try { ${js} }` wrapper would DROP
+  //       an expression's value (returns undefined every time), so expression
+  //       scripts must be wrapped as `return (<expr>);`.
+  const isExpr = /^\s*[\(\[\{]/.test(js);
+  // Expression scripts sometimes end with `;` (e.g. `(function(){...})();`) —
+  // `return (expr;)` is a parse error, so strip one trailing semicolon.
+  const body = js.trim().replace(/;\s*$/, '');
+  const wrapped = isExpr
+    ? `(function(){ try { return (${body}) } catch (e) { return { __stealthError: String(e && e.message || e) }; } })()`
+    : `(function(){ try { ${body} } catch (e) { return { __stealthError: String(e && e.message || e) }; } })()`;
+  try {
+    let result = await Promise.race([
+      target.webContents.executeJavaScript(wrapped),
+      sleep(timeoutMs).then(() => ({ __stealthError: 'eval timeout' }))
+    ]);
+    // In-page async scripts (e.g. a hanime fetch to search.htv-services.com)
+    // return a promise; await it inside the same hang-guard.
+    if (result && typeof result.then === 'function') {
+      result = await Promise.race([result, sleep(timeoutMs).then(() => ({ __stealthError: 'eval timeout' }))]);
+    }
+    return result;
+  } catch (e) {
+    hanimeSearchDiag.lastEvalError = ((hanimeSearchDiag.lastEvalError) ? hanimeSearchDiag.lastEvalError + '; ' : '') + String((e && e.message) || e);
+    throw e;
+  }
 }
 
 // Attempt to nudge Cloudflare into solving its challenge automatically:
@@ -978,6 +1001,9 @@ async function loadInStealth(url, opts = {}) {
 const STREAM_SNIFF_RE = /\.(m3u8|m3u|mpd|m4s|ts|mp4|m4v|webm|mkv|mov)([?#]|$)/i;
 let sniffedRecent = [];
 let activeSniff = null;
+// TEMP-DIAG: last hanime search run's internal steps (removed after the search
+// mechanism is nailed down). Surfaced through the thrown error for diagnosis.
+let hanimeSearchDiag = {};
 
 function installStreamSniffer() {
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
@@ -4223,24 +4249,87 @@ const HANIME_SEARCHBOX_TYPEDOWN_SCRIPT = `
 })();
 `;
 
+// Resolve against a deadline so a CDP command (which can silently hang when
+// the debugger detaches on navigation) never wedges the whole search.
+function withHangGuard(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timeout`)), ms))
+  ]);
+}
+
+// Run hanime's OWN search POST (search.htv-services.com) from inside the
+// loaded page: fetch() from the page context carries the real browser
+// fingerprint + cf_clearance/__cf_bm cookies, lands regardless of what the
+// post-Astro /search SPA does with URL params, and returns exact per-query
+// hits from the network layer.
+const HANIME_HTV_SEARCH_SCRIPT = `
+(async function () {
+  var q = __QUERY_JSON__;
+  var attempts = [
+    'https://search.htv-services.com/',
+    'https://search.htv-services.com/search/'
+  ];
+  for (var i = 0; i < attempts.length; i++) {
+    try {
+      var r = await fetch(attempts[i], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ search_text: q, tags: '' })
+      });
+      if (!r.ok) continue;
+      var txt = await r.text();
+      var j = null;
+      try { j = JSON.parse(txt); } catch (e) { continue; }
+      var hits = (j && Array.isArray(j.hits)) ? j.hits : null;
+      if (hits && hits.length) return { status: r.status, url: attempts[i], hits: hits, count: hits.length };
+    } catch (e) { /* try next endpoint */ }
+  }
+  return { ok: false, href: location.href };
+})();
+`;
+
+async function hanimeHtvSearch(win, text) {
+  if (!win || win.isDestroyed() || !text) return { ok: false };
+  try {
+    const res = await evalInStealth(buildAutoSearchScript(HANIME_HTV_SEARCH_SCRIPT, { query: text }), 15000, win);
+    if (res && Array.isArray(res.hits) && res.hits.length) {
+      console.log(`[hanimeStealthSearch] page-context htv search returned ${res.count} hits (${res.url})`);
+      hanimeSearchDiag.htv = { ok: true, count: res.count, url: res.url };
+      return { ok: true, json: res };
+    }
+    if (res && res.__stealthError) console.warn('[hanimeStealthSearch] htv in-page script error:', res.__stealthError);
+    console.warn('[hanimeStealthSearch] htv in-page search no hits:', JSON.stringify(res || {}).slice(0, 300));
+    hanimeSearchDiag.htv = { ok: false, res: res || null };
+  } catch (e) {
+    console.warn('[hanimeStealthSearch] htv in-page search failed:', e.message);
+    hanimeSearchDiag.htvError = String((e && e.message) || e);
+  }
+  return { ok: false };
+}
+
 // Type the query into hanime's (focused) search box with real CDP input and
-// press Enter so the Astro SPA runs a genuine search (htv-services POST).
+// press Enter so the Astro SPA runs a genuine search (htv-services POST). Every
+// CDP command is hang-guarded — a debugger can silently swallow commands after
+// a navigation.
 async function driveHanimeSearchBox(win, text, attached) {
   if (!win || win.isDestroyed() || !text) return;
   let result = null;
   try {
     result = await evalInStealth(buildAutoSearchScript(HANIME_SEARCHBOX_SCRIPT, { query: text }), 6000, win);
-  } catch (_e) { /* step to DOM fallback */ }
+  } catch (_e) {
+    hanimeSearchDiag.boxEvalError = String((_e && _e.message) || _e);
+  }
   if (!result || result.__stealthError || !result.ok) {
     console.warn('[hanimeStealthSearch] search box not found:', JSON.stringify(result || {}).slice(0, 200));
     return;
   }
   if (attached && win && !win.isDestroyed()) {
     try {
-      await win.webContents.debugger.sendCommand('Input.insertText', { text });
-      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
-      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
-      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+      await withHangGuard(win.webContents.debugger.sendCommand('Input.insertText', { text }), 4000, 'insertText');
+      await withHangGuard(win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }), 4000, 'keyDown');
+      await withHangGuard(win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }), 4000, 'keyChar');
+      await withHangGuard(win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }), 4000, 'keyUp');
       console.log(`[hanimeStealthSearch] typed query via CDP into search box`);
       return;
     } catch (_e) { /* fall through to DOM path */ }
@@ -4289,7 +4378,7 @@ async function hanimeStealthSearch(query, count = 25) {
           .finally(() => pendingIds.delete(id));
       }
     });
-    await win.webContents.debugger.sendCommand('Network.enable');
+    await withHangGuard(win.webContents.debugger.sendCommand('Network.enable'), 5000, 'Network.enable');
   } catch (err) {
     console.warn(`[hanimeStealthSearch] CDP attach failed (DOM fallback only): ${err.message}`);
   }
@@ -4297,13 +4386,51 @@ async function hanimeStealthSearch(query, count = 25) {
   try {
     const load = await loadInStealth(searchUrl, { pauseAfterLoadMs: STEALTH_TURNSTILE_SETTLE_MS, challengeTimeoutMs: 20000, timeoutMs: 30000 });
     if (!load.success) throw new Error(`hanime search page load failed: ${load.error}`);
+    console.log(`[hanimeStealthSearch] loaded href="${load.href || ''}" title="${(load.title || '').slice(0, 60)}"`);
+    hanimeSearchDiag.loaded = { href: load.href || '', title: (load.title || '').slice(0, 80) };
 
-    // Wait for the page's own POST to htv-services to land (then catch any
-    // stragglers), so the network path is preferred over DOM scraping.
+    // Diagnostic: what did the page actually render? (SPA results grid,
+    // Turnstile wall, or a header with a search input.)
+    try {
+      const state = await evalInStealth(`(function(){
+        var ins = [].slice.call(document.querySelectorAll('input')).map(function(i){ return (i.type||'text') + '|' + (i.getAttribute('placeholder')||''); }).slice(0, 10);
+        return { href: location.href, title: String(document.title || '').slice(0, 80), inputs: ins, anchors: document.querySelectorAll('a[href*="/videos/hentai/"]').length, body: (document.body && document.body.innerText ? document.body.innerText.replace(/[ \t]{2,}/g,' ').slice(0, 100) : '') };
+      })()`, 8000, win);
+      console.log('[hanimeStealthSearch] page state:', JSON.stringify(state).slice(0, 400));
+      hanimeSearchDiag.pageState = state;
+    } catch (e) { console.warn('[hanimeStealthSearch] page-state dump failed:', e.message); hanimeSearchDiag.pageStateError = String((e && e.message) || e); }
+
+    // TEMP self-test: isolate wrapper-form vs page-state executeJavaScript failures.
+    hanimeSearchDiag.selfTest = {};
+    for (const [tag, expr] of [
+      ['exprSync', '({ ok: true, h: location.href })'],
+      ['exprAsync', 'Promise.resolve(7).then(function(v){ return { ok: true, v: v }; })'],
+      ['stmtReturn', 'return { ok: true, h: location.href };']
+    ]) {
+      try {
+        const r = await evalInStealth(expr, 4000, win);
+        hanimeSearchDiag.selfTest[tag] = (r && r.__stealthError) ? { err: r.__stealthError } : r;
+      } catch (e) {
+        hanimeSearchDiag.selfTest[tag] = { threw: String((e && e.message) || e) };
+      }
+    }
+
+    // PRIMARY (and query-exact): POST to hanime's own search service from the
+    // page context — real cookies + fingerprint, results always match the
+    // typed term, and it never depends on the SPA interpreting ?query=.
+    const htv = await hanimeHtvSearch(win, text);
+    if (htv.ok) {
+      const parsed = parseHanimeSearchPayload(htv.json, count, 'hanime-htv-search');
+      if (parsed.length > 0) return parsed;
+    }
+
+    // NETWORK capture: the page's own POST to htv-services may also land while
+    // the SPA boots (payload path) — still preferred for parity.
     let payloadDeadline = Date.now() + 5000;
     while (payloads.length === 0 && Date.now() < payloadDeadline && !win.isDestroyed()) {
       await sleep(400);
     }
+    hanimeSearchDiag.payloadCount = payloads.length;
 
     // Post-Astro the SPA often ignores the URL query and shows its default,
     // query-invariant grid. If no htv-services POST has fired, drive the real
@@ -4315,6 +4442,7 @@ async function hanimeStealthSearch(query, count = 25) {
       while (payloads.length === 0 && Date.now() < payloadDeadline && !win.isDestroyed()) {
         await sleep(400);
       }
+      hanimeSearchDiag.payloadCountAfterDrive = payloads.length;
     }
     await sleep(500);
 
@@ -4335,10 +4463,10 @@ async function hanimeStealthSearch(query, count = 25) {
       const out = (res && Array.isArray(res.out)) ? res.out : [];
       const valid = out.filter(e => e && e.url && !isScrapeJunkUrl(e.url));
       // Only trust the rendered grid once the SPA actually moved to a search
-      // results route (/search): pre-/post-Astro both show a query-invariant
-      // default grid otherwise, and scraping it would return the same videos
-      // for every search term.
-      const isResultsRoute = /\/search/i.test(String((res && res.href) || ''));
+      // results route (/search, or a page carrying a search query param):
+      // pre-/post-Astro both show a query-invariant default grid otherwise, and
+      // scraping it would return the same videos for every search term.
+      const isResultsRoute = /(\/search|\?(?:.*&)?(?:query|q)=)/i.test(String((res && res.href) || ''));
       if (valid.length > 0 && isResultsRoute) {
         return valid.map(r => {
           const m = (r.durationText || '').match(/(?:(\d+)h\s*)?(\d{1,2}):(\d{2})/);
@@ -4360,6 +4488,7 @@ async function hanimeStealthSearch(query, count = 25) {
       }
       await sleep(700);
     }
+    hanimeSearchDiag.domExhausted = true;
     return [];
   } finally {
     if (attached) {
@@ -4569,6 +4698,7 @@ async function searchHanime(query, count = 25) {
 
   const e = lastErr || new Error('No Hanime search backend reachable');
   e.message += ' (Hanime stealth search and v8 API are currently unreachable/blocked)';
+  e.message += ' [diag] ' + JSON.stringify(hanimeSearchDiag).slice(0, 1200);
   throw e;
 }
 
