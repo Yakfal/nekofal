@@ -4113,6 +4113,54 @@ async function hanimeV8Search(query, count = 25) {
 // structural variants so a format shuffle upstream never returns zero rows.
 // Shared by the direct v8 fetch path and the offscreen stealth capture so
 // both backends produce identical result shapes.
+// v1.0.44: shared GENUINE-VIDEO gate for hanime results. Every backend that
+// can feed the list — the v8 direct fetch, the htv-services payload capture,
+// the v8 fallback, and the offscreen-stealth DOM scrape — funnels through
+// parseHanimeSearchPayload (below) and/or the DOM assembly in hanimeStealthSearch,
+// so this single classifier is the one choke point that decides "is this a real
+// video, or junk (ad / overlay / tracker / promo / set / image-only card)".
+//
+// Junk cards are rejected HERE, before the result ever reaches the list, and
+// every rejection is counted per-reason in hanimeSearchDiag.junkRejected so the
+// user can SEE the ad/junk filtering actually running (and the "diag" JSON in
+// the logs shows exactly how many ads were excluded, instead of them leaking
+// into the results list).
+function classifyHanimeJunkCard(h, src, slug) {
+  if (!slug || !String(slug).trim()) return 'no-slug';
+  // Promo/ad frames carried real-looking URLs on the old grid; their slug was
+  // the only junk fingerprint. Match the same filter independently: a slug that
+  // is entirely a metric, a bare image filename, or an ad-network token is not
+  // a playable video handle.
+  const slugText = String(slug).trim();
+  if (SCRAPE_METRIC_TITLE.test(slugText) || /\.(?:png|jpe?g|gif|svg|webp)$/i.test(slugText)) return 'junk-slug';
+  if (isScrapeJunkUrl(`https://hanime.tv/videos/hentai/${slugText}`)) return 'junk-url';
+  const title = String(src && (src.name || src.title || '')).trim();
+  if (isScrapeJunkTitle(title)) return 'junk-title';
+  const thumb = String(src && (src.poster_url || src.cover_url || src.thumb_url || '')).trim();
+  if (!thumb || !/^https?:\/\//i.test(thumb) || /\.(?:gif)$/i.test(thumb)) return 'junk-thumb';
+  // A card only counts as a video if it carries a duration (0 ms / missing is a
+  // promo/ad frame, not a playable video).
+  const dur = src && (src.duration_in_ms || src.duration_ms || 0);
+  if (!(Number(dur) > 0)) return 'junk-no-duration';
+  return '';
+}
+
+// Descriptor for a rejected junk card (used by the DOM path, which has no ES
+// _source object): reuse the same URL/title junk rules that guard every other
+// scraped card so junk never silently sneaks into the results list.
+function scarceHanimeJunkReason(obj) {
+  const url = String((obj && (obj.url || obj.pageUrl || obj.videoUrl)) || '');
+  if (!url) return 'no-url';
+  if (isScrapeJunkUrl(url)) return 'junk-url';
+  const title = String((obj && (obj.title || obj.alt || '')) || '');
+  if (isScrapeJunkTitle(title)) return 'junk-title';
+  const thumb = String((obj && (obj.thumb || obj.thumbnailUrl || obj.thumbnail_url || obj.src)) || '');
+  if (!thumb || !/^https?:\/\//i.test(thumb)) return 'junk-thumb';
+  const dur = Number((obj && (obj.duration || obj.durationText || 0)) || 0);
+  if (!(dur > 0) && !(obj && obj.durationText)) return 'junk-no-duration';
+  return '';
+}
+
 function parseHanimeSearchPayload(data, count = 25, extractor = 'hanime-v8') {
   const nestedHits = data && data.data && data.data.hits && (data.data.hits.hits || data.data.hits);
   const hits = Array.isArray(nestedHits)
@@ -4123,6 +4171,15 @@ function parseHanimeSearchPayload(data, count = 25, extractor = 'hanime-v8') {
     const src = h && h._source ? h._source : (h || {});
     const slug = src.slug || (h && h._source && h._source.slug) || '';
     if (!slug) continue;
+    // v1.0.44: hard gate before any hanime card can enter the list. Reject ads,
+    // overlays, trackers, promos, set/filter pages and image-only cards here;
+    // count each rejected reason so the diag shows filtering is active.
+    const junk = classifyHanimeJunkCard(h, src, slug);
+    if (junk) {
+      hanimeSearchDiag.junkRejected = hanimeSearchDiag.junkRejected || {};
+      hanimeSearchDiag.junkRejected[junk] = (hanimeSearchDiag.junkRejected[junk] || 0) + 1;
+      continue;
+    }
     const pageUrl = `https://hanime.tv/videos/hentai/${slug}`;
     // Some hit payloads embed the playable stream (master .m3u8 or direct
     // .mp4) directly; when present use it as videoUrl so playback skips the
@@ -4461,7 +4518,20 @@ async function hanimeStealthSearch(query, count = 25) {
       const res = await evalInStealth(buildAutoSearchScript(HANIME_DOM_SCRIPT, { limit: count }), 6000, win);
       if (res && res.__stealthError) throw new Error(`hanime DOM extract failed: ${res.__stealthError}`);
       const out = (res && Array.isArray(res.out)) ? res.out : [];
-      const valid = out.filter(e => e && e.url && !isScrapeJunkUrl(e.url));
+      // v1.0.44: run every rendered card through the SAME genuine-video gate
+      // used by the network/payload backends so ads, overlays, trackers, promos,
+      // image-only and no-duration cards are rejected HERE (visible via
+      // hanimeSearchDiag.junkRejected) instead of leaking into the results list.
+      const valid = [];
+      for (const e of out) {
+        const reason = scarceHanimeJunkReason(e || {});
+        if (reason) {
+          hanimeSearchDiag.junkRejected = hanimeSearchDiag.junkRejected || {};
+          hanimeSearchDiag.junkRejected[reason] = (hanimeSearchDiag.junkRejected[reason] || 0) + 1;
+          continue;
+        }
+        valid.push(e);
+      }
       // Only trust the rendered grid once the SPA actually moved to a search
       // results route (/search, or a page carrying a search query param):
       // pre-/post-Astro both show a query-invariant default grid otherwise, and
