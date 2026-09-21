@@ -789,25 +789,25 @@ function destroyStealthWindow() {
   visibleSniffWindow = null;
 }
 
-// On-screen sniff window for sites whose player only hydrates when its island
-// actually intersects the viewport (hanime.tv after its Astro rewrite). It is
-// genuinely visible (IntersectionObserver ignores opacity-0 / off-screen
-// windows), but small, taskbar-hidden, muted, undermost and never focused, so
-// the user barely notices it for the ~3-8s a resolve takes. Reuses the default
-// session so cf_clearance / __cf_bm cookies acquired here persist for the next
-// video load.
+// Hydratable sniff window for sites whose player only boots when its island is
+// observed (hanime.tv after its Astro rewrite). It is kept "visible" to
+// Chromium (IntersectionObserver + compositor events keep firing) but parked
+// OFF-SCREEN at (-10000,-10000), taskbar-hidden and muted, so it NEVER pops up
+// on the user's desktop during a resolve. Reuses the default session so
+// cf_clearance / __cf_bm cookies acquired here persist for the next video load.
 function ensureVisibleSniffWindow() {
   if (visibleSniffWindow && !visibleSniffWindow.isDestroyed()) {
     console.info('[VisibleSniff] reusing existing window');
     return visibleSniffWindow;
   }
-  const { screen } = require('electron');
-  const wa = (screen.getPrimaryDisplay() || {}).workArea || { x: 0, y: 0, width: 1280, height: 720 };
+  // Off-screen position: the window must stay "visible" to Chromium so
+  // IntersectionObserver hydration + compositor events keep firing, but the
+  // user should never see it pop up on the desktop during a resolve.
   visibleSniffWindow = new BrowserWindow({
     width: 1180,
     height: 820,
-    x: wa.x + wa.width - 1200,
-    y: wa.y + wa.height - 860,
+    x: -10000,
+    y: -10000,
     show: false,
     frame: false,
     transparent: false,
@@ -4165,10 +4165,97 @@ const HANIME_DOM_SCRIPT = `
 })();
 `;
 
+// Find + focus hanime's real search box. The post-Astro search lives in a
+// header/search page input that the SPA controls; synthetic events are not
+// enough, so this focuses the box and the caller types GENUINE input (CDP
+// Input.insertText) + presses Enter.
+const HANIME_SEARCHBOX_SCRIPT = `
+(function(){
+  function vis() {
+    return [].slice.call(document.querySelectorAll('input')).filter(function (i) {
+      var t = (i.type || 'text').toLowerCase();
+      if (t !== 'search' && t !== 'text' && t !== 'query') return false;
+      var r = i.getBoundingClientRect();
+      var cs = getComputedStyle(i);
+      return r.width > 40 && r.height > 10 && cs.visibility !== 'hidden' && cs.display !== 'none';
+    });
+  }
+  var list = vis();
+  if (!list.length) {
+    var trig = [].slice.call(document.querySelectorAll('[class*="search" i], [aria-label*="search" i], button, a'));
+    for (var i = 0; i < trig.length && !vis().length; i++) { try { trig[i].click(); } catch (e) {} }
+    list = vis();
+  }
+  var box = list[0];
+  if (!box) return { ok: false, reason: 'no-input', href: location.href };
+  box.focus();
+  return { ok: true, found: true, href: location.href };
+})();
+`;
+
+// DOM-level fallback when CDP input is unavailable: fill the focused box and
+// submit with native-ish events.
+const HANIME_SEARCHBOX_TYPEDOWN_SCRIPT = `
+(function(){
+  var q = __QUERY_JSON__;
+  function vis() {
+    return [].slice.call(document.querySelectorAll('input')).filter(function (i) {
+      var t = (i.type || 'text').toLowerCase();
+      if (t !== 'search' && t !== 'text' && t !== 'query') return false;
+      var r = i.getBoundingClientRect();
+      var cs = getComputedStyle(i);
+      return r.width > 40 && r.height > 10 && cs.visibility !== 'hidden' && cs.display !== 'none';
+    });
+  }
+  var list = vis();
+  var box = list[0];
+  if (!box) return { ok: false, reason: 'no-input', href: location.href };
+  var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  try { setter.call(box, q); } catch (e) {}
+  try { box.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+  try { box.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+  var form = box.form || box.closest('form');
+  if (form) { try { if (form.requestSubmit) form.requestSubmit(); } catch (e) { try { form.submit(); } catch (e2) {} } }
+  try { box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })); } catch (e) {}
+  try { box.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })); } catch (e) {}
+  try { box.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true })); } catch (e) {}
+  return { ok: true, href: location.href };
+})();
+`;
+
+// Type the query into hanime's (focused) search box with real CDP input and
+// press Enter so the Astro SPA runs a genuine search (htv-services POST).
+async function driveHanimeSearchBox(win, text, attached) {
+  if (!win || win.isDestroyed() || !text) return;
+  let result = null;
+  try {
+    result = await evalInStealth(buildAutoSearchScript(HANIME_SEARCHBOX_SCRIPT, { query: text }), 6000, win);
+  } catch (_e) { /* step to DOM fallback */ }
+  if (!result || result.__stealthError || !result.ok) {
+    console.warn('[hanimeStealthSearch] search box not found:', JSON.stringify(result || {}).slice(0, 200));
+    return;
+  }
+  if (attached && win && !win.isDestroyed()) {
+    try {
+      await win.webContents.debugger.sendCommand('Input.insertText', { text });
+      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+      console.log(`[hanimeStealthSearch] typed query via CDP into search box`);
+      return;
+    } catch (_e) { /* fall through to DOM path */ }
+  }
+  try {
+    await evalInStealth(buildAutoSearchScript(HANIME_SEARCHBOX_TYPEDOWN_SCRIPT, { query: text }), 6000, win);
+  } catch (_e) { /* best effort */ }
+}
+
 async function hanimeStealthSearch(query, count = 25) {
   const text = String(query || '').trim();
   if (!text) return [];
-  const searchUrl = 'https://hanime.tv/search?q=' + encodeURIComponent(text);
+  // Post-Astro, hanime reads the `query` URL param. Keep ?q= too for old
+  // pages; the box-driving below is what actually triggers most searches.
+  const searchUrl = 'https://hanime.tv/search?query=' + encodeURIComponent(text) + '&q=' + encodeURIComponent(text);
   const win = ensureStealthWindow();
   const payloads = [];
   const pendingIds = new Map();
@@ -4213,9 +4300,21 @@ async function hanimeStealthSearch(query, count = 25) {
 
     // Wait for the page's own POST to htv-services to land (then catch any
     // stragglers), so the network path is preferred over DOM scraping.
-    const payloadDeadline = Date.now() + 10000;
+    let payloadDeadline = Date.now() + 5000;
     while (payloads.length === 0 && Date.now() < payloadDeadline && !win.isDestroyed()) {
-      await sleep(500);
+      await sleep(400);
+    }
+
+    // Post-Astro the SPA often ignores the URL query and shows its default,
+    // query-invariant grid. If no htv-services POST has fired, drive the real
+    // search box with genuine CDP-typed input + Enter so a REAL search runs
+    // (React sees true keystrokes), then wait for the payload once more.
+    if (payloads.length === 0 && !win.isDestroyed()) {
+      await driveHanimeSearchBox(win, text, attached);
+      payloadDeadline = Date.now() + 9000;
+      while (payloads.length === 0 && Date.now() < payloadDeadline && !win.isDestroyed()) {
+        await sleep(400);
+      }
     }
     await sleep(500);
 
@@ -4231,11 +4330,16 @@ async function hanimeStealthSearch(query, count = 25) {
     // 3) DOM fallback: read the rendered result cards from the live page.
     for (let i = 0; i < 15; i++) {
       if (win.isDestroyed()) break;
-      const res = await evalInStealth(buildAutoSearchScript(HANIME_DOM_SCRIPT, { limit: count }), 6000);
+      const res = await evalInStealth(buildAutoSearchScript(HANIME_DOM_SCRIPT, { limit: count }), 6000, win);
       if (res && res.__stealthError) throw new Error(`hanime DOM extract failed: ${res.__stealthError}`);
       const out = (res && Array.isArray(res.out)) ? res.out : [];
       const valid = out.filter(e => e && e.url && !isScrapeJunkUrl(e.url));
-      if (valid.length > 0) {
+      // Only trust the rendered grid once the SPA actually moved to a search
+      // results route (/search): pre-/post-Astro both show a query-invariant
+      // default grid otherwise, and scraping it would return the same videos
+      // for every search term.
+      const isResultsRoute = /\/search/i.test(String((res && res.href) || ''));
+      if (valid.length > 0 && isResultsRoute) {
         return valid.map(r => {
           const m = (r.durationText || '').match(/(?:(\d+)h\s*)?(\d{1,2}):(\d{2})/);
           const duration = m ? (m[1] ? parseInt(m[1], 10) * 3600 : 0) + parseInt(m[2], 10) * 60 + parseInt(m[3], 10) : 0;
@@ -5490,6 +5594,20 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
     console.log(`[web:search] mode=${mode} target=${target}`);
     let entries = [];
 
+    // Hanime is an SPA — yt-dlp can't enumerate its search pages and there is
+    // no HTML to scrape. Route hanime.tv targets to the dedicated stealth
+    // engine BEFORE the generic form-driver below: a bare hanime.tv homepage
+    // (no {query} template) would otherwise be form-searched generically, and
+    // the post-Astro SPA then returns its query-invariant default grid — the
+    // same videos for every search term.
+    if (/^https?:\/\//i.test(target) && /hanime\.tv/i.test(target)) {
+      const hanimeVideos = await searchHanime(q, count);
+      if (hanimeVideos.length > 0) {
+        console.log(`[web:search] hanime returned ${hanimeVideos.length} results`);
+        return { success: true, source: 'hanime', videos: hanimeVideos };
+      }
+    }
+
     // Custom base sites (no {query} template): locate the site's search form in
     // the stealth browser and run the query natively — no ?k= guessing needed.
     if (mode === 'site' && siteUrl && !siteUrl.includes('{query}') && /^https?:\/\//i.test(target)) {
@@ -5497,16 +5615,6 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       if (customVideos.length > 0) {
         console.log(`[web:search] custom form search returned ${customVideos.length} results`);
         return { success: true, source: 'custom-form', videos: customVideos };
-      }
-    }
-
-    // Hanime is an SPA — yt-dlp can't enumerate its search pages and there is
-    // no HTML to scrape, so query its native JSON API directly.
-    if (/^https?:\/\//i.test(target) && /hanime\.tv/i.test(target)) {
-      const hanimeVideos = await searchHanime(q, count);
-      if (hanimeVideos.length > 0) {
-        console.log(`[web:search] hanime v8 API returned ${hanimeVideos.length} results`);
-        return { success: true, source: 'hanime-v8', videos: hanimeVideos };
       }
     }
 
