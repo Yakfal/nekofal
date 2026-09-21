@@ -42,6 +42,14 @@ const api = {
   getScrapers: () => ipcRenderer.invoke('db:getScrapers'),
   saveScrapers: (scrapers) => ipcRenderer.invoke('db:saveScrapers', scrapers),
 
+  // Import the user's real, Cloudflare-cleared hanime session cookies
+  // (cf_clearance / __cf_bm) — already solved once in their normal browser —
+  // into the app's shared default session. These ride the same partition-free
+  // defaultSession that both the stealth search window and the app's own
+  // search.htv-services.com POST use, so importing them once is exactly what
+  // lets a real keyword search clear the Turnstile wall.
+  importClearedSessionCookies: (cookieObjs) => ipcRenderer.invoke('hanime:importClearedSessionCookies', cookieObjs || []),
+
   // Database operations for favorites and history
   setFavorite: (videoData) => ipcRenderer.invoke('db:setFavorite', videoData),
   getFavorites: () => ipcRenderer.invoke('db:getFavorites'),

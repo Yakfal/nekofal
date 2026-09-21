@@ -868,6 +868,69 @@ async function getSessionCookieHeader(url) {
   return relevant.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
+// v1.0.45: import the user's real, Cloudflare-cleared hanime session cookies
+// (cf_clearance / __cf_bm) — solved once in their normal browser — into the
+// app's default session. The stealth search window and the app share the SAME
+// partition-free defaultSession (see ensureStealthWindow + getSessionCookies),
+// so a cookie set here (a) persists across app restarts and (b) is attached
+// automatically to BOTH the stealth page fetches and the app's own
+// search.htv-services.com POST, which is what actually clears the Turnstile
+// wall and lets a real keyword search land. This is the honest unlock for
+// boxes where Cloudflare challenges every fresh stealth session.
+async function importHanimeClearedSessionCookies(cookieObjs) {
+  const imported = [];
+  const errors = [];
+  const list = Array.isArray(cookieObjs) ? cookieObjs : [];
+  for (const raw of list) {
+    try {
+      if (!raw || typeof raw !== 'object') continue;
+      const name = String(raw.name || '').trim();
+      const value = String(raw.value || '');
+      if (!name || !value) continue;
+      const hostRaw = String(raw.domain || '').replace(/^\./, '');
+      // Accept Cloudflare clearance/bot-management cookies for either hanime
+      // property (hanime.tv or its search host) regardless of the reported
+      // domain, since Cloudflare host-scopes by registrable domain.
+      const cfRelevant = /^(cf_clearance|__cf_bm|_cfuvid|__cf_bm_r|cf_clearance_)/i.test(name);
+      const hanimeHost = /(^|\.)(hanime\.tv|htv-services\.com)$/i.test(hostRaw);
+      if (!cfRelevant && !hanimeHost) continue;
+      const cookieUrl = (String(raw.url || '').match(/^https?:/i))
+        ? String(raw.url)
+        : ((hanimeHost && hostRaw) ? `https://${hostRaw}/` : `https://hanime.tv/`);
+      const cookie = {
+        url: cookieUrl,
+        name,
+        value,
+        path: raw.path || '/',
+        secure: raw.secure !== false,
+        httpOnly: raw.httpOnly !== false,
+        expirationDate: raw.expirationDate || undefined
+      };
+      if (cookie.expirationDate === undefined) delete cookie.expirationDate;
+      await session.defaultSession.cookies.set(cookie);
+      imported.push({ name, host: hostRaw || '(from url)' });
+    } catch (e) {
+      errors.push({ name: String((raw && raw.name) || '?'), err: String((e && e.message) || e) });
+    }
+  }
+  if (imported.length) {
+    hanimeSearchDiag.cookieImport = {
+      imported: imported.map(c => c.name),
+      hosts: imported.map(c => c.host),
+      at: new Date().toISOString(),
+      ok: true
+    };
+  }
+  return { ok: imported.length > 0, imported, errors, note: imported.length
+    ? 'Cookies live in the shared default session; next hanime search will ride the cleared fingerprint.'
+    : 'No importable cleared cookies supplied.' };
+}
+
+ipcMain.handle('hanime:importClearedSessionCookies', async (_event, cookieObjs) => {
+  try { return await importHanimeClearedSessionCookies(cookieObjs); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+
 async function evalInStealth(js, timeoutMs = 8000, win = null) {
   const target = win || ensureStealthWindow();
   // Scripts come in two shapes:
