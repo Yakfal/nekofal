@@ -82,7 +82,6 @@
         "nsis",
         "portable"
       ],
-      "publisherName": "Nekofal Open Source Team",
       "legalTrademarks": "Nekofal",
       "requestedExecutionLevel": "asInvoker",
       "verifyUpdateCodeSignature": false
