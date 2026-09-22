@@ -10,7 +10,6 @@ import {
   setCloudEnabled,
   syncNow,
   testConnection,
-  autoSync,
 } from '../services/dbAdapter.js';
 import './Settings.css';
 
@@ -23,19 +22,8 @@ const Settings = () => {
   const [confirmCode, setConfirmCode] = useState('');
   const [confirmError, setConfirmError] = useState('');
 
-  const [siteName, setSiteName] = useState('');
-  const [urls, setUrls] = useState(['']);
-  const [savedScrapers, setSavedScrapers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [removingId, setRemovingId] = useState(null);
-  const [testingId, setTestingId] = useState(null);
   const [toast, setToast] = useState(null);
   const [ytDlpEnabled, setYtDlpEnabled] = useState(true);
-  const [iptvSources, setIptvSources] = useState([]);
-  const [iptvName, setIptvName] = useState('');
-  const [iptvUrl, setIptvUrl] = useState('');
-  const [iptvLoading, setIptvLoading] = useState(false);
   const [adultSiteUrl, setAdultSiteUrl] = useState('');
   const [adultSiteName, setAdultSiteName] = useState('');
   const [scrapingAdult, setScrapingAdult] = useState(false);
@@ -62,50 +50,10 @@ const Settings = () => {
   const [updateMsg, setUpdateMsg] = useState('');
   const [updateBusy, setUpdateBusy] = useState(false);
 
-  // Convert internal { id, siteName, urls } to DB shape { id, siteName, baseUrls }
-  const toDbScraper = (s) => ({
-    id: s.id,
-    siteName: s.siteName,
-    baseUrls: (Array.isArray(s.urls) ? s.urls : s.baseUrls || []).filter(u => u && u.trim() !== '')
-  });
-
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3500);
   }, []);
-
-  const loadSettings = useCallback(async () => {
-    try {
-      setLoading(true);
-      const api = getApi();
-      if (api?.getScrapers) {
-        const result = await api.getScrapers();
-        if (result.success && Array.isArray(result.data)) {
-          setSavedScrapers(
-            result.data.map(s => ({
-              id: s.id,
-              siteName: s.siteName,
-              urls: Array.isArray(s.baseUrls) ? s.baseUrls : s.baseUrls ? [s.baseUrls] : []
-            }))
-          );
-        }
-      }
-      if (api?.getIptvSources) {
-        const res = await api.getIptvSources();
-        if (res.success && Array.isArray(res.data)) {
-          setIptvSources(res.data);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load settings:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadSettings();
-  }, [loadSettings]);
 
   useEffect(() => onCloudChange((s) => setCloudState(s)), []);
 
@@ -307,155 +255,6 @@ const Settings = () => {
     }
   };
 
-  const addUrlField = () => {
-    setUrls(prev => [...prev, '']);
-  };
-
-  const removeUrlField = (index) => {
-    setUrls(prev => {
-      if (prev.length <= 1) return prev;
-      return prev.filter((_, i) => i !== index);
-    });
-  };
-
-  const handleAddScraper = async (e) => {
-    e.preventDefault();
-
-    const name = siteName.trim();
-    const validUrls = urls.map(u => u.trim()).filter(u => u !== '');
-
-    if (!name) {
-      showToast(t('settings.siteNameRequired'), 'error');
-      return;
-    }
-
-    const validUrlRegex = /^https?:\/\/.+/i;
-    const passingUrls = validUrls.filter(u => validUrlRegex.test(u));
-
-    if (passingUrls.length === 0) {
-      showToast(t('settings.validUrlRequired'), 'error');
-      return;
-    }
-
-    const newScraper = {
-      id: Date.now().toString(),
-      siteName: name,
-      urls: passingUrls
-    };
-
-    // Add to React state
-    setSavedScrapers(prev => [...prev, newScraper]);
-
-    // Persist immediately to SQLite with the updated array
-    try {
-      const api = getApi();
-      if (api?.saveScrapers) {
-        const result = await api.saveScrapers([...savedScrapers, newScraper].map(toDbScraper));
-        if (result && result.success) {
-          showToast(`${t('settings.scraperAddedPrefix')} "${name}" ${t('settings.scraperAddedSuffix')}`);
-        } else {
-          showToast('Failed to save scraper', 'error');
-        }
-      }
-    } catch (err) {
-      console.error('Failed to save scraper:', err);
-      showToast('Failed to save scraper', 'error');
-    }
-
-    // Reset the form
-    setSiteName('');
-    setUrls(['']);
-  };
-
-  const removeScraper = async (scraperId) => {
-    setRemovingId(scraperId);
-    try {
-      const filtered = savedScrapers.filter(s => s.id !== scraperId);
-      setSavedScrapers(filtered);
-
-      const api = getApi();
-      if (api?.saveScrapers) {
-        const result = await api.saveScrapers(filtered.map(toDbScraper));
-        if (result && result.success) {
-          showToast(t('settings.scraperRemoved'));
-        } else {
-          showToast('Failed to remove scraper', 'error');
-        }
-      }
-    } catch (err) {
-      console.error('Failed to remove scraper:', err);
-      showToast('Failed to remove scraper', 'error');
-    } finally {
-      setRemovingId(null);
-    }
-  };
-
-  const testScraper = async (scraper) => {
-    const targets = (Array.isArray(scraper.urls) ? scraper.urls : []).filter(u => u.trim());
-    if (targets.length === 0) {
-      showToast(t('settings.noUrlsToTest'), 'error');
-      return;
-    }
-
-    setTestingId(scraper.id);
-    try {
-      const api = getApi();
-      let successCount = 0;
-
-      for (const url of targets) {
-        try {
-          if (api?.extractStream) {
-            const res = await api.extractStream(url);
-            if (res && res.success && res.data) {
-              successCount += 1;
-            }
-          } else {
-            successCount += 1;
-          }
-        } catch (err) {
-          console.warn(`[Settings] Test failed for ${url}:`, err.message);
-        }
-      }
-
-      showToast(`${scraper.siteName}: ${successCount}/${targets.length} ${t('settings.urlsOk')}`);
-    } catch (err) {
-      console.error('Failed to test scraper:', err);
-      showToast('Scraper test failed', 'error');
-    } finally {
-      setTestingId(null);
-    }
-  };
-
-  const syncScrapers = async () => {
-    const allUrls = savedScrapers.flatMap(s => (s.urls || []).filter(u => u && u.trim() !== ''));
-    if (allUrls.length === 0) {
-      showToast(t('settings.addScraperFirst'), 'error');
-      return;
-    }
-
-    setSyncing(true);
-    try {
-      const api = getApi();
-      if (!api?.runScrapers) {
-        showToast(t('settings.syncUnavailable'), 'error');
-        return;
-      }
-
-      const result = await api.runScrapers(allUrls);
-      if (result && result.success) {
-        showToast(`${t('settings.syncedPrefix')} ${result.inserted || 0} ${t('settings.newVideosIntoLibrary')}`);
-        window.dispatchEvent(new Event('scrapers-synced'));
-      } else {
-        showToast(result?.error || 'Sync failed', 'error');
-      }
-    } catch (err) {
-      console.error('Sync failed:', err);
-      showToast('Sync failed: ' + err.message, 'error');
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   const clearDatabase = async () => {
     if (!window.confirm(t('settings.clearDatabaseConfirm'))) return;
 
@@ -558,47 +357,6 @@ const Settings = () => {
 
   const handleQualityPref = (e) => {
     savePlaybackPref({ preferredQuality: e.target.value });
-  };
-
-  const handleAddIptv = async (e) => {
-    e.preventDefault();
-    const name = iptvName.trim();
-    const url = iptvUrl.trim();
-    if (!url) { showToast(t('settings.iptvUrlRequired'), 'error'); return; }
-    if (!/^https?:\/\/.+/i.test(url)) { showToast(t('settings.validHttpUrl'), 'error'); return; }
-
-    setIptvLoading(true);
-    try {
-      const api = getApi();
-      const result = await api.addIptvSource(name || 'IPTV Playlist', url);
-      if (result?.success) {
-        showToast(`${t('settings.addedChannelsPrefix')} ${result.inserted || 0} ${t('settings.channelsFrom')} "${name || t('settings.playlistFallback')}"`);
-        setIptvName(''); setIptvUrl('');
-        autoSync();
-        window.dispatchEvent(new Event('scrapers-synced'));
-        const src = await api.getIptvSources();
-        if (src?.success) setIptvSources(src.data);
-      } else {
-        showToast(result?.error || 'Failed to add IPTV source', 'error');
-      }
-    } catch (err) {
-      showToast('Failed to add IPTV source: ' + err.message, 'error');
-    } finally {
-      setIptvLoading(false);
-    }
-  };
-
-  const handleRemoveIptv = async (sourceId) => {
-    try {
-      const api = getApi();
-      await api.removeIptvSource(sourceId);
-      setIptvSources(prev => prev.filter(s => s.id !== sourceId));
-      showToast(t('settings.iptvSourceRemoved'));
-      autoSync();
-      window.dispatchEvent(new Event('scrapers-synced'));
-    } catch (err) {
-      showToast('Failed to remove source', 'error');
-    }
   };
 
   const handleScrapeAdultSite = async (e) => {
@@ -896,194 +654,6 @@ const Settings = () => {
             </button>
           </div>
         </form>
-      </section>
-
-      <section className="settings-section">
-        <div className="section-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path d="M12 4V2m0 20v-2m8-8h2M2 12h2m13.66-5.66l1.41-1.41M4.93 19.07l1.41-1.41m12.72 1.41l-1.41-1.41M6.34 6.34L4.93 4.93M12 8a4 4 0 104 4 4 4 0 00-4-4z" />
-          </svg>
-          <h2>{t('settings.scraperManagement')}</h2>
-        </div>
-
-        {/* Add Scraper Form */}
-        <form className="settings-form" onSubmit={handleAddScraper}>
-          <div className="form-group">
-            <label htmlFor="site-name">{t('settings.siteName')}</label>
-            <input
-              id="site-name"
-              type="text"
-              className="form-input"
-              placeholder={t('settings.siteNamePlaceholder')}
-              value={siteName}
-              onChange={(e) => setSiteName(e.target.value)}
-            />
-          </div>
-
-          <div className="form-group">
-            <label>{t('settings.targetUrls')}</label>
-            {urls.map((url, index) => (
-              <div key={index} className="url-row" style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                <input
-                  type="url"
-                  className="form-input"
-                  style={{ flex: 1 }}
-                  placeholder={t('settings.urlPlaceholder')}
-                  value={url}
-                  onChange={(e) => {
-                    const next = [...urls];
-                    next[index] = e.target.value;
-                    setUrls(next);
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-small"
-                  onClick={() => removeUrlField(index)}
-                  disabled={urls.length <= 1}
-                  aria-label={t('common.removeUrlField')}
-                >
-                  &times;
-                </button>
-              </div>
-            ))}
-            <button type="button" className="btn btn-secondary btn-small" onClick={addUrlField}>
-              {t('settings.addUrl')}
-            </button>
-            <p className="form-hint">
-              {t('settings.urlsHint')}
-            </p>
-          </div>
-
-          <button type="submit" className="btn btn-primary">{t('settings.addScraper')}</button>
-        </form>
-
-        {/* Saved Scrapers List */}
-        <div className="section-title" style={{ marginTop: '40px' }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path d="M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2zM8 7h8M8 12h8M8 17h5" />
-          </svg>
-          <h2>{t('settings.savedScrapers')}</h2>
-        </div>
-
-        {loading ? (
-          <div className="empty-state">
-            <p>{t('settings.loadingScrapers')}</p>
-          </div>
-        ) : savedScrapers.length === 0 ? (
-          <div className="empty-state">
-            <p>{t('settings.noScrapersYet')}</p>
-            <p className="form-hint">{t('settings.noScrapersHint')}</p>
-          </div>
-        ) : (
-          <div className="scraper-list">
-            {savedScrapers.map((scraper) => (
-              <div key={scraper.id} className="scraper-item">
-                <div className="scraper-name">
-                  <div className="text-white font-medium">{scraper.siteName}</div>
-                  <ul className="mt-1 space-y-1">
-                    {(scraper.urls || []).map((u, i) => (
-                      <li key={i} className="scraper-details">{u}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="scraper-actions" style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-small"
-                    onClick={() => testScraper(scraper)}
-                    disabled={testingId === scraper.id}
-                  >
-                    {testingId === scraper.id ? t('settings.testing') : t('settings.testScraper')}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-danger btn-small"
-                    onClick={() => removeScraper(scraper.id)}
-                    disabled={removingId === scraper.id}
-                  >
-                    {removingId === scraper.id ? t('settings.removing') : t('common.remove')}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Sync */}
-        <div className="settings-form" style={{ marginTop: '24px' }}>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={syncScrapers}
-            disabled={syncing || savedScrapers.length === 0}
-          >
-            {syncing ? t('settings.syncing') : t('settings.syncScrapersNow')}
-          </button>
-          <p className="form-hint">
-            {t('settings.syncHint')}
-          </p>
-        </div>
-      </section>
-
-      <section className="settings-section">
-        <div className="section-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-          </svg>
-          <h2>{t('settings.iptvLiveTv')}</h2>
-        </div>
-
-        <form className="settings-form" onSubmit={handleAddIptv}>
-          <div className="form-group">
-            <label htmlFor="iptv-name">{t('settings.playlistNameOptional')}</label>
-            <input
-              id="iptv-name"
-              type="text"
-              className="form-input"
-              placeholder={t('settings.playlistNamePlaceholder')}
-              value={iptvName}
-              onChange={(e) => setIptvName(e.target.value)}
-            />
-          </div>
-          <div className="form-group">
-            <label htmlFor="iptv-url">{t('settings.playlistUrl')}</label>
-            <input
-              id="iptv-url"
-              type="url"
-              className="form-input"
-              placeholder={t('settings.playlistUrlPlaceholder')}
-              value={iptvUrl}
-              onChange={(e) => setIptvUrl(e.target.value)}
-            />
-            <p className="form-hint">
-              {t('settings.playlistUrlHint')}
-            </p>
-          </div>
-          <button type="submit" className="btn btn-primary" disabled={iptvLoading}>
-            {iptvLoading ? t('settings.loadingPlaylist') : t('settings.addIptvSource')}
-          </button>
-        </form>
-
-        {iptvSources.length > 0 && (
-          <div className="scraper-list" style={{ marginTop: '20px' }}>
-            {iptvSources.map((src) => (
-              <div key={src.id} className="scraper-item">
-                <div className="scraper-name">
-                  <div className="text-white font-medium">{src.name}</div>
-                  <div className="scraper-details">{src.channelCount} {t('common.channels')} &middot; {src.url}</div>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-danger btn-small"
-                  onClick={() => handleRemoveIptv(src.id)}
-                >
-                  {t('common.remove')}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
       </section>
 
       <section className="settings-section">

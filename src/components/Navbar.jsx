@@ -109,9 +109,6 @@ const Navbar = forwardRef(function Navbar(props, ref) {
   const handleMenuItemClick = (action) => {
     setShowMenu(false);
     switch (action) {
-      case 'refresh':
-        window.dispatchEvent(new CustomEvent('scrapers-synced', { detail: { refresh: true } }));
-        break;
       case 'devtools':
         if (window.electronAPI?.openDevTools) {
           window.electronAPI.openDevTools();
@@ -233,13 +230,6 @@ const Navbar = forwardRef(function Navbar(props, ref) {
             </button>
             {showMenu && (
               <div className="app-menu-dropdown">
-                <div className="dropdown-item" onClick={() => handleMenuItemClick('refresh')}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5">
-                    <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
-                  </svg>
-                  Refresh Library
-                </div>
-                <div className="dropdown-divider"></div>
                 <div className="dropdown-item" onClick={() => setTheme(settings.theme === 'dark-cyber' ? 'light-sky' : 'dark-cyber')}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5">
                     <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
