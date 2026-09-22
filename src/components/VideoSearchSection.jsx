@@ -5,6 +5,29 @@ import { autoSync, getCloudState, getMediaId, favoritePayloadFor, isPageUrl } fr
 import PlaylistMenu from './PlaylistMenu.jsx';
 import './VideoSearchSection.css';
 
+// Universal-mode mirror of the server-side junk gate. Even though every
+// engine above already rejected bookmarks/login/premium/upgrade cards via the
+// shared hardened arrays, the fan-out merge re-checks titles once more so a
+// merged card can never be a bookmark / log-in / sign-in / premium tile.
+const JUNK_UNIVERSAL_TITLE = /^(?:sign[- ]?in|log[- ]?in|logs*in|signs*in|signs*up|sign[- ]?up|register|creates+an?s+account|bookmarks?|watchs*[- ]?later|premiums*(?:account)?|upgrade(?:s+tos+(?:premium|gold|vip))?|gos+premium|joins+(?:now|today)?|joins+fors+free|joins*free|frees+account|frees+s+account|creates+s+an?s+frees+account|welcomes*back|mys+(?:favorites|liked)|videoss+is+like|settings|account|home|clear|favorites|next|tops+creatorss+live|news+channel|xnxxs+gold|uncensoreds+hentai|ais+hentai|ais+hentai|latests+releases|mosts+(?:popular|liked|recent)|bests+videos?|bests+video|bests+of|bests*|bests+amateurs?|amateurs+videos?|amateur|amateur+porn|animes?|animated|animations?|animateds+videos?|cartoons?(?:s+videos?|s+porn)?|cartoony|uncensor(?:ed|s+uncensored)?|hentais+porn|new+s+videos?|latests+porn|populars+videos?|trendings+videos?|mores+videos?|nexts+page|views+all|browses+channels|channels?|videos+like)??$/i;
+function isJunkUniversalTitle(t) {
+  const s = String(t || '').trim().replace(/[.!?…]+$/g, '').trim();
+  if (!s || s.length < 5) return true;
+  return JUNK_UNIVERSAL_TITLE.test(s);
+}
+
+// Safe/All-source toggle: when safeOnly is on, only well-known, hardened
+// adult hostnames participate in the universal fan-out.
+const SAFE_ADULT_HOST_RE = /(^|.)(hanime.tv|xvideos.com|xnxx.com|xhamster(2)?.com|xhamster.com|pornhub.com|spankbang.com)$/i;
+function isSafeAdultHost(u) {
+  try {
+    const host = new URL(String(u || '')).hostname.replace(/^www\./i, '');
+    return SAFE_ADULT_HOST_RE.test(host);
+  } catch {
+    return false;
+  }
+}
+
 const getApi = () => window.api || window.electronAPI;
 
 // The gateway (Express backend) sits next to PocketBase on the same host, port
@@ -40,6 +63,8 @@ const VideoSearchSection = forwardRef(({
   placeholder = null,
   tags,
   siteUrl = null,
+  allSites = null,
+  safeOnly = false,
   hint = '',
   accent = '#3b82f6',
   belowSearch = null,
@@ -115,6 +140,15 @@ const VideoSearchSection = forwardRef(({
 
   // Runs a search from either the form or an external trigger (Home topic
   // tiles). Kept imperative so callers can pre-fill the box and fire at once.
+  // Universal (one box → ALL adult engines at once). When `allSites` is
+  // given, the single keyword fans out to every site's searchTemplate in
+  // parallel, then merges + de-dupes. Each engine's results were ALREADY
+  // junk-gated server-side (bookmarks/login/premium cards rejected through the
+  // shared SCRAPE arrays), so the merge can only ever hold real playable
+  // videos. A final title mirror re-checks the merged list so a merge can
+  // never reintroduce a bookmark/login/premium tile.
+  const JUNK_TITLE_RE = /^(?:sign|log)[- ]?in$|^sign[- ]?up$|^register$|^bookmarks?$|^premium\s*account?$|^upgrade$|^vip$|^join now$|^welcome back$/i;
+
   const runSearch = useCallback(async (rawOverride) => {
     const q = String(rawOverride != null ? rawOverride : query || '').trim();
     setQuery(q);
@@ -138,6 +172,47 @@ const VideoSearchSection = forwardRef(({
         setSearching(false);
         return;
       }
+      // Universal mode: fan out the SAME query to ALL adult engines in
+      // parallel, then merge + dedupe. Every per-engine result was already
+      // junk-gated server-side (shared SCRAPE_FILTER_PATH /
+      // SCRAPER_TITLE_BLACKLIST reject bookmarks, log-in, sign-in, premium,
+      // upgrade cards on every engine), so this merged list can only contain
+      // REAL playable videos.
+      if (Array.isArray(allSites) && allSites.length > 0) {
+        const fanOut = allSites
+          .filter((s) => !safeOnly || isSafeAdultHost(s?.homepage || s?.searchTemplate || ''))
+          .map((s) => {
+            const siteSrc = String(s?.searchTemplate || '').trim() || String(s?.homepage || '').trim() || undefined;
+            return api.webSearch({
+              mode: 'site',
+              query: q,
+              siteUrl: siteSrc,
+              count: 30,
+              gatewayUrl: getGatewayUrl()
+            }).then((r) => ({ site: s, r })).catch((e) => ({ site: s, r: null, err: e }));
+          });
+        const settled = await Promise.all(fanOut);
+        const merged = [];
+        const seen = new Set();
+        for (const { site, r, err } of settled) {
+          const videos = (r && r.success && Array.isArray(r.videos)) ? r.videos : [];
+          for (const v of videos) {
+            const key = String(v.id || v.pageUrl || v.videoUrl || '');
+            if (!key || seen.has(key)) continue;
+            if (!v.title || isJunkUniversalTitle(v.title)) continue;
+            seen.add(key);
+            merged.push({ ...v, sourceSite: v.sourceSite || site?.name || v.sourceSite });
+          }
+        }
+        if (merged.length > 0) {
+          setResults(merged);
+          setSearchInfo({ count: merged.length, source: 'universal', mode: mode === 'site' ? 'site' : 'search' });
+        } else {
+          setSearchInfo({ count: 0, source: 'universal', mode: 'search' });
+        }
+        return;
+      }
+
       const res = await api.webSearch({
         mode,
         query: q,

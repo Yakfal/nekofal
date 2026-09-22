@@ -268,6 +268,11 @@ const ru = {
   'adult.byAutoFilling': 'заполняя его форму поиска…',
   'adult.searchingVia': 'Поиск через',
   'adult.noTemplate': 'Нет шаблона поиска — заполняем форму поиска сайта',
+  'adult.universalLabel': 'Универсальный поиск',
+  'adult.universalAll': 'Все сайты',
+  'adult.universalHint': 'Искать по всем добавленным сайтам сразу и объединять результаты',
+  'adult.safeOnly': 'Безопасно',
+  'adult.allSources': 'Все источники',
 
   // Прямые ТВ / IPTV
   'liveTv.noPlaylistsYet': 'Плейлистов пока нет — добавьте первый M3U/M3U8 ниже.',

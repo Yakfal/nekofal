@@ -9,7 +9,9 @@ const STORAGE_KEY = 'pmh-adult-sites';
 const PRESETS = [
   { name: 'XVideos', searchTemplate: 'https://www.xvideos.com/?k={query}', homepage: 'https://www.xvideos.com/' },
   { name: 'XNXX', searchTemplate: 'https://www.xnxx.com/search/{query}', homepage: 'https://www.xnxx.com/' },
-  { name: 'Pornhub', searchTemplate: 'https://www.pornhub.com/video/search?search={query}', homepage: 'https://www.pornhub.com/' }
+  { name: 'Pornhub', searchTemplate: 'https://www.pornhub.com/video/search?search={query}', homepage: 'https://www.pornhub.com/' },
+  { name: 'Hanime', searchTemplate: 'https://hanime.tv/', homepage: 'https://hanime.tv/' },
+  { name: 'SpankBang', searchTemplate: 'https://spankbang.com/s/{query}/', homepage: 'https://spankbang.com/' }
 ];
 
 // Sites whose search URL follows a known pattern. Matching is by hostname so
@@ -18,7 +20,8 @@ const PRESETS = [
 const KNOWN_SEARCH_URLS = [
   { host: 'xvideos.com', template: 'https://www.xvideos.com/?k={query}' },
   { host: 'xnxx.com', template: 'https://www.xnxx.com/search/{query}' },
-  { host: 'pornhub.com', template: 'https://www.pornhub.com/video/search?search={query}' }
+  { host: 'pornhub.com', template: 'https://www.pornhub.com/video/search?search={query}' },
+  { host: 'spankbang.com', template: 'https://spankbang.com/s/{query}/' }
 ];
 
 function detectSearchTemplate(input) {
@@ -49,6 +52,15 @@ const Adult = () => {
   const [activeId, setActiveId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ name: '', searchTemplate: '', homepage: '' });
+  const [universalMode, setUniversalMode] = useState(() => localStorage.getItem('pmh-adult-universal') === '1');
+  const [safeOnly, setSafeOnly] = useState(() => localStorage.getItem('pmh-adult-safe') === '1');
+
+  useEffect(() => {
+    try { localStorage.setItem('pmh-adult-universal', universalMode ? '1' : '0'); } catch {}
+  }, [universalMode]);
+  useEffect(() => {
+    try { localStorage.setItem('pmh-adult-safe', safeOnly ? '1' : '0'); } catch {}
+  }, [safeOnly]);
 
   useEffect(() => {
     try {
@@ -96,6 +108,25 @@ const Adult = () => {
       <div className="adult-header">
         <h1>{t('nav.adult')}</h1>
         <p>{t('adult.subtitle')}</p>
+      </div>
+
+      <div className="adult-universal-row">
+        <span className="adult-universal-label">{t('adult.universalLabel')}</span>
+        <div className="adult-safe-toggle">
+          <button
+            className={`adult-safe-btn ${safeOnly ? 'active' : ''}`}
+            onClick={() => setSafeOnly(true)}
+          >{t('adult.safeOnly')}</button>
+          <button
+            className={`adult-safe-btn ${safeOnly ? '' : 'active'}`}
+            onClick={() => setSafeOnly(false)}
+          >{t('adult.allSources')}</button>
+        </div>
+        <button
+          className={`adult-chip universal ${universalMode ? 'active' : ''}`}
+          onClick={() => setUniversalMode(v => !v)}
+          title={t('adult.universalHint')}
+        >{t('adult.universalAll')}{universalMode ? ' ✓' : ''}</button>
       </div>
 
       <div className="adult-sites">
@@ -188,7 +219,9 @@ const Adult = () => {
             ? `${t('common.search')} ${activeSite.name} ${t('adult.byAutoFilling')}`
             : t('search.searchPlaceholder')}
         tags={siteTag}
-        siteUrl={activeSite?.searchTemplate || activeSite?.homepage || null}
+        siteUrl={universalMode ? null : (activeSite?.searchTemplate || activeSite?.homepage || null)}
+        allSites={universalMode ? sites.map(si => ({ name: si.name, searchTemplate: si.searchTemplate, homepage: si.homepage })).filter(si => si.searchTemplate || si.homepage) : null}
+        safeOnly={safeOnly}
         hint={activeSite && activeSite.searchTemplate.includes('{query}')
           ? `${t('adult.searchingVia')} ${activeSite.searchTemplate.replace('{query}', '…')}`
           : activeSite && activeSite.homepage

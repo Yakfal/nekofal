@@ -36,6 +36,8 @@ var RETRY_BACKOFF_MS = [800, 1600, 3200, 6400, 12800];
 // Local video server port (from electron main.js). Defaults to 5001 but can be
 // dynamic if the preferred ports were busy — refresh via getVideoServerInfo().
 var videoProxyPort = 5001;
+// Per-launch secret that must be appended to every local-proxy URL (SSRF guard).
+var videoProxyToken = null;
 
 function proxyOrigin() { return `http://localhost:${videoProxyPort}`; }
 
@@ -244,13 +246,18 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     try {
       const u = new URL(url);
       if (u.protocol === 'http:' || u.protocol === 'https:') {
-        // Already routed through our local file server - return as-is
+        // Already routed through our local file server — return as-is (re-inject
+        // the per-launch token if a stale stored URL is missing it).
         if (u.hostname === 'localhost' && u.pathname.includes('/video/proxy')) {
+          if (videoProxyToken && !u.searchParams.get('t')) {
+            u.searchParams.set('t', videoProxyToken);
+            return u.toString();
+          }
           return url;
         }
         const isLocalFile = url.startsWith('file://') || /^[a-zA-Z]:[\\\/]/.test(url);
         if (isLocalFile) {
-          return `http://localhost:${videoProxyPort}/video/proxy/stream?src=${encodeURIComponent(url)}`;
+          return `http://localhost:${videoProxyPort}/video/proxy/stream?t=${videoProxyToken}&src=${encodeURIComponent(url)}`;
         }
         if (httpHeaders && Object.keys(httpHeaders).length) {
           registerStreamHeaders(url, httpHeaders);
@@ -270,6 +277,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     window.api?.getVideoServerInfo?.().then((info) => {
       if (alive && info && info.port) {
         videoProxyPort = Number(info.port) || 5001;
+      }
+      if (alive && info && info.token) {
+        videoProxyToken = info.token;
       }
     }).catch(() => {});
     return () => { alive = false; };

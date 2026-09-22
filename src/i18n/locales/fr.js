@@ -268,6 +268,11 @@ const fr = {
   'adult.byAutoFilling': 'en remplissant automatiquement son formulaire de recherche…',
   'adult.searchingVia': 'Recherche via',
   'adult.noTemplate': 'Aucun modèle de recherche — pilotage du formulaire de recherche du site',
+  'adult.universalLabel': 'Recherche universelle',
+  'adult.universalAll': 'Tous les sites',
+  'adult.universalHint': 'Recherchez sur tous les sites ajoutés en une fois et fusionnez les résultats',
+  'adult.safeOnly': 'Sûr',
+  'adult.allSources': 'Toutes les sources',
 
   // TV en direct / IPTV
   'liveTv.noPlaylistsYet': 'Aucune playlist pour l\'instant — ajoutez votre première M3U/M3U8 ci-dessous.',

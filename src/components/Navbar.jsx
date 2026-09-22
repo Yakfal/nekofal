@@ -21,8 +21,18 @@ const Navbar = forwardRef(function Navbar(props, ref) {
   const { settings, setTheme } = useAppSettings();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [appVersion, setAppVersion] = useState(null);
   const location = useLocation();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let alive = true;
+    const fetchVersion = window.api?.getVersion ? window.api.getVersion() : (window.electronAPI?.getVersion?.());
+    fetchVersion?.then((v) => {
+      if (alive) setAppVersion(v);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   const isVideoPlayerPage = location.pathname.startsWith('/video/');
   const isLibraryPage = location.pathname === '/library';
@@ -245,7 +255,7 @@ const Navbar = forwardRef(function Navbar(props, ref) {
                 </div>
                 <div className="dropdown-divider"></div>
                 <div className="dropdown-item text-gray-400 text-xs px-3 py-2">
-                  Nekofal v1.0
+                  Nekofal v{appVersion || '1.0.0'}
                 </div>
               </div>
             )}

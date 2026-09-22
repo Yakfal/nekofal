@@ -92,6 +92,23 @@
         { "type": "number", "name": "channel_count" }
       ],
       "options": {}
+    },
+    "user_preferences": {
+      "type": "base",
+      "rules": {
+        "listRule": "user = @request.auth.id",
+        "viewRule": "user = @request.auth.id",
+        "createRule": "@request.auth.id != \"\"",
+        "updateRule": "user = @request.auth.id",
+        "deleteRule": "user = @request.auth.id"
+      },
+      "fields": [
+        { "type": "relation", "name": "user", "maxSelect": 1, "cascadeDelete": true, "required": true, "collectionId": "users" },
+        { "type": "json", "name": "prefs" },
+        { "type": "autodate", "name": "created" },
+        { "type": "autodate", "name": "updated" }
+      ],
+      "options": {}
     }
   }
 }

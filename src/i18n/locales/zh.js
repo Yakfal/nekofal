@@ -268,6 +268,11 @@ const zh = {
   'adult.byAutoFilling': '自动填写其搜索表单…',
   'adult.searchingVia': '正在通过',
   'adult.noTemplate': '无搜索模板 — 驱动站点自带的搜索表单',
+  'adult.universalLabel': '通用搜索',
+  'adult.universalAll': '所有网站',
+  'adult.universalHint': '同时搜索所有已添加的网站并合并结果',
+  'adult.safeOnly': '安全',
+  'adult.allSources': '所有来源',
 
   // 电视直播 / IPTV
   'liveTv.noPlaylistsYet': '还没有播放列表 — 请在下方添加第一个 M3U/M3U8。',

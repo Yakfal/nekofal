@@ -268,6 +268,11 @@ const ko = {
   'adult.byAutoFilling': '검색 양식을 자동으로 채워서…',
   'adult.searchingVia': '다음을 통해 검색',
   'adult.noTemplate': '검색 템플릿 없음 — 사이트의 자체 검색 양식 사용',
+  'adult.universalLabel': '통합 검색',
+  'adult.universalAll': '모든 사이트',
+  'adult.universalHint': '추가된 모든 사이트를 한 번에 검색하여 결과를 병합',
+  'adult.safeOnly': '안전',
+  'adult.allSources': '모든 소스',
 
   // 라이브 TV / IPTV
   'liveTv.noPlaylistsYet': '아직 재생목록이 없습니다 — 아래에서 첫 번째 M3U/M3U8을 추가하세요.',

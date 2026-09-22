@@ -36,7 +36,13 @@ export default defineConfig({
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash].[ext]',
         manualChunks(id) {
+          // hls.js is loaded on demand but weighs ~700kB unminified; keep it in
+          // its own chunk so the app shell + vendor stay small and hls.js is
+          // cached across player sessions. Preload hinting keeps the shell lean.
           if (id.includes('node_modules')) {
+            if (id.includes('hls.js') || id.includes('m3u8')) {
+              return 'hls';
+            }
             return 'vendor';
           }
         }

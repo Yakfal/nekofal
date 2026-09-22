@@ -98,6 +98,43 @@ let videoServerStarted = false;
 let videoServerPort = 5001;
 let videoServerBaseUrl = 'http://localhost:5001';
 
+// Random per-launch secret required to use the local video proxy. The renderer
+// learns it via video:getServerInfo and appends it to every proxy URL, so no
+// other local process / website can drive the proxy (SSRF guard).
+let videoProxyToken = null;
+
+// A remote-stream target is only fetchable through our proxy if it is a public
+// http(s) URL. Private / link-local / loopback / Cloud-Metadata ranges and the
+// literal hostnames localhost, *.local, *.internal can't be targeted (SSRF).
+function isAllowedProxyTarget(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || host === '0.0.0.0') return false;
+    if (/^\[/.test(host)) {
+      const ipv6 = host.replace(/^\[|\]$/g, '').toLowerCase();
+      if (ipv6 === '::1' || ipv6.startsWith('fc') || ipv6.startsWith('fd') || ipv6.startsWith('fe8') || ipv6.startsWith('fe9') || ipv6.startsWith('fea') || ipv6.startsWith('feb') || ipv6.startsWith('::')) return false;
+      return true;
+    }
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+      const parts = host.split('.').map(Number);
+      if (parts.some((p) => p < 0 || p > 255)) return false;
+      const [a, b] = parts;
+      if (a === 10) return false;
+      if (a === 172 && b >= 16 && b <= 31) return false;
+      if (a === 192 && b === 168) return false;
+      if (a === 127) return false;
+      if (a === 169 && b === 254) return false;
+      if (a === 100 && b >= 64 && b <= 127) return false;
+      if (a === 0 || a === 192 && b === 0 || a === 198 && b === 18 || a === 198 && b === 51 || a === 203 && b === 0 || a >= 224) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Floating mini-player (Picture-in-Picture) — a frameless always-on-top window
 // that takes over playback so it keeps running while you browse the app or the
 // desktop. Playback payload is stored in main and delivered on load.
@@ -194,7 +231,7 @@ function withYtDlpArgs(args) {
 // YouTube player_client roster fallback chain. `android,web` yields the richest
 // manifest (every resolution tier up to 2160p with audio), but Google sometimes
 // flags a single client — or its IP — with a "Sign in to confirm you're not a
-// bot" wall. Walk the chain down to the bare default (the pre-1.0.38 behavior)
+// bot" wall. Walk the chain down to the bare default (the pre-1.0.1.0.47 behavior)
 // so playback survives transient bot checks instead of failing hard.
 const YT_CLIENT_OVERRIDES = [
   'youtube:player_client=android,web',
@@ -305,7 +342,7 @@ async function ensureYtDlpBinary() {
   }
 }
 
-// v1.0.38: background yt-dlp self-update. Fires a few seconds after startup
+// v1.0.1.0.47: background yt-dlp self-update. Fires a few seconds after startup
 // (never blocks boot) so the binary stays recent and every extractor ships the
 // freshest scripts. `yt-dlp -U` is fully async and any error is non-fatal.
 function scheduleYtDlpUpdate() {
@@ -738,7 +775,7 @@ let visibleSniffWindow = null;
 
 function ensureStealthWindow() {
   if (stealthWindow && !stealthWindow.isDestroyed()) return stealthWindow;
-  // v1.0.31: run the stealth window off-screen instead of offscreen-rendered.
+  // v1.0.1.0.47: run the stealth window off-screen instead of offscreen-rendered.
   // Some Cloudflare/Turnstile checks fingerprint the offscreen compositor and
   // mark it a bot; a real (but out-of-bounds and never shown) window paints
   // through the normal compositor and passes those checks.
@@ -867,69 +904,6 @@ async function getSessionCookieHeader(url) {
   if (!relevant.length) return '';
   return relevant.map(c => `${c.name}=${c.value}`).join('; ');
 }
-
-// v1.0.45: import the user's real, Cloudflare-cleared hanime session cookies
-// (cf_clearance / __cf_bm) — solved once in their normal browser — into the
-// app's default session. The stealth search window and the app share the SAME
-// partition-free defaultSession (see ensureStealthWindow + getSessionCookies),
-// so a cookie set here (a) persists across app restarts and (b) is attached
-// automatically to BOTH the stealth page fetches and the app's own
-// search.htv-services.com POST, which is what actually clears the Turnstile
-// wall and lets a real keyword search land. This is the honest unlock for
-// boxes where Cloudflare challenges every fresh stealth session.
-async function importHanimeClearedSessionCookies(cookieObjs) {
-  const imported = [];
-  const errors = [];
-  const list = Array.isArray(cookieObjs) ? cookieObjs : [];
-  for (const raw of list) {
-    try {
-      if (!raw || typeof raw !== 'object') continue;
-      const name = String(raw.name || '').trim();
-      const value = String(raw.value || '');
-      if (!name || !value) continue;
-      const hostRaw = String(raw.domain || '').replace(/^\./, '');
-      // Accept Cloudflare clearance/bot-management cookies for either hanime
-      // property (hanime.tv or its search host) regardless of the reported
-      // domain, since Cloudflare host-scopes by registrable domain.
-      const cfRelevant = /^(cf_clearance|__cf_bm|_cfuvid|__cf_bm_r|cf_clearance_)/i.test(name);
-      const hanimeHost = /(^|\.)(hanime\.tv|htv-services\.com)$/i.test(hostRaw);
-      if (!cfRelevant && !hanimeHost) continue;
-      const cookieUrl = (String(raw.url || '').match(/^https?:/i))
-        ? String(raw.url)
-        : ((hanimeHost && hostRaw) ? `https://${hostRaw}/` : `https://hanime.tv/`);
-      const cookie = {
-        url: cookieUrl,
-        name,
-        value,
-        path: raw.path || '/',
-        secure: raw.secure !== false,
-        httpOnly: raw.httpOnly !== false,
-        expirationDate: raw.expirationDate || undefined
-      };
-      if (cookie.expirationDate === undefined) delete cookie.expirationDate;
-      await session.defaultSession.cookies.set(cookie);
-      imported.push({ name, host: hostRaw || '(from url)' });
-    } catch (e) {
-      errors.push({ name: String((raw && raw.name) || '?'), err: String((e && e.message) || e) });
-    }
-  }
-  if (imported.length) {
-    hanimeSearchDiag.cookieImport = {
-      imported: imported.map(c => c.name),
-      hosts: imported.map(c => c.host),
-      at: new Date().toISOString(),
-      ok: true
-    };
-  }
-  return { ok: imported.length > 0, imported, errors, note: imported.length
-    ? 'Cookies live in the shared default session; next hanime search will ride the cleared fingerprint.'
-    : 'No importable cleared cookies supplied.' };
-}
-
-ipcMain.handle('hanime:importClearedSessionCookies', async (_event, cookieObjs) => {
-  try { return await importHanimeClearedSessionCookies(cookieObjs); }
-  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
-});
 
 async function evalInStealth(js, timeoutMs = 8000, win = null) {
   const target = win || ensureStealthWindow();
@@ -1459,22 +1433,56 @@ async function startVideoServer() {
   if (videoServerStarted) return;
   videoServerStarted = true;
   const appPort = parseInt(process.env.API_PORT) || 5001;
-  
+
+  // Fresh per-launch secret for this proxy instance.
+  videoProxyToken = crypto.randomBytes(24).toString('hex');
+
   const expressApp = express();
-  expressApp.use('/video', cors());
-  
+  expressApp.disable('x-powered-by');
+
+  // Loopback-only: never accept proxy traffic from the LAN or the internet.
+  const isLoopback = (addr) => {
+    const a = String(addr || '').toLowerCase();
+    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+  };
+  expressApp.use('/video', (req, res, next) => {
+    if (!isLoopback(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    next();
+  });
+
+  const originAllowed = (origin) => {
+    if (!origin || origin === 'null') return true; // file:// pages send null origin
+    try {
+      const o = new URL(origin);
+      return o.hostname === 'localhost' || o.hostname === '127.0.0.1' || o.hostname === '::1';
+    } catch {
+      return false;
+    }
+  };
+  expressApp.use('/video', (req, res, next) => {
+    const origin = req.headers.origin || req.headers.referer || '';
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range, X-Yakfal-Token');
+    if (originAllowed(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    }
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  });
+
   expressApp.get('/video/proxy/stream', async (req, res) => {
+    // The per-launch token must be present; it is appended by the renderer to
+    // every proxy URL it builds (media segments, HLS rewrites, local files).
+    const suppliedToken = req.query.t || req.headers['x-yakfal-token'];
+    if (!videoProxyToken || !suppliedToken || suppliedToken !== videoProxyToken) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const headers = req.headers;
-    
-    res.setHeader('Access-Control-Allow-Origin', '*', true);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS', true);
-    res.setHeader('Access-Control-Allow-Headers', '*', true);
+
     res.setHeader('Accept-Ranges', 'bytes', true);
     res.setHeader('Cache-Control', 'public, max-age=604800', true);
-    
-    if (req.method === 'OPTIONS') {
-      return res.status(204).end();
-    }
 
     const videoUrl = req.query.src || req.headers['x-video-url'];
     
@@ -1491,6 +1499,9 @@ async function startVideoServer() {
     if (!videoUrl) {
       return res.status(400).json({ error: 'No video URL provided' });
     }
+    if (!isAllowedProxyTarget(videoUrl)) {
+      return res.status(400).json({ error: 'Video URL is not allowed' });
+    }
 
     // Follow redirects up to a few hops (video CDNs usually redirect to signed URLs)
     const MAX_REDIRECTS = 5;
@@ -1503,7 +1514,7 @@ async function startVideoServer() {
         port: target.port || (target.protocol === 'https:' ? 443 : 80),
         path: target.pathname + target.search,
         method: 'GET',
-        rejectUnauthorized: false,
+        rejectUnauthorized: true,
         headers: {
           'User-Agent': customHeaders['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': '*/*',
@@ -1534,6 +1545,9 @@ async function startVideoServer() {
             let nextUrl;
             try {
               nextUrl = new URL(httpRes.headers.location, target.href).href;
+              if (!isAllowedProxyTarget(nextUrl)) {
+                return reject(new Error('Redirect to disallowed URL'));
+              }
             } catch (e) {
               return reject(new Error('Invalid redirect from video stream'));
             }
@@ -1608,7 +1622,7 @@ async function startVideoServer() {
     const extraQuery = Object.keys(customHeaders).length > 0
       ? '&http_headers=' + encodeURIComponent(JSON.stringify(customHeaders))
       : '';
-    const proxyBase = `http://localhost:${actualPort}/video/proxy/stream?src=`;
+    const proxyBase = `http://localhost:${actualPort}/video/proxy/stream?t=${videoProxyToken}&src=`;
 
     const rewriteUri = (uri) => {
       let abs;
@@ -1648,9 +1662,10 @@ async function startVideoServer() {
     }
   });
 
+  const loopbackHost = '127.0.0.1';
   const tryListen = (port) => {
     return new Promise((resolve, reject) => {
-      const server = expressApp.listen(port, () => {
+      const server = expressApp.listen(port, loopbackHost, () => {
         const boundPort = server.address().port;
         console.log(`Video server running on port ${boundPort}`);
         videoServer = server; // Store the HTTP server instance
@@ -1691,23 +1706,16 @@ async function startVideoServer() {
 // IPC HANDLERS - Secure Communication
 // ============================================
 
-ipcMain.handle('app:initialize', async () => {
-  if (isReady) return { success: true };
-  
-  isReady = true;
-  if (!mainWindow) createWindow();
-  await startVideoServer();
-  setupWebRequestHeaders();
-  ensureDirectories();
-  
-  return { success: true, message: 'App initialized' };
-});
-
 // Lets the renderer learn the real proxy base URL (port may be random if 5001..5010 were busy)
 ipcMain.handle('video:getServerInfo', () => ({
   port: videoServerPort,
-  baseUrl: videoServerBaseUrl
+  baseUrl: videoServerBaseUrl,
+  token: videoProxyToken
 }));
+
+// Single source of truth for the app version (package.json), so the sidebar and
+// the menu can't drift apart from the real release version.
+ipcMain.handle('app:getVersion', () => app.getVersion());
 
 // Open DevTools IPC handler
 ipcMain.on('app:openDevTools', () => {
@@ -1725,8 +1733,11 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = console;
-  // electron-updater expects a function returning Promise<null> to bypass signature validation
-  autoUpdater.verifyUpdateCodeSignature = () => Promise.resolve(null);
+  // Integrity: electron-updater verifies the downloaded installer's sha512
+  // against latest.yml (fetched over HTTPS from GitHub) during download, and
+  // when build.win.publisherName is present it runs Windows Authenticode
+  // signature verification via the default verifyUpdateCodeSignature. Do NOT
+  // override it with a no-op, or a compromised release channel would pass.
 
   autoUpdater.on('update-available', (info) => {
     sendToRenderer('app:update', {
@@ -1882,7 +1893,7 @@ function getProxiedStreamUrl(url) {
     
     // Route local file paths through proxy
     if (url.startsWith('file://') || /^[a-zA-Z]:[\\\/]/.test(url)) {
-      return `http://localhost:5001/video/proxy/stream?src=${encodeURIComponent(url)}`;
+      return `http://localhost:${videoServerPort}/video/proxy/stream?t=${videoProxyToken}&src=${encodeURIComponent(url)}`;
     }
     
     // Route potentially restricted HTTP streams through proxy
@@ -1901,7 +1912,7 @@ function getProxiedStreamUrl(url) {
         pathnameLower.endsWith('.webm') ||
         urlObj.search.includes('video')
       )) {
-return `http://localhost:5001/video/proxy/stream?src=${encodeURIComponent(url)}`;
+return `http://localhost:${videoServerPort}/video/proxy/stream?t=${videoProxyToken}&src=${encodeURIComponent(url)}`;
       }
     }
   } catch {
@@ -2884,24 +2895,6 @@ ipcMain.handle('db:getVideos', async (event, limit = 100, offset = 0) => {
   }
 });
 
-ipcMain.handle('db:getVideosCount', async () => {
-  try {
-    const { db, error } = getDbSafe();
-    if (error) return { success: false, error: 'Database not available: ' + error };
-    
-    const count = await db.getVideosCount();
-    
-    return { success: true, count };
-  } catch (err) {
-    console.error('Get videos count error:', err);
-    return { 
-      success: false, 
-      error: 'Failed to get videos count',
-      details: err.message 
-    };
-  }
-});
-
 ipcMain.handle('db:getVideoCategories', async () => {
   try {
     const { db, error } = getDbSafe();
@@ -3459,117 +3452,6 @@ ipcMain.handle('db:saveScrapers', async (event, scrapers) => {
   }
 });
 
-// Get scraping backends list
-ipcMain.handle('backends:list', async () => {
-  try {
-    const fs = require('fs');
-    const dir = './backends';
-    
-    if (!fs.existsSync(dir)) {
-      return { success: false, error: 'Backends directory not found' };
-    }
-
-    const files = fs.readdirSync(dir);
-    const validExtensions = ['.js', '.mjs'];
-    const backends = files.filter(f => 
-      f.endsWith(validExtensions[0]) || 
-      f.endsWith(validExtensions[1])
-    ).map(file => file.replace('.js', '').replace('.mjs', ''));
-
-    return { 
-      success: true, 
-      backends 
-    };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-});
-
-// Execute a scraping backend function
-ipcMain.handle('backends:execute', async (event, { backendName, url }) => {
-  try {
-    require('child_process').execSync(`npm run build`, { 
-      stdio: 'pipe',
-      cwd: path.resolve('.')
-    });
-
-    const fs = require('fs');
-    const dir = './backends';
-    const backendPath = path.join(dir, `${backendName}${url.includes('.js') ? '.js' : '.mjs'}`);
-    const configPath = './config/backends.config.js';
-
-    if (!fs.existsSync(backendPath)) {
-      return { 
-        success: false, 
-        error: 'Backend not found',
-        details: `Could not find backend: ${backendName}`
-      };
-    }
-
-    if (!fs.existsSync(configPath)) {
-      fs.writeFileSync(configPath, "module.exports = {};\n");
-    }
-    
-    const config = require(configPath);
-    const { executeScraper } = require(backendPath);
-
-    const result = await executeScraper({ 
-      url,
-      timeout: config.timeout || 30000,
-      maxPages: config.maxPages || 5
-    });
-
-    return { 
-      success: true, 
-      data: result,
-      backend: backendName,
-      timestamp: new Date().toISOString()
-    };
-  } catch (err) {
-    console.error('Scraper execution error:', err);
-    return { 
-      success: false, 
-      error: 'Scraper execution failed',
-      details: err.message
-    };
-  }
-});
-
-// Execute scraping with specific backend
-ipcMain.handle('scraper:execute', async () => {
-  try {
-    const defaultPath = './backends/main.js';
-    const fs = require('fs');
-    const configPath = './config/scraper.config.js';
-
-    if (!fs.existsSync(defaultPath)) {
-      return { 
-        success: false, 
-        error: 'Default scraper not found',
-        details: 'Please add a backend to ./backends/'
-      };
-    }
-
-    const config = require(configPath);
-    
-    const { executeScrapeFunction } = require(defaultPath);
-
-    return await executeScrapeFunction({ 
-      url: config.defaultScraperUrl || '',
-      timeout: 30000,
-      maxPages: 5
-    });
-  } catch (err) {
-    console.error('Default scraper error:', err);
-    return { 
-      success: false, 
-      error: 'Failed to execute default scraper',
-      details: err.message
-    };
-  }
-});
-
-
 // ============================================
 // IPTV / M3U Playlist Support
 // ============================================
@@ -3965,7 +3847,12 @@ function pornhubViewkey(u) {
 // reject image-file URLs (.png/.jpg/...), category/language filter paths
 // (/tags/, /languages/, /spanish/...), and chip-style language/image titles.
 const SCRAPE_LANG_TEXT = /^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i;
-const SCRAPE_FILTER_PATH = /\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese|categor(?:y|ies))\//i;
+// v1.0.1.0.47: bookmarks/watch-later cards, login/sign-in/sign-up/register pages,
+// account/settings/premium/upgrade/gold/membership paywalls and join/unlock
+// chips are NEVER playable videos. Hardened HERE (the shared path filter every
+// adult engine funnels card URLs through) so one edit upgrades XVideos, XNXX,
+// xHamster, xHamster+, Pornhub AND the hanime v8/stealth backends together.
+const SCRAPE_FILTER_PATH = /\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese|categor(?:y|ies)|book(?:marks?|marked)|watch[_-]?later|favorites?|favlist|login|log-?in|sign-?in|signin|sign-?up|signup|register|join|create[-_]?account|account|my[-_]?account|settings|premium|upgrade|gold|membership|subscribe|unlock)\//i;
 const SCRAPE_IMAGE_FILE = /\.(?:png|jpe?g|gif|svg|webp)(?:[?#].*)?$/i;
 
 const AD_NETWORKS = ["exoclick", "adsterra", "popads", "juicyads", "doubleclick", "adform", "traffichaus"];
@@ -4002,7 +3889,24 @@ const SCRAPER_TITLE_BLACKLIST = [
   'xnxx gold', 'top creators live', 'new channel', 'liked', 'autoplay', 'videos i like',
   'uncensored hentai', 'ai hentai', 'latest releases', 'most popular', 'most liked',
   'settings', 'sign in', 'privacy policy', 'terms of service', 'contact', 'about',
-  'clear', 'pick your poison', 'rta', 'dmca', 'faq', 'home'
+  'clear', 'pick your poison', 'rta', 'dmca', 'faq', 'home',
+  // v1.0.1.0.47: bookmark / watch-later / login / sign-up / premium / upgrade junk
+  'log in', 'login', 'sign up', 'signup', 'register', 'create an account', 'create account',
+  'new here?', 'join now', 'join', 'join for free', 'join free', 'welcome back', 'welcome',
+  'bookmark', 'bookmarks', 'log in for free', 'sign in for free', 'save for later',
+  'watch later', 'my favorites', 'favorites', 'my likes', 'liked videos', 'premium',
+  'premium account', 'upgrade to premium', 'go premium', 'upgrade', 'unlock', 'vip', 'gold',
+  'membership', 'subscribe', 'subscribe for free', 'your account', 'edit profile',
+  'update your details',
+  // v1.0.1.0.47: universal fan-out junk families — promo / category / chip cards that
+  // XVideos & XNXX pad their grids with. Exact-match blacklists miss these because
+  // they're sub-strings, not whole titles — reject them so fan-out merge stays clean.
+  'best videos', 'best video', 'best of', 'best', 'biggest', 'top videos', 'top rated',
+  'most popular', 'most viewed', 'most recent', 'latest videos', 'latest', 'new videos',
+  'new', 'trending', 'related videos', 'popular now', 'popular videos', 'featured videos',
+  'featured', 'amateur', 'amateur videos', 'animation', 'animations', 'animated',
+  'cartoon', 'cartoon videos', 'hd videos', 'hd', 'hd quality', 'fhd', 'full hd', '4k',
+  '4k videos', '4 k', '4k uhd', 'channels', 'channel', 'videos', 'video', 'watch videos'
 ];
 
 // Duration-only strings that show up as the anchor text on xHamster / XVideos
@@ -4024,6 +3928,61 @@ function isScrapeJunkTitle(title) {
   return SCRAPE_LANG_TEXT.test(t) || /\.(?:png|jpe?g|gif|svg|webp)\b/i.test(t);
 }
 
+// Shared adult-grid duration parser. Adult sites alternate between clock
+// ("12:34", "1:12:34") and word ("6 min", "1h 25min", "3m 20s") formats on
+// their thumb cards; a parser that only understands one shape silently zeroes
+// every card on the sites using the other (that was the XVideos/XNXX empty
+// grid bug — they render "6 min" while the old regex only read "H:MM:SS").
+function parseScrapeDuration(durText) {
+  const t = String(durText || '').replace(/\s+/g, ' ').trim();
+  if (!t) return 0;
+  // Clock format: "1:12:34" (h:m:s) or "12:34" (m:s), anywhere in the text so
+  // trailing noise ("12:34 1080p", "550.3k 12:34") can't prevent a match.
+  const clock = t.match(/(?:\b|^)(\d{1,3}):([0-5]\d)(?::([0-5]\d))?\b/);
+  if (clock) {
+    if (clock[3]) return parseInt(clock[1], 10) * 3600 + parseInt(clock[2], 10) * 60 + parseInt(clock[3], 10);
+    return parseInt(clock[1], 10) * 60 + parseInt(clock[2], 10);
+  }
+  // Word format: "6 min", "1h 25min", "3m 20s", "45s", "2 hours", "10min".
+  // Each unit is scanned independently (a single all-optional regex would
+  // stop on a leftmost empty match). Multi-letter units use /i; the lone
+  // single-letter units ("6m", "1h", "45s") match case-SENSITIVELY so a view
+  // counter like "1.2M" (uppercase M) never reads as 1.2 minutes and "550.3k"
+  // never reads as seconds.
+  const units = { hr: 0, min: 0, s: 0 };
+  const pick = (re, mult) => {
+    const groups = new Set();
+    let m = re.exec(t);
+    if (m && m[1]) groups.add(parseFloat(m[1]));
+    if (mult) {
+      const re2 = new RegExp(re.source.replace(/\(\?:.*\)\s*/g, ''), 'gi');
+      const m2 = re2.exec(t);
+      if (m2 && m2[1]) groups.add(parseFloat(m2[1]));
+    }
+    return groups.size ? Math.max(...[...groups]) : null;
+  };
+  const hrMulti = t.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b/i);
+  const hrSingle = t.match(/(\d+(?:\.\d+)?)\s*h\b/);
+  const minMulti = t.match(/(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min)\b/i);
+  const minSingle = t.match(/(\d+(?:\.\d+)?)\s*m\b/);
+  const secMulti = t.match(/(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|sec)\b/i);
+  const secSingle = t.match(/(\d+(?:\.\d+)?)\s*s\b/);
+  const hasWord =
+    (hrMulti && hrMulti[1]) || (hrSingle && hrSingle[1]) ||
+    (minMulti && minMulti[1]) || (minSingle && minSingle[1]) ||
+    (secMulti && secMulti[1]) || (secSingle && secSingle[1]);
+  if (hasWord) {
+    const hr = (hrMulti && hrMulti[1]) ? parseFloat(hrMulti[1]) : (hrSingle && hrSingle[1] ? parseFloat(hrSingle[1]) : 0);
+    const min = (minMulti && minMulti[1]) ? parseFloat(minMulti[1]) : (minSingle && minSingle[1] ? parseFloat(minSingle[1]) : 0);
+    const s = (secMulti && secMulti[1]) ? parseFloat(secMulti[1]) : (secSingle && secSingle[1] ? parseFloat(secSingle[1]) : 0);
+    return Math.round(hr * 3600 + min * 60 + s);
+  }
+  // Bare whole minutes: "6", "15" (some compact grids drop the unit) — only
+  // when the whole string is digits, never a slice of a larger number.
+  if (/^\d{1,3}$/.test(t)) return parseInt(t, 10) * 60;
+  return 0;
+}
+
 function scrapeThumbUrl(img) {
   if (!img) return '';
   const get = (n) => (img.attr
@@ -4034,14 +3993,16 @@ function scrapeThumbUrl(img) {
   return get('data-src') || get('src') || get('data-lazy-src');
 }
 
-// v1.0.33: strict thumbnail-title fallback for the grid engines (XNXX, xHamster,
+// v1.0.1.0.47: strict thumbnail-title fallback for the grid engines (XNXX, xHamster,
 // …). Try the card's own title attribute first, then its poster <img alt>, then
 // the raw text content — and reject anything that is empty, "untitled"/"Image",
 // or shorter than 4 characters so category/avatar/chip cards never leak in.
-// v1.0.36: xHamster rotates its title anchor between .title-link and
+// v1.0.1.0.47: xHamster rotates its title anchor between .title-link and
 // .video-title, so the anchor's title/text is tried before the whole-block text.
-function cleanThumbTitle(block) {
-  const anchor = block.find('.title-link a, .video-title a, .title-link, .video-title, a.a-title, .title a').first();
+function cleanThumbTitle(block, preferredNode) {
+  const anchor = (preferredNode && preferredNode.length)
+    ? preferredNode
+    : block.find('.title-link a, .video-title a, .title-link, .video-title, a.a-title, .title a').first();
   const anchored = anchor.length
     ? String(anchor.attr('title') || anchor.text().replace(/\s+/g, ' ').trim() || '')
     : '';
@@ -4086,13 +4047,14 @@ function normalizeSearchEntry(entry, fallbackSite) {
 }
 
 // ---- Hanime engine ----------------------------------------------------
-// Search goes through the active Hanime search service (the same upstream the
-// backend gateway proxies for /api/scrape/hanime): POST search_text/json to
-// https://search.htv-services.com/ returns elastic hits with slugs. The old
-// hanime.tv/api/v8/search shard gets sunset/rotated behind Cloudflare, while
-// this service key stays reachable. Video detail still uses the native v8
-// endpoint (https://hanime.tv/api/v8/video?id={slug}) which returns the
-// videos_manifest with the master .m3u8 (or a direct .mp4 fallback stream).
+// Search goes through Hanime's CURRENT guest search dataset (app2-signed,
+// https://guest.freeanimehentai.net/api/v11/search_hvs, filtered client-side
+// exactly like the site's own SPA), with the legacy v8 / htv-services POST and
+// the offscreen stealth browser kept only as fallbacks. Video detail still tries
+// the native v8 endpoint (https://hanime.tv/api/v8/video?id={slug}) which
+// returns the videos_manifest with the master .m3u8 (or a direct .mp4 fallback
+// stream); when that is dead the stealth sniffer captures the tokenized
+// https://hanime.tv/hls/<id>/<token> master emitted by the site's own player.
 const HANIME_API = 'https://hanime.tv/api/v8';
 const HANIME_SEARCH_API = 'https://search.htv-services.com/';
 const STEALTH_TURNSTILE_SETTLE_MS = 3000;
@@ -4172,11 +4134,144 @@ async function hanimeV8Search(query, count = 25) {
   return parseHanimeSearchPayload(data, count, 'hanime-v8');
 }
 
+// ---- Hanime search dataset (current production backend) -----------------------------
+// Hanime's own site no longer uses search.htv-services.com: since the 2025
+// backend move the frontend ships its COMPLETE catalog as a single JSON
+// "search dataset" at https://guest.freeanimehentai.net/api/v11/search_hvs and
+// filters it client-side. That endpoint is signed with hanime's app2 request
+// signature: x-signature = sha256("994482" + "2{t}8{t}" + "113") keyed to the
+// unix claim in x-claim (x-signature-version: app2), with origin/referer
+// https://hanime.tv. Unlike every other hanime.tv host, this guest catalog
+// endpoint is served WITHOUT a Cloudflare managed challenge — a plain Node
+// fetch (undici, the same global fetch main.js uses everywhere) returns 200
+// with the full dataset (~3408 videos, real name + cover_url/poster_url +
+// slug + views + tags). Cover art is absolute https://hanime-cdn.com/images/...
+// URLs that load with no Referer at all, so the renderer <img> works directly.
+//
+// This is now the PRIMARY hanime search backend — fast, exact, always open —
+// with the stealth browser and the old v8 paths kept as fallbacks. The dataset
+// is cached in-memory with a TTL + single-flight, mirroring the acknowledged
+// upstream (anime-src/hanime-stremio) which consumes this identical endpoint.
+// NOTE: dataset rows carry no duration_in_ms (the addon substitutes a ~20min
+// estimate), so duration is reported as 0 exactly like the stealth path.
+const HANIME_DATASET_URL = 'https://guest.freeanimehentai.net/api/v11/search_hvs';
+const HANIME_DATASET_TTL_MS = 6 * 60 * 60 * 1000; // 6h, same as hanime-stremio
+const HANIME_DATASET_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
+
+let hanimeDatasetCache = { data: null, fetchedAt: 0 };
+let hanimeDatasetPending = null;
+
+function hanimeApp2Signature(claim) {
+  const str = `2${claim}8${claim}`;
+  return crypto.createHash('sha256').update('994482' + str + '113').digest('hex');
+}
+
+function hanimeDatasetHeaders() {
+  const claim = Math.floor(Date.now() / 1000);
+  return {
+    'User-Agent': HANIME_DATASET_UA,
+    'Accept': 'application/json, text/plain, */*',
+    'Content-Type': 'application/json;charset=UTF-8',
+    'Origin': 'https://hanime.tv',
+    'Referer': 'https://hanime.tv/',
+    'x-claim': String(claim),
+    'x-signature-version': 'app2',
+    'x-signature': hanimeApp2Signature(claim),
+    'x-session-token': ''
+  };
+}
+
+async function fetchHanimeSearchDataset() {
+  const now = Date.now();
+  if (hanimeDatasetCache.data && now - hanimeDatasetCache.fetchedAt < HANIME_DATASET_TTL_MS) {
+    return hanimeDatasetCache.data;
+  }
+  if (hanimeDatasetPending) return hanimeDatasetPending;
+  hanimeDatasetPending = (async () => {
+    const res = await fetch(HANIME_DATASET_URL, {
+      headers: hanimeDatasetHeaders(),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!res.ok) throw new Error(`Hanime dataset HTTP ${res.status}`);
+    const json = await res.json();
+    const arr = (json && Array.isArray(json.data)) ? json.data : [];
+    if (arr.length === 0) throw new Error('Hanime dataset empty');
+    hanimeDatasetCache = { data: arr, fetchedAt: Date.now() };
+    return arr;
+  })();
+  try {
+    return await hanimeDatasetPending;
+  } finally {
+    hanimeDatasetPending = null;
+  }
+}
+
+async function hanimeDatasetSearch(query, count = 25) {
+  const text = String(query || '').trim();
+  if (!text) return [];
+  let dataset;
+  try {
+    dataset = await fetchHanimeSearchDataset();
+  } catch (e) {
+    console.warn(`[hanimeDatasetSearch] dataset fetch failed: ${e.message}`);
+    return [];
+  }
+  const terms = text.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return [];
+  const scored = [];
+  for (const item of dataset) {
+    if (!item || !item.slug) continue;
+    const name = String(item.name || '');
+    const hay = [
+      name,
+      item.search_titles,
+      item.slug,
+      (Array.isArray(item.tags) ? item.tags.join(' ') : ''),
+      item.description
+    ].join(' ').toLowerCase().replace(/\s+/g, ' ');
+    if (!terms.every((t) => hay.includes(t))) continue;
+    // Relevance score: exact/prefix/phrase name beats tag-only hits; slug is a
+    // strong signal (hanime slugs carry the romanized title); views break ties.
+    const nl = name.toLowerCase();
+    let score = 0;
+    if (nl === text.toLowerCase()) score += 1000;
+    else if (nl.startsWith(text.toLowerCase())) score += 500;
+    else if (nl.includes(text.toLowerCase())) score += 350;
+    else if (String(item.slug).includes(text.toLowerCase().replace(/\s+/g, '-'))) score += 250;
+    for (const t of terms) {
+      if (nl.includes(t)) score += 40;
+    }
+    score += (Number(item.views) || 0) / 1e6;
+    scored.push({ item, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const videos = [];
+  for (const { item } of scored.slice(0, count)) {
+    const slug = String(item.slug).trim();
+    const pageUrl = `https://hanime.tv/videos/hentai/${slug}`;
+    videos.push({
+      id: scrapeVideoId('hanime', pageUrl, slug),
+      title: String(item.name || 'Untitled').trim(),
+      thumbnailUrl: item.poster_url || item.cover_url || '',
+      videoUrl: pageUrl,
+      pageUrl,
+      isHLS: false,
+      httpHeaders: null,
+      duration: 0,
+      category: 'Hanime',
+      sourceSite: 'hanime.tv',
+      extractor: 'hanime-dataset',
+      description: item.description || ''
+    });
+  }
+  return videos;
+}
+
 // htv-services answers with the v8-shaped elastic payload; tolerate a few
 // structural variants so a format shuffle upstream never returns zero rows.
 // Shared by the direct v8 fetch path and the offscreen stealth capture so
 // both backends produce identical result shapes.
-// v1.0.44: shared GENUINE-VIDEO gate for hanime results. Every backend that
+// v1.0.1.0.47: shared GENUINE-VIDEO gate for hanime results. Every backend that
 // can feed the list — the v8 direct fetch, the htv-services payload capture,
 // the v8 fallback, and the offscreen-stealth DOM scrape — funnels through
 // parseHanimeSearchPayload (below) and/or the DOM assembly in hanimeStealthSearch,
@@ -4234,7 +4329,7 @@ function parseHanimeSearchPayload(data, count = 25, extractor = 'hanime-v8') {
     const src = h && h._source ? h._source : (h || {});
     const slug = src.slug || (h && h._source && h._source.slug) || '';
     if (!slug) continue;
-    // v1.0.44: hard gate before any hanime card can enter the list. Reject ads,
+    // v1.0.1.0.47: hard gate before any hanime card can enter the list. Reject ads,
     // overlays, trackers, promos, set/filter pages and image-only cards here;
     // count each rejected reason so the diag shows filtering is active.
     const junk = classifyHanimeJunkCard(h, src, slug);
@@ -4270,7 +4365,7 @@ function parseHanimeSearchPayload(data, count = 25, extractor = 'hanime-v8') {
   return videos;
 }
 
-// v1.0.29: offscreen stealth Hanime search. Instead of POSTing straight to
+// v1.0.1.0.47: offscreen stealth Hanime search. Instead of POSTing straight to
 // search.htv-services.com from a plain net.fetch (which Cloudflare challenges
 // when the request leaves the freed session), navigate the hidden offscreen
 // window to https://hanime.tv/search?q=... and let the page's own React app
@@ -4581,7 +4676,7 @@ async function hanimeStealthSearch(query, count = 25) {
       const res = await evalInStealth(buildAutoSearchScript(HANIME_DOM_SCRIPT, { limit: count }), 6000, win);
       if (res && res.__stealthError) throw new Error(`hanime DOM extract failed: ${res.__stealthError}`);
       const out = (res && Array.isArray(res.out)) ? res.out : [];
-      // v1.0.44: run every rendered card through the SAME genuine-video gate
+      // v1.0.1.0.47: run every rendered card through the SAME genuine-video gate
       // used by the network/payload backends so ads, overlays, trackers, promos,
       // image-only and no-duration cards are rejected HERE (visible via
       // hanimeSearchDiag.junkRejected) instead of leaking into the results list.
@@ -4602,8 +4697,7 @@ async function hanimeStealthSearch(query, count = 25) {
       const isResultsRoute = /(\/search|\?(?:.*&)?(?:query|q)=)/i.test(String((res && res.href) || ''));
       if (valid.length > 0 && isResultsRoute) {
         return valid.map(r => {
-          const m = (r.durationText || '').match(/(?:(\d+)h\s*)?(\d{1,2}):(\d{2})/);
-          const duration = m ? (m[1] ? parseInt(m[1], 10) * 3600 : 0) + parseInt(m[2], 10) * 60 + parseInt(m[3], 10) : 0;
+          const duration = parseScrapeDuration(r.durationText || '');
           return {
             id: scrapeVideoId('hanime', r.url),
             title: String(r.title || 'Untitled').trim().substring(0, 200),
@@ -4804,7 +4898,20 @@ async function resolvePornhubStream(pageUrl) {
 async function searchHanime(query, count = 25) {
   let lastErr = null;
 
-  // Primary (v1.0.29): offscreen stealth search. The hidden browser window
+  // Primary: hanime's own guest search dataset (app2-signed, no Cloudflare
+  // challenge). The site itself consumes this endpoint client-side, so results
+  // are the exact same catalog rows — fast and reliable. Falls through to the
+  // stealth-browser and v8 backends only if it comes back empty or unroutable.
+  try {
+    const datasetVideos = await hanimeDatasetSearch(query, count);
+    if (datasetVideos.length > 0) return datasetVideos;
+    lastErr = new Error('search dataset returned no results');
+  } catch (datasetErr) {
+    lastErr = datasetErr;
+    console.warn(`[searchHanime] search dataset failed, falling back to stealth: ${datasetErr.message}`);
+  }
+
+  // Fallback: offscreen stealth search. The hidden browser window
   // loads https://hanime.tv/search?q=..., auto-solves Cloudflare/Turnstile,
   // and its own React app issues the htv-services.com POST with a real browser
   // fingerprint; the response payload is captured from the network layer (CDP)
@@ -4987,20 +5094,11 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
     'DNT': '1'
   };
 
-  const res = await net.fetch(searchUrl, {
-    method: 'GET',
-    headers: browserHeaders,
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow'
-  });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
-  }
-  const html = await res.text();
+  const html = await retryableScrapeFetch(searchUrl, browserHeaders);
   const $ = cheerio.load(html);
   const videos = [];
 
-  // v1.0.35: query strictly inside video card containers (.mozaique .thumb-block,
+  // v1.0.1.0.47: query strictly inside video card containers (.mozaique .thumb-block,
   // .video-block, #content .thumb-block). Global menu entries ("login", "join
   // for free", "sign in") and blank chrome live outside these and never match.
   $('.mozaique .thumb-block, .video-block, #content .thumb-block').each((_i, el) => {
@@ -5030,11 +5128,7 @@ async function xvideosSearchHtml(searchUrl, count = 25) {
     const thumb = scrapeThumbUrl(img);
 
     const durText = block.find('.duration').text().trim();
-    let duration = 0;
-    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-    if (dm) {
-      duration = (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
-    }
+    const duration = parseScrapeDuration(durText);
 
     const profile = block.find('.profile-name').first().text().trim();
     // Sanitize: skip image/avatar URLs and category/language filter links, and
@@ -5076,7 +5170,7 @@ function xvJunk(t) {
   if (!t || t.length < 4) return true;
   if (/^(untitled|image source|image)$/i.test(t)) return true;
   if (/^(?:\\d{1,3}(?:\\.\\d{1,2})?[kmhKMH]?|\\d{1,2}:\\d{2})$/.test(t)) return true;
-  var black = /^(xnxx gold|top creators live|new channel|liked|autoplay|videos i like|uncensored hentai|ai hentai|latest releases|most popular|most liked|settings|sign in|privacy policy|terms of service|contact|about|clear|pick your poison|rta|dmca|faq|home)$/i;
+  var black = /^(xnxx gold|top creators live|new channel|liked|autoplay|videos i like|uncensored hentai|ai hentai|latest releases|most popular|most liked|settings|sign in|privacy policy|terms of service|contact|about|clear|pick your poison|rta|dmca|faq|home|bests+videos?|bests+video|bests+of|bests*|bests+amateurs?|amateurs+videos?|amateu r(x)?|amateur|animes?|animated|animations?|animateds+videos?|cartoons?(?:s+videos?|s+porn)?|cartoon|cartoony|uncensor(?:ed|s+uncensored)?|hentai s+porn|join s+for s+free|join s*free|free s+account|free s*s+account|create s+an? s+free s+account|welcome s*back|most s*(?:popular|liked|recent)|latest s+releases|videos s+i like|videos s+like)$/i;
   if (black.test(t)) return true;
   if (/^(English|French|Spanish|Italian|Portuguese|German|Russian|Japanese)$/i.test(t)) return true;
   return /\\.(?:png|jpe?g|gif|svg|webp)\\b/i.test(t);
@@ -5101,8 +5195,26 @@ for (var i = 0; i < blocks.length; i++) {
   var thumb = img ? (img.getAttribute('data-src') || img.getAttribute('src') || '') : '';
   var d = (b.querySelector('.duration') || {}).textContent || '';
   var dur = 0;
-  var dm = d.match(/(?:(\\d+)h\\s*)?(\\d+):(\\d+)/);
-  if (dm) dur = (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
+  var dm = d.replace(/\\s+/g, ' ').trim();
+  if (dm) {
+    var cl = dm.match(/(?:\\b|^)(\\d{1,3}):([0-5]\\d)(?::([0-5]\\d))?\\b/);
+    if (cl) dur = cl[3] ? +cl[1] * 3600 + +cl[2] * 60 + +cl[3] : +cl[1] * 60 + +cl[2];
+    else {
+      var hA = dm.match(/(\\d+(?:\\.\\d+)?)\\s*(?:hours?|hrs?)\\b/i);
+      var hB = dm.match(/(\\d+(?:\\.\\d+)?)\\s*h\\b/);
+      var mA = dm.match(/(\\d+(?:\\.\\d+)?)\\s*(?:minutes?|mins?|min)\\b/i);
+      var mB = dm.match(/(\\d+(?:\\.\\d+)?)\\s*m\\b/);
+      var sA = dm.match(/(\\d+(?:\\.\\d+)?)\\s*(?:seconds?|secs?|sec)\\b/i);
+      var sB = dm.match(/(\\d+(?:\\.\\d+)?)\\s*s\\b/);
+      if (hA && hA[1] || hB && hB[1] || mA && mA[1] || mB && mB[1] || sA && sA[1] || sB && sB[1]) {
+        dur = Math.round(
+          ((hA && hA[1] ? +hA[1] : (hB && hB[1] ? +hB[1] : 0)) * 3600) +
+          ((mA && mA[1] ? +mA[1] : (mB && mB[1] ? +mB[1] : 0)) * 60) +
+          (sA && sA[1] ? +sA[1] : (sB && sB[1] ? +sB[1] : 0))
+        );
+      } else if (/^\\d{1,3}$/.test(dm)) dur = +dm * 60;
+    }
+  }
   if (!dur) continue;
   if (/\\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i.test(abs)) continue;
   if (/\\/(?:tags?|languages?|spanish|english|french|german|russian|italian|portuguese|japanese)\\//i.test(abs)) continue;
@@ -5153,9 +5265,32 @@ const PH_LANG_TEXT = /^(English|French|Spanish|Italian|Portuguese|German|Russian
 const PH_FILTER_HREF = /\/language\/|\/categories\//i;
 
 function pornhubCardDuration(durText) {
-  const m = String(durText || '').match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-  if (!m) return 0;
-  return (m[1] ? parseInt(m[1], 10) * 3600 : 0) + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+  return parseScrapeDuration(durText);
+}
+
+// Transient-safe fetch for the scraped HTML engines: pornhub/xvideos/xnxx
+// intermittently drop the first request (Cloudflare probe, age-gate race,
+// connection reset) then answer the retry with the full grid. Retry once with
+// a fresh attempt + backoff, and surface the FIRST error if both fail so the
+// caller can distinguish "blocked" from "transient".
+async function retryableScrapeFetch(url, headers) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await net.fetch(url, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(20000),
+        redirect: 'follow'
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${url}`);
+      return await res.text();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) await sleep(1200);
+    }
+  }
+  throw lastErr;
 }
 
 async function pornhubSearchHtml(searchUrl, count = 25) {
@@ -5175,14 +5310,20 @@ async function pornhubSearchHtml(searchUrl, count = 25) {
     'DNT': '1'
   };
 
-  const res = await net.fetch(searchUrl, {
-    method: 'GET',
-    headers: browserHeaders,
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow'
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
-  const html = await res.text();
+  const html = await retryableScrapeFetch(searchUrl, browserHeaders);
+
+  // Pornhub intermittently challenges even the cookie-forwarded age-gate
+  // session (Cloudflare "Just a moment" / geo age-wall variants). The challenge
+  // shell serves an HTML response without any pcVideoListItem grid — refuse it
+  // here and let the caller's stealth/browser fallback engage instead.
+  const canaryOk =
+    html.includes('pcVideoListItem') ||
+    html.includes('js-pop') ||
+    html.length > 120000;
+  if (!canaryOk) {
+    throw new Error('Pornhub responded without a result grid (Cloudflare/age-gate)');
+  }
+
   const $ = cheerio.load(html);
   const videos = [];
 
@@ -5268,8 +5409,26 @@ for (var i = 0; i < cards.length; i++) {
   var durEl = c.querySelector('.duration') || c.querySelector('.video-duration') || c.querySelector('var.duration');
   var d = (durEl && durEl.textContent) || '';
   var dur = 0;
-  var dm = d.match(/(?:(\\d+)h\\s*)?(\\d+):(\\d+)/);
-  if (dm) dur = (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
+  var dm = (d || '').replace(/\\s+/g, ' ').trim();
+  if (dm) {
+    var cl = dm.match(/(?:\\b|^)(\\d{1,3}):([0-5]\\d)(?::([0-5]\\d))?\\b/);
+    if (cl) dur = cl[3] ? +cl[1] * 3600 + +cl[2] * 60 + +cl[3] : +cl[1] * 60 + +cl[2];
+    else {
+      var hA = dm.match(/(\\d+(?:\\.\\d+)?)\\s*(?:hours?|hrs?)\\b/i);
+      var hB = dm.match(/(\\d+(?:\\.\\d+)?)\\s*h\\b/);
+      var mA = dm.match(/(\\d+(?:\\.\\d+)?)\\s*(?:minutes?|mins?|min)\\b/i);
+      var mB = dm.match(/(\\d+(?:\\.\\d+)?)\\s*m\\b/);
+      var sA = dm.match(/(\\d+(?:\\.\\d+)?)\\s*(?:seconds?|secs?|sec)\\b/i);
+      var sB = dm.match(/(\\d+(?:\\.\\d+)?)\\s*s\\b/);
+      if (hA && hA[1] || hB && hB[1] || mA && mA[1] || mB && mB[1] || sA && sA[1] || sB && sB[1]) {
+        dur = Math.round(
+          ((hA && hA[1] ? +hA[1] : (hB && hB[1] ? +hB[1] : 0)) * 3600) +
+          ((mA && mA[1] ? +mA[1] : (mB && mB[1] ? +mB[1] : 0)) * 60) +
+          (sA && sA[1] ? +sA[1] : (sB && sB[1] ? +sB[1] : 0))
+        );
+      } else if (/^\\d{1,3}$/.test(dm)) dur = +dm * 60;
+    }
+  }
   if (!dur) continue;
   seen[abs] = true;
   out.push({ title: title.slice(0, 200), thumb: thumb, url: abs, duration: dur });
@@ -5325,14 +5484,7 @@ async function xhamsterSearchHtml(searchUrl, count = 25) {
     'DNT': '1'
   };
 
-  const res = await net.fetch(searchUrl, {
-    method: 'GET',
-    headers: browserHeaders,
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow'
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
-  const html = await res.text();
+  const html = await retryableScrapeFetch(searchUrl, browserHeaders);
   const $ = cheerio.load(html);
   const videos = [];
 
@@ -5353,8 +5505,7 @@ async function xhamsterSearchHtml(searchUrl, count = 25) {
     const img = block.find('img').first();
     const thumb = scrapeThumbUrl(img);
     const durText = block.find('.duration, var.duration, .thumb-duration').first().text().trim();
-    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    const duration = parseScrapeDuration(durText);
     // A thumb without a duration is a category/avatar card, not a video.
     if (!duration) return;
 
@@ -5392,20 +5543,17 @@ async function spankBangSearchHtml(searchUrl, count = 25) {
     'Upgrade-Insecure-Requests': '1',
     'DNT': '1'
   };
-  const res = await net.fetch(searchUrl, {
-    method: 'GET',
-    headers: sbHeaders,
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow'
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
-  const html = await res.text();
+const html = await retryableScrapeFetch(searchUrl, sbHeaders);
   const $ = cheerio.load(html);
+
   const videos = [];
   const seen = new Set();
   const junk = new Set();
 
-  $('.video-item, a.video-item, .video-list .video-item').each((_i, el) => {
+  // The redesigned grid (2026) dropped .video-item: cards are now
+  // div[data-testid="video-item"] (.js-video-item). Keep the legacy selectors
+  // as a fallback in case SpankBang ever reuses the old classes.
+  $('[data-testid="video-item"], .js-video-item, .video-item, a.video-item, .video-list .video-item').each((_i, el) => {
     const block = $(el);
     // Real SpankBang hits always live under /{id}/video/{slug}/ — reject
     // category/\"New Videos\"/channel/ad chips exactly like the suite.
@@ -5417,13 +5565,17 @@ async function spankBangSearchHtml(searchUrl, count = 25) {
     if (!/\/video\//i.test(abs)) return;
     if (isScrapeJunkUrl(abs) || seen.has(abs)) return;
     seen.add(abs);
-    const title = cleanThumbTitle(block);
+    // New grid: the real title is a[title] inside .line-clamp-2 (the card's
+    // data-testid="title" is the CHANNEL name, so prefer the video link text).
+    const videoTitle = block.find('a[href*="/video/"][title]').first();
+    const title = cleanThumbTitle(block, videoTitle) || cleanThumbTitle(block);
     if (!title) return;
     const img = block.find('img').first();
     const thumb = scrapeThumbUrl(img);
-    const durText = block.find('.duration, var.duration, .d').first().text().trim();
-    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    // New grid carries the runtime as "17m" in [data-testid="video-item-length"];
+    // legacy layouts used .duration / var.duration / .d.
+    const durText = block.find('[data-testid="video-item-length"], .duration, var.duration, .d').first().text().trim();
+    const duration = parseScrapeDuration(durText);
     if (duration < 1) return;
     videos.push({
       id: scrapeVideoId('spankbang', abs, spankBangVideoKey(abs)),
@@ -5457,14 +5609,7 @@ async function hqPornerSearchHtml(searchUrl, count = 25) {
     'Upgrade-Insecure-Requests': '1',
     'DNT': '1'
   };
-  const res = await net.fetch(searchUrl, {
-    method: 'GET',
-    headers: hqHeaders,
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow'
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
-  const html = await res.text();
+  const html = await retryableScrapeFetch(searchUrl, hqHeaders);
   const $ = cheerio.load(html);
   const videos = [];
   const seen = new Set();
@@ -5486,8 +5631,7 @@ async function hqPornerSearchHtml(searchUrl, count = 25) {
     const img = block.find('img').first();
     const thumb = scrapeThumbUrl(img);
     const durText = block.find('.duration, var.duration').first().text().trim();
-    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    const duration = parseScrapeDuration(durText);
     if (duration < 1) return;
     videos.push({
       id: scrapeVideoId('hqporner', abs, hqPornerVideoKey(abs)),
@@ -5533,14 +5677,7 @@ async function xnxxSearchHtml(searchUrl, count = 25) {
     'DNT': '1'
   };
 
-  const res = await net.fetch(searchUrl, {
-    method: 'GET',
-    headers: browserHeaders,
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow'
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
-  const html = await res.text();
+  const html = await retryableScrapeFetch(searchUrl, browserHeaders);
   const $ = cheerio.load(html);
   const videos = [];
 
@@ -5554,7 +5691,7 @@ async function xnxxSearchHtml(searchUrl, count = 25) {
     // Strict: only real /video-{id} (classic) or /video/{slug} result pages.
     if (!/\/video-|\/video\//i.test(abs)) return;
     if (isScrapeJunkUrl(abs)) return;
-    // v1.0.36: expanded title resolution across the anchors xNXX uses
+    // v1.0.1.0.47: expanded title resolution across the anchors xNXX uses
     // (.title a, .thumb-under a, .title-link, a.a-title, .video-title) — anchor
     // title attr -> anchor text -> poster alt -> card title attr. Reject outright
     // when the result is empty, "untitled"/"Image"/"Image source" (brand-new
@@ -5569,9 +5706,13 @@ async function xnxxSearchHtml(searchUrl, count = 25) {
     if (!title || isScrapeJunkTitle(title)) return;
     const img = block.find('img').first();
     const thumb = scrapeThumbUrl(img);
-    const durText = block.find('.duration').text().trim();
-    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    // xNXX rotates its card markup: some grids render the runtime in a
+    // .duration element, others (post-2025 revamp) as a bare "10min" text node
+    // inside p.metadata next to the view count. Grab both and let the shared
+    // duration parser sort real runtimes from "550.3k" counter strings.
+    const durText = block.find('.duration').first().text().trim()
+      || block.find('p.metadata, .thumb-under .metadata, .metadata').first().text().replace(/\s+/g, ' ').trim();
+    const duration = parseScrapeDuration(durText);
     if (!duration) return;
 
     videos.push({
@@ -5619,14 +5760,7 @@ async function hentaiHavenSearchHtml(searchUrl, count = 25) {
     'DNT': '1'
   };
 
-  const res = await net.fetch(searchUrl, {
-    method: 'GET',
-    headers: browserHeaders,
-    signal: AbortSignal.timeout(20000),
-    redirect: 'follow'
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} (${res.statusText}) from ${searchUrl}`);
-  const html = await res.text();
+  const html = await retryableScrapeFetch(searchUrl, browserHeaders);
   const $ = cheerio.load(html);
   const videos = [];
 
@@ -5651,8 +5785,7 @@ async function hentaiHavenSearchHtml(searchUrl, count = 25) {
     if (isScrapeJunkTitle(title)) return;
     const thumb = scrapeThumbUrl(img);
     const durText = card.find('.duration, var.duration, .time').first().text().trim();
-    const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-    const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+    const duration = parseScrapeDuration(durText);
 
     videos.push({
       id: scrapeVideoId('hentaihaven', abs),
@@ -5748,8 +5881,7 @@ async function hentaiMamaStealthSearch(searchUrl, count = 25) {
     })
     .map((r) => {
       const durText = String(r.duration || '').trim();
-      const dm = durText.match(/(?:(\d+)h\s*)?(\d+):(\d+)/);
-      const duration = dm ? (dm[1] ? parseInt(dm[1], 10) * 3600 : 0) + parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10) : 0;
+      const duration = parseScrapeDuration(durText);
       return {
         id: scrapeVideoId('hentaimama', r.url),
         title: String(r.title || 'Untitled').substring(0, 200),
@@ -5864,7 +5996,18 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
     // the post-Astro SPA then returns its query-invariant default grid — the
     // same videos for every search term.
     if (/^https?:\/\//i.test(target) && /hanime\.tv/i.test(target)) {
-      const hanimeVideos = await searchHanime(q, count);
+      // searchHanime THROWS when every backend (stealth + v8) is blocked, which
+      // would abort the whole search and show a blanket failure. Downgrade that
+      // to an explicit, recoverable "blocked" message: Cloudflare-walled hanime
+      // should never take down the rest of the search pipeline.
+      let hanimeVideos = [];
+      let hanimeBlockReason = '';
+      try {
+        hanimeVideos = await searchHanime(q, count);
+      } catch (hanimeErr) {
+        hanimeBlockReason = String((hanimeErr && hanimeErr.message) || hanimeErr) || 'hanime unreachable';
+        console.warn(`[web:search] hanime search blocked: ${hanimeBlockReason}`);
+      }
       if (hanimeVideos.length > 0) {
         console.log(`[web:search] hanime returned ${hanimeVideos.length} results`);
         return { success: true, source: 'hanime', videos: hanimeVideos };
@@ -5994,19 +6137,19 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       }
     }
 
-    // Deprecated v1.0.37: hentaihaven's WP loop nav/footer links masquerade as
+    // Deprecated v1.0.1.0.47: hentaihaven's WP loop nav/footer links masquerade as
     // post cards and ad-hijacked overlays keep breaking the parse; the site is
     // pruned from the active suite (see scraper-suite pruning note below).
     if (false && /^https?:\/\//i.test(target) && /(^|\.)hentaihaven\./i.test(new URL(target).hostname)) {
-      // Pruned from the active suite in v1.0.37 — branch disabled.
+      // Pruned from the active suite in v1.0.1.0.47 — branch disabled.
     }
 
-    // Deprecated v1.0.37: Hentaimama's JS-rendered WP theme keeps rotating
+    // Deprecated v1.0.1.0.47: Hentaimama's JS-rendered WP theme keeps rotating
     // ad-hijacked .post-item overlays and its stealth DOM work was getting flaky;
     // the site is pruned from the active suite alongside hentaihaven/zhentube/
     // uncensored-hentai (see scraper-suite pruning note).
     if (false && /^https?:\/\//i.test(target) && /(^|\.)hentaimama\./i.test(new URL(target).hostname)) {
-      // Pruned from the active suite in v1.0.37 — branch disabled.
+      // Pruned from the active suite in v1.0.1.0.47 — branch disabled.
     }
 
     try {
@@ -6174,80 +6317,6 @@ ipcMain.handle('web:addVideos', async (event, { videos, tags }) => {
   }
 });
 
-// yt-dlp bulk scrape: extract video info from a list of URLs and persist
-ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
-  try {
-    const binaryAvailable = await ensureYtDlpBinary();
-    if (!binaryAvailable) {
-      return { success: false, error: 'yt-dlp binary is not available' };
-    }
-
-    const { db, error } = getDbSafe();
-    if (error) return { success: false, error: 'Database not available: ' + error };
-
-    let inserted = 0;
-    const errors = [];
-
-    for (const url of urls) {
-      try {
-        // Hanime must never reach yt-dlp.exe — route through the stealth
-        // resolver (v8 API + offscreen .m3u8 sniff) like stream extraction.
-        if (/hanime\.tv/i.test(url)) {
-          const h = await resolveHanimeStream(url);
-          await db.bulkInsertVideos([{
-            id: h.id || `hanime-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-            title: h.title || 'Hanime video',
-            videoUrl: h.m3u8 || url,
-            thumbnailUrl: h.thumbnailUrl || '',
-            duration: h.duration || 0,
-            category: 'Hanime',
-            sourceSite: 'hanime.tv',
-            scrapedAt: new Date().toISOString(),
-            isScraped: true
-          }]);
-          inserted++;
-          continue;
-        }
-        const rawJson = await ytDlp.execPromise(withYtDlpArgs([
-          url, '--dump-json', '-f', 'b',
-          '--extractor-args', 'generic:impersonate'
-        ]));
-        const info = JSON.parse(rawJson);
-        const formats = info.formats || [];
-        const videoFormats = formats.filter(f => f.vcodec && f.vcodec !== 'none' && f.url);
-        const bestVideo = videoFormats.sort((a, b) => {
-          const aRes = (a.height || 0) * (a.width || 0);
-          const bRes = (b.height || 0) * (b.width || 0);
-          return bRes !== aRes ? bRes - aRes : (b.tbr || 0) - (a.tbr || 0);
-        })[0];
-
-        const streamUrl = bestVideo?.url || info.url;
-        if (!streamUrl) { errors.push({ url, error: 'No stream found' }); continue; }
-
-        await db.bulkInsertVideos([{
-          id: info.id || `yt-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-          title: info.title || 'Unknown',
-          videoUrl: streamUrl,
-          thumbnailUrl: info.thumbnail || info.thumbnails?.[0]?.url || '',
-          duration: info.duration || 0,
-          category: info.categories?.[0] || 'Video',
-          sourceSite: sourceSite || info.extractor || getDomain(info.webpage_url || url),
-          scrapedAt: new Date().toISOString(),
-          isScraped: true
-        }]);
-        inserted++;
-      } catch (err) {
-        console.warn(`[yt-dlp bulk] Failed for ${url}:`, err.message);
-        errors.push({ url, error: err.message });
-      }
-    }
-
-    return { success: true, inserted, errors: errors.length > 0 ? errors : undefined };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-});
-
 
   // Initialize database FIRST, then create window
   app.whenReady().then(async () => {
@@ -6260,7 +6329,7 @@ ipcMain.handle('scrapers:ytDlpBulk', async (event, { urls, sourceSite }) => {
     
     isReady = true;
 
-    // v1.0.38: silent background scraper sync. Runs once on startup, then on a
+    // v1.0.1.0.47: silent background scraper sync. Runs once on startup, then on a
     // 12h timer, so curated libraries refresh without a manual header button.
     const silentScraperSync = async () => {
       try {

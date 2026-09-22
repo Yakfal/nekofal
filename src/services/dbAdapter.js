@@ -274,6 +274,7 @@ export async function syncNow() {
     await syncFavorites(api, report);
     await syncPlaylists(api, report);
     await syncIptv(api, report);
+    await syncPreferences(api, report);
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('scrapers-synced'));
     return { success: true, ...report, at: new Date().toISOString() };
   } catch (err) {
@@ -539,6 +540,64 @@ async function syncIptv(api, report) {
     } catch (err) {
       report.errors.push(`iptv.pulled: ${err.message}`);
     }
+  }
+}
+
+/** Core user preferences mirrored into the account (theme/family-mode etc.).
+ *  The remote row is a single user_preferences record holding a JSON blob.
+ *  Push (local newer) wins when the row exists but its `prefs` are empty,
+ *  which covers the first-login case where the shell has local defaults. */
+async function syncPreferences(api, report) {
+  const myId = state.user && state.user.id;
+  if (!myId) return;
+  let rows = [];
+  try {
+    rows = await pbList('user_preferences', `(user="${myId}")`);
+  } catch (err) {
+    report.errors.push(`preferences.listen: ${err.message}`);
+    return;
+  }
+  if (rows.length === 0) return; // nothing remote; local-only prefs stay untouched
+  const row = rows[0];
+  let remotePrefs = {};
+  try { remotePrefs = typeof row.prefs === 'string' ? JSON.parse(row.prefs || '{}') : (row.prefs || {}); }
+  catch { /* malformed blob -> treated as empty */ }
+  try {
+    const localPrefs = getStoredPrefs();
+    if (remotePrefs && typeof remotePrefs === 'object' && Object.keys(remotePrefs).length > 0) {
+      // Remote wins so an account carries its settings across devices.
+      applyStoredPrefs(remotePrefs);
+      report.pulled++;
+    } else if (localPrefs && Object.keys(localPrefs).length > 0) {
+      await pb(`/api/collections/user_preferences/records/${row.id}`, {
+        method: 'PATCH',
+        body: { prefs: localPrefs },
+      });
+      report.pushed++;
+    }
+  } catch (err) {
+    report.errors.push(`preferences.sync: ${err.message}`);
+  }
+}
+
+const PREFS_STORAGE_KEY = 'yakfal-hub-preferences';
+
+/** Raw preference object persisted by AppSettingsContext (localStorage). */
+export function getStoredPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Overwrite the local preference blob (used when a remote account row wins). */
+export function applyStoredPrefs(prefs) {
+  try {
+    localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs || {}));
+  } catch (err) {
+    console.error('[Cloud] failed to write prefs:', err);
   }
 }
 

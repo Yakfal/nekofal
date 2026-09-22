@@ -268,6 +268,11 @@ const ja = {
   'adult.byAutoFilling': '検索フォームを自動入力して検索…',
   'adult.searchingVia': '経由で検索',
   'adult.noTemplate': '検索テンプレートなし — サイト独自の検索フォームを使用',
+  'adult.universalLabel': 'ユニバーサル検索',
+  'adult.universalAll': 'すべてのサイト',
+  'adult.universalHint': '追加済みのすべてのサイトを一度に検索して結果を統合',
+  'adult.safeOnly': 'セーフ',
+  'adult.allSources': 'すべてのソース',
 
   // ライブTV / IPTV
   'liveTv.noPlaylistsYet': 'プレイリストはまだありません — 下から最初のM3U/M3U8を追加してください。',

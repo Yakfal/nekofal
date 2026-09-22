@@ -268,6 +268,11 @@ const de = {
   'adult.byAutoFilling': 'durch automatisches Ausfüllen seines Suchformulars…',
   'adult.searchingVia': 'Suche über',
   'adult.noTemplate': 'Keine Suchvorlage — steuert das eigene Suchformular der Site',
+  'adult.universalLabel': 'Universalsuche',
+  'adult.universalAll': 'Alle Seiten',
+  'adult.universalHint': 'Durchsuche alle hinzugefügten Seiten gleichzeitig und führe die Ergebnisse zusammen',
+  'adult.safeOnly': 'Sicher',
+  'adult.allSources': 'Alle Quellen',
 
   // Live-TV / IPTV
   'liveTv.noPlaylistsYet': 'Noch keine Wiedergabelisten — füge unten deine erste M3U/M3U8 hinzu.',

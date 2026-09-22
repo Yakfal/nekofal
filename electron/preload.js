@@ -3,19 +3,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 // SECURITY: Only expose necessary IPC channels via contextBridge
 const api = {
   
-  // App initialization
-  initialize: () => ipcRenderer.invoke('app:initialize'),
-
   // Video proxy server info (actual port/base URL — port may be dynamic)
   getVideoServerInfo: () => ipcRenderer.invoke('video:getServerInfo'),
 
-  // Backend/scraping operations
-  listBackends: () => ipcRenderer.invoke('backends:list'),
-  executeScraper: (backendName, url) => 
-    ipcRenderer.invoke('backends:execute', { backendName, url }),
-  
-  // Direct scraper execution (for main.js default scraper)
-  executeDefaultScraper: () => ipcRenderer.invoke('scraper:execute'),
+  // App version from package.json (single source of truth for footer labels)
+  getVersion: () => ipcRenderer.invoke('app:getVersion'),
 
   // Scraper: Run all configured scrapers and store in database
   runScrapers: (urls) => ipcRenderer.invoke('scrapers:run', urls || []),
@@ -34,21 +26,12 @@ const api = {
 
   // Database operations for videos (scraped content)
   getVideos: (limit, offset) => ipcRenderer.invoke('db:getVideos', limit, offset),
-  getVideosCount: () => ipcRenderer.invoke('db:getVideosCount'),
   getVideoCategories: () => ipcRenderer.invoke('db:getVideoCategories'),
   getVideosBySource: (sourceSite) => ipcRenderer.invoke('db:getVideosBySource', sourceSite),
 
   // Scraper operations
   getScrapers: () => ipcRenderer.invoke('db:getScrapers'),
   saveScrapers: (scrapers) => ipcRenderer.invoke('db:saveScrapers', scrapers),
-
-  // Import the user's real, Cloudflare-cleared hanime session cookies
-  // (cf_clearance / __cf_bm) — already solved once in their normal browser —
-  // into the app's shared default session. These ride the same partition-free
-  // defaultSession that both the stealth search window and the app's own
-  // search.htv-services.com POST use, so importing them once is exactly what
-  // lets a real keyword search clear the Turnstile wall.
-  importClearedSessionCookies: (cookieObjs) => ipcRenderer.invoke('hanime:importClearedSessionCookies', cookieObjs || []),
 
   // Database operations for favorites and history
   setFavorite: (videoData) => ipcRenderer.invoke('db:setFavorite', videoData),
@@ -80,10 +63,6 @@ const api = {
   // Database management
   clearAll: () => ipcRenderer.invoke('db:clearAll'),
 
-  // Configuration/settings operations
-  getSettings: () => ipcRenderer.invoke('config:getSettings'),
-  setSettings: (settings) => ipcRenderer.invoke('config:setSettings', settings),
-
   // IPTV / M3U playlist operations
   addIptvSource: (name, url) => ipcRenderer.invoke('iptv:addSource', { name, url }),
   getIptvSources: () => ipcRenderer.invoke('iptv:getSources'),
@@ -92,9 +71,6 @@ const api = {
   // IPTV pre-flight: probe which channel streams are actually reachable so
   // dead/geo-blocked channels can be filtered out of the channel list.
   probeIptvChannels: (channels) => ipcRenderer.invoke('iptv:probeChannels', { channels }),
-
-  // yt-dlp bulk extraction (for adult sites, etc.)
-  ytDlpBulk: (urls, sourceSite) => ipcRenderer.invoke('scrapers:ytDlpBulk', { urls, sourceSite }),
 
   // Video download
   downloadVideo: (video) => ipcRenderer.invoke('video:download', video || {}),
@@ -214,11 +190,7 @@ const api = {
     return () => {
       ipcRenderer.removeListener('app-error', subscription);
     };
-  },
-
-  // Platform info
-  platform: process.platform,
-  isDev: false
+  }
 };
 
 // Expose via contextBridge with 'api' namespace
@@ -230,16 +202,15 @@ contextBridge.exposeInMainWorld('electronAPI', api);
 // Verify all required methods are exposed (dev only)
 if (process.env.NODE_ENV === 'development') {
   const requiredMethods = [
-    'initialize', 'listBackends', 'executeScraper', 'executeDefaultScraper',
+    'getVideoServerInfo',
     'openMiniPlayer', 'closeMiniPlayer', 'restoreMiniPlayer', 'onMiniPayload',
     'onMainOpenFromMini', 'mediaActive', 'onRequestMini',
     'runScrapers', 'extractStream',
-    'getVideos', 'getVideosCount', 'getVideoCategories',
+    'getVideos', 'getVideoCategories',
     'setFavorite', 'getFavorites', 'removeFavorite',
     'toggleFavorite', 'checkIsFavorite',
     'setWatchHistory', 'getWatchHistory',
-    'clearAll', 'openDevTools',
-    'getSettings', 'setSettings'
+    'clearAll', 'openDevTools'
   ];
 
   for (const method of requiredMethods) {

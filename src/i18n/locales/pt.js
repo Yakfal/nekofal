@@ -268,6 +268,11 @@ const pt = {
   'adult.byAutoFilling': 'auto-preenchendo o formulário de busca dele…',
   'adult.searchingVia': 'Pesquisando via',
   'adult.noTemplate': 'Sem modelo de busca — dirigindo o formulário de busca do site',
+  'adult.universalLabel': 'Pesquisa universal',
+  'adult.universalAll': 'Todos os sites',
+  'adult.universalHint': 'Pesquise em todos os sites adicionados de uma vez e combine os resultados',
+  'adult.safeOnly': 'Seguro',
+  'adult.allSources': 'Todas as fontes',
 
   // TV ao vivo / IPTV
   'liveTv.noPlaylistsYet': 'Nenhuma playlist ainda — adicione sua primeira M3U/M3U8 abaixo.',
