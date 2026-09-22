@@ -4319,6 +4319,26 @@ function scarceHanimeJunkReason(obj) {
   return '';
 }
 
+// v1.0.5x: query-relevance gate. When a search yields zero real hits, hanime's
+// SPA renders its query-invariant default grid (trending/promo cards). Those
+// cards are well-formed videos (real slug, title, thumb, duration), so the
+// structural junk filter can't tell them from genuine results. A card may only
+// enter the result set if its title matches at least one token of the typed
+// query; otherwise it was almost certainly part of the default grid, not an
+// answer to the search.
+function hanimeQueryTokens(query) {
+  return String(query || '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .split(/\s+/)
+    .filter(t => t.length > 1);
+}
+
+function isHanimeCardRelevant(cardTitle, queryTokens) {
+  if (!Array.isArray(queryTokens) || queryTokens.length === 0) return true;
+  return queryTokens.some(token => String(cardTitle || '').toLowerCase().includes(token));
+}
+
 function parseHanimeSearchPayload(data, count = 25, extractor = 'hanime-v8') {
   const nestedHits = data && data.data && data.data.hits && (data.data.hits.hits || data.data.hits);
   const hits = Array.isArray(nestedHits)
@@ -4633,9 +4653,10 @@ async function hanimeStealthSearch(query, count = 25) {
     // PRIMARY (and query-exact): POST to hanime's own search service from the
     // page context — real cookies + fingerprint, results always match the
     // typed term, and it never depends on the SPA interpreting ?query=.
+    const queryTokens = hanimeQueryTokens(text);
     const htv = await hanimeHtvSearch(win, text);
     if (htv.ok) {
-      const parsed = parseHanimeSearchPayload(htv.json, count, 'hanime-htv-search');
+      const parsed = parseHanimeSearchPayload(htv.json, count, 'hanime-htv-search').filter(v => isHanimeCardRelevant(v.title, queryTokens));
       if (parsed.length > 0) return parsed;
     }
 
@@ -4663,7 +4684,7 @@ async function hanimeStealthSearch(query, count = 25) {
 
     // 2) Network payload path: parse the captured htv-services responses.
     for (const { url, json } of payloads) {
-      const parsed = parseHanimeSearchPayload(json, count, 'hanime-stealth-search');
+      const parsed = parseHanimeSearchPayload(json, count, 'hanime-stealth-search').filter(v => isHanimeCardRelevant(v.title, queryTokens));
       if (parsed.length > 0) {
         console.log(`[hanimeStealthSearch] captured ${parsed.length} hits from ${url}`);
         return parsed;
@@ -4686,6 +4707,15 @@ async function hanimeStealthSearch(query, count = 25) {
         if (reason) {
           hanimeSearchDiag.junkRejected = hanimeSearchDiag.junkRejected || {};
           hanimeSearchDiag.junkRejected[reason] = (hanimeSearchDiag.junkRejected[reason] || 0) + 1;
+          continue;
+        }
+        // v1.0.5x: query-relevance gate. hanime renders its query-invariant
+        // default grid (trending/promo cards) when a search has zero real hits;
+        // those cards are well-formed videos a structural filter can't flag. Skip
+        // any card whose title matches none of the typed query's tokens.
+        if (!isHanimeCardRelevant(String((e && (e.title || e.alt)) || ''), queryTokens)) {
+          hanimeSearchDiag.junkRejected = hanimeSearchDiag.junkRejected || {};
+          hanimeSearchDiag.junkRejected.irrelevant = (hanimeSearchDiag.junkRejected.irrelevant || 0) + 1;
           continue;
         }
         valid.push(e);
@@ -4712,6 +4742,15 @@ async function hanimeStealthSearch(query, count = 25) {
             extractor: 'hanime-stealth-search'
           };
         });
+      }
+      // v1.0.5x: the SPA is on a real search route but every rendered card was
+      // rejected as irrelevant — that is the query-invariant default grid (zero
+      // real hits). Returning [] is the correct answer; polling 15x for cards
+      // that will never match just delays the (empty) result.
+      if (isResultsRoute && out.length > 0 && valid.length === 0) {
+        hanimeSearchDiag.domExhausted = true;
+        hanimeSearchDiag.zeroRelevantOnResultsRoute = true;
+        return [];
       }
       await sleep(700);
     }
