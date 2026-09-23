@@ -28,6 +28,32 @@ const FALLBACK_SHELVES = [
   { key: 'news', query: 'live news', accent: '#ef4444', titleKey: 'home.fallbackNewsTitle' }
 ];
 
+// (v1.0.53) Premium brand priority for the Home Live TV feed. Channels whose
+// names contain a recognized global brand surface first on the Home screen
+// (featured LIVE pill + strip), in the priority order listed here — higher
+// brands win over lower ones. Regional/numeric channels sink to the bottom.
+const FAMOUS_BRANDS = [
+  'hbo', 'disney', 'telemundo', 'nickelodeon', 'nick', 'cartoon network',
+  'discovery', 'animal planet', 'cnn', 'bbc', 'espn', 'fox', 'mtv',
+  'univision', 'paramount', 'national geographic', 'nat geo', 'history'
+];
+
+const channelName = (ch) => String((ch && (ch.videoTitle || ch.title)) || '').toLowerCase();
+
+// Index of the first FAMOUS_BRANDS entry matched by the channel name, or -1
+// when the channel is not a recognized brand.
+const brandRank = (ch) => {
+  const name = channelName(ch);
+  for (let i = 0; i < FAMOUS_BRANDS.length; i++) {
+    if (name.includes(FAMOUS_BRANDS[i])) return i;
+  }
+  return -1;
+};
+
+// Obscure regional/numeric channels (e.g. "101tv Cadiz", "10 Bold") start with
+// digits; they should not crowd out recognized brands or plain-named channels.
+const isRegionalNumeric = (ch) => /^\s*\d/i.test(channelName(ch).trim());
+
 const historyToCard = (h) => ({
   id: h.id,
   videoTitle: h.title || h.videoTitle || 'Untitled',
@@ -344,12 +370,25 @@ const Discover = () => {
   // Spotlight = top trending item, else the first curated fallback stream.
   const spotlight = visibleTrending[0] || visibleFallbackPopular[0] || null;
 
-  // Live TV spotlight ordering: most recently watched channel first so the big
-  // LIVE pill always points at the thing you were just watching.
-  const liveTvSorted = useMemo(
-    () => [...filterFamily(iptvChannels)].sort((a, b) => (b.lastPosition || 0) - (a.lastPosition || 0)),
-    [iptvChannels, filterFamily]
-  );
+  // Live TV spotlight ordering (v1.0.53): recognized global brands (Disney,
+  // HBO, ESPN, CNN, ...) are prioritized first so the big LIVE pill and the
+  // strip lead with premium channels instead of obscure regional/numeric ones.
+  // Within equal priority, the most recently watched channel comes first.
+  const liveTvSorted = useMemo(() => {
+    const channels = filterFamily(iptvChannels);
+    const rankOf = (ch) => {
+      const r = brandRank(ch);
+      return r < 0 ? Number.MAX_SAFE_INTEGER : r;
+    };
+    return [...channels]
+      .map((ch) => ({ ch, brand: rankOf(ch), numeric: isRegionalNumeric(ch) ? 1 : 0 }))
+      .sort((a, b) => {
+        if (a.brand !== b.brand) return a.brand - b.brand;
+        if (a.numeric !== b.numeric) return a.numeric - b.numeric;
+        return (b.ch.lastPosition || 0) - (a.ch.lastPosition || 0);
+      })
+      .map((x) => x.ch);
+  }, [iptvChannels, filterFamily]);
 
   // "Recommended For You" (v1.0.36): rank watch history + favorites against the
   // genre/artist/tag media weights, so continuing playback feeds the shelf with
