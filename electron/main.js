@@ -3806,6 +3806,126 @@ ipcMain.handle('iptv:probeChannels', async (event, { channels }) => {
   }
 });
 
+// IPTV stream availability probe with persistent caching (v1.0.54). Unlike
+// iptv:probeChannels (which forgets results immediately), this handler writes
+// each probe outcome to the videos table (is_online + last_checked) and skips
+// channels that were checked less than 24 hours ago, so repeated Home feed
+// refreshes never hammer the stream hosts. Accepts an array of channel ids,
+// stream URLs, or { id, videoUrl } objects.
+ipcMain.handle('iptv:validate-streams', async (event, { channels }) => {
+  try {
+    const { db, error } = getDbSafe();
+    if (error) return { success: false, error: 'Database not available: ' + error };
+
+    const CACHE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+    const raw = Array.isArray(channels) ? channels : [];
+    const seen = new Set();
+    const entries = [];
+    for (const ch of raw) {
+      if (typeof ch === 'string') {
+        if (/^https?:\/\//i.test(ch) && !seen.has(ch)) {
+          seen.add(ch);
+          entries.push({ id: null, url: ch });
+        } else if (!/^https?:\/\//i.test(ch)) {
+          // A bare string that isn't a URL is treated as a channel id
+          entries.push({ id: ch, url: null });
+        }
+        continue;
+      }
+      const id = (ch && (ch.id || ch.videoId)) ? String(ch.id || ch.videoId) : null;
+      const url = (ch && (ch.videoUrl || ch.url)) || '';
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        entries.push({ id, url });
+      }
+    }
+    if (entries.length === 0) return { success: true, results: [] };
+
+    // Load cached availability for known ids (also resolves id-only entries to URLs)
+    const idEntries = entries.filter((e) => e.id);
+    const cache = await db.getVideoAvailabilityByIds(idEntries.map((e) => e.id));
+
+    const now = Date.now();
+    const toProbe = [];
+    const output = [];
+    for (const e of entries) {
+      if (!e.url) {
+        const rec = cache.get(e.id);
+        if (rec && rec.videoUrl) e.url = rec.videoUrl;
+      }
+      if (!e.url) {
+        output.push({ id: e.id, url: '', online: false, status: 0, skipped: true, reason: 'no-stream-url' });
+        continue;
+      }
+      const rec = e.id ? cache.get(e.id) : null;
+      if (rec && rec.lastChecked && now - rec.lastChecked < CACHE_WINDOW_MS) {
+        output.push({ id: e.id, url: e.url, online: rec.isOnline, status: rec.isOnline ? 200 : 0, cached: true, lastChecked: rec.lastChecked });
+        continue;
+      }
+      toProbe.push(e);
+    }
+
+    if (toProbe.length > 0) {
+      const baseUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+      const probeOne = async (entry) => {
+        const t0 = Date.now();
+        const headers = { 'User-Agent': baseUA };
+        let origin = '';
+        try { origin = new URL(entry.url).origin + '/'; } catch (_e) {}
+        if (origin) headers.Referer = origin;
+        for (const method of ['head', 'get']) {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 3000);
+          try {
+            const res = await fetch(entry.url, {
+              method,
+              headers: method === 'get' ? { ...headers, Range: 'bytes=0-4095' } : headers,
+              redirect: 'follow',
+              signal: controller.signal
+            });
+            const ok = res.status === 200 || res.status === 206 || res.status === 302;
+            return { id: entry.id, url: entry.url, online: ok, status: res.status, ms: Date.now() - t0 };
+          } catch (err) {
+            if (method === 'head') continue;
+            const status = 0;
+            return { id: entry.id, url: entry.url, online: false, status, ms: Date.now() - t0 };
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        return { id: entry.id, url: entry.url, online: false, status: 0, ms: Date.now() - t0 };
+      };
+
+      // Bounded concurrency pool (12 at a time), matching iptv:probeChannels.
+      const results = new Array(toProbe.length);
+      const CONCURRENCY = 12;
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toProbe.length) }, async () => {
+        while (next < toProbe.length) {
+          const i = next++;
+          results[i] = await probeOne(toProbe[i]);
+        }
+      }));
+
+      // Persist fresh probe results (only for entries that were probed)
+      const updates = results.filter((r) => r.id).map((r) => ({ id: r.id, isOnline: r.online, lastChecked: Date.now() }));
+      if (updates.length > 0) {
+        await db.updateVideoAvailability(updates);
+      }
+      output.push(...results);
+
+      const alive = results.filter(r => r.online).length;
+      console.log(`[iptv:validate] ${alive}/${results.length} fresh probes; ${output.length - results.length} cached`);
+    }
+
+    return { success: true, results: output };
+  } catch (err) {
+    console.error('[iptv:validate] failed:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Web search: find/aggregate videos from anywhere (YouTube search, or any
 // URL/category/search page) using yt-dlp flat-playlist enumeration, with a

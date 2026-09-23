@@ -79,7 +79,9 @@ async function initializeDatabase() {
         isScraped INTEGER DEFAULT 1,
         httpHeaders TEXT,
         lastPosition INTEGER DEFAULT 0,
-        isAdult INTEGER DEFAULT 0
+        isAdult INTEGER DEFAULT 0,
+        is_online INTEGER DEFAULT 1,
+        last_checked INTEGER DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS downloads (
@@ -204,6 +206,21 @@ async function initializeDatabase() {
       db.run(`ALTER TABLE videos ADD COLUMN isAdult INTEGER DEFAULT 0;`);
     } catch (migrationErr) {
       console.log('[DB] isAdult column migration skipped:', migrationErr.message);
+    }
+
+    // Migration: Stream availability probe columns. is_online caches whether
+    // an IPTV channel's stream URL is currently reachable (1 = online, 0 =
+    // dead); last_checked stores the epoch-ms of the last probe so the 24-hour
+    // validation window can skip channels that were just checked.
+    try {
+      db.run(`ALTER TABLE videos ADD COLUMN is_online INTEGER DEFAULT 1;`);
+    } catch (migrationErr) {
+      console.log('[DB] is_online column migration skipped:', migrationErr.message);
+    }
+    try {
+      db.run(`ALTER TABLE videos ADD COLUMN last_checked INTEGER DEFAULT 0;`);
+    } catch (migrationErr) {
+      console.log('[DB] last_checked column migration skipped:', migrationErr.message);
     }
 
     // Migration: Add 'isAdult' to favorites for family-mode filtering
@@ -1023,7 +1040,8 @@ async function getVideosBySource(sourceSite, limit = 20000) {
   try {
     const stmt = db.prepare(`
       SELECT id, title, videoUrl, thumbnailUrl, duration, category, sourceSite, type,
-             externalId, description, scrapedAt, httpHeaders, lastPosition, isAdult
+             externalId, description, scrapedAt, httpHeaders, lastPosition, isAdult,
+             is_online, last_checked
       FROM videos
       WHERE sourceSite = ?
       ORDER BY title ASC
@@ -1036,6 +1054,65 @@ async function getVideosBySource(sourceSite, limit = 20000) {
     return results;
   } catch (error) {
     console.error('Failed to get videos by source:', error);
+    throw error;
+  }
+}
+
+/**
+ * Read the cached availability probe state (is_online + last_checked in
+ * epoch-ms) for a set of channel ids. Returned as a Map keyed by id so the
+ * stream-availability IPC can skip channels probed within the 24h window.
+ */
+async function getVideoAvailabilityByIds(ids) {
+  const init = await initializeDatabase();
+  if (!init.success) throw new Error(init.error);
+  try {
+    const safe = Array.from(new Set((ids || []).map(String).filter(Boolean)));
+    const map = new Map();
+    if (safe.length === 0) return map;
+    const stmt = db.prepare(`
+      SELECT id, videoUrl, is_online, last_checked FROM videos WHERE id IN (${safe.map(() => '?').join(',')})
+    `);
+    stmt.bind(safe);
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      map.set(String(row.id), {
+        videoUrl: row.videoUrl || '',
+        isOnline: Number(row.is_online) === 1,
+        lastChecked: Number(row.last_checked) || 0
+      });
+    }
+    stmt.free();
+    return map;
+  } catch (error) {
+    console.error('Failed to get video availability:', error);
+    throw error;
+  }
+}
+
+/**
+ * Persist stream availability probe results. Each entry updates the channel's
+ * is_online flag and stamps last_checked with the given epoch-ms (defaults to
+ * now) so the 24h validation window starts from a known point.
+ */
+async function updateVideoAvailability(entries) {
+  const init = await initializeDatabase();
+  if (!init.success) throw new Error(init.error);
+  try {
+    const list = Array.isArray(entries) ? entries.filter((e) => e && e.id) : [];
+    if (list.length === 0) return { success: true, updated: 0 };
+    const now = Date.now();
+    const stmt = db.prepare(
+      `UPDATE videos SET is_online = ?, last_checked = ? WHERE id = ?`
+    );
+    for (const e of list) {
+      stmt.run([e.isOnline ? 1 : 0, Number(e.lastChecked) || now, String(e.id)]);
+    }
+    stmt.free();
+    saveDatabase();
+    return { success: true, updated: list.length };
+  } catch (error) {
+    console.error('Failed to update video availability:', error);
     throw error;
   }
 }
@@ -1432,6 +1509,8 @@ module.exports = {
   getVideoCategories,
   setVideo,
   bulkInsertVideos,
+  getVideoAvailabilityByIds,
+  updateVideoAvailability,
   clearVideos,
   deleteVideo,
   // Playlists

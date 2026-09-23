@@ -72,6 +72,11 @@ const api = {
   // dead/geo-blocked channels can be filtered out of the channel list.
   probeIptvChannels: (channels) => ipcRenderer.invoke('iptv:probeChannels', { channels }),
 
+  // IPTV stream availability validator with persistent caching (v1.0.54).
+  // Mirrors probeIptvChannels but stores results in the videos table
+  // (is_online + last_checked) so repeat checks within 24h are served from cache.
+  validateIptvStreams: (channels) => ipcRenderer.invoke('iptv:validate-streams', { channels }),
+
   // Video download
   downloadVideo: (video) => ipcRenderer.invoke('video:download', video || {}),
   getDownloads: () => ipcRenderer.invoke('downloads:getState'),

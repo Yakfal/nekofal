@@ -54,6 +54,39 @@ const brandRank = (ch) => {
 // digits; they should not crowd out recognized brands or plain-named channels.
 const isRegionalNumeric = (ch) => /^\s*\d/i.test(channelName(ch).trim());
 
+// (v1.0.54) Language-aware Home feed. Given the active app language, return the
+// keywords that flag a channel as being in that language (include) and the
+// keywords that flag it as a regional/cross-language channel to reject.
+// English: broad positive set (en/eng/english/us/uk/ca); reject obvious
+// non-English region codes. Spanish: native key + Latin-American country codes.
+const getLocaleLangKeys = (appLang) => {
+  let lang;
+  try { lang = String(appLang || 'en').toLowerCase().split('-')[0]; } catch { lang = 'en'; }
+  if (lang === 'es') {
+    return { include: ['es', 'spa', 'spanish', 'mx', 'ar', 'co', 'cl', 'español'], exclude: [] };
+  }
+  if (lang === 'en') {
+    return {
+      include: ['en', 'eng', 'english', 'us', 'uk', 'ca'],
+      exclude: ['bg', 'in', 'ru', 'ar', 'ro', 'gr', 'cl', 'bulgaria', 'india']
+    };
+  }
+  return { include: [lang], exclude: [] };
+};
+
+// Does the channel read as being in the current app language? Long keys (e.g.
+// "english", "español") match by prefix; short country keys (en/us/uk/ca/es/mx
+// ...) match as whole words so "ca" doesn't grab every "canal/cadiz" channel.
+const langMatches = (ch, langKeys) => {
+  const words = (channelName(ch).match(/[\p{L}]+/gu) || []);
+  const hits = (keys) => keys.some((k) =>
+    k.length >= 3
+      ? words.some((w) => w.startsWith(k))
+      : words.includes(k)
+  );
+  return hits(langKeys.include) && !hits(langKeys.exclude);
+};
+
 const historyToCard = (h) => ({
   id: h.id,
   videoTitle: h.title || h.videoTitle || 'Untitled',
@@ -81,7 +114,9 @@ const toIptvCard = (item) => ({
   type: 'Web TV',
   httpHeaders: item.httpHeaders,
   lastPosition: item.lastPosition || 0,
-  isAdult: item.isAdult || 0
+  isAdult: item.isAdult || 0,
+  isOnline: item.is_online !== undefined ? (Number(item.is_online) === 1) : true,
+  lastChecked: item.last_checked || 0
 });
 
 const favToCard = (f) => ({
@@ -222,7 +257,7 @@ const Discover = () => {
   const navigate = useNavigate();
   const { playVideo } = usePlayback();
   const { settings } = useAppSettings();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const familyMode = settings.familyMode;
 
   const [trending, setTrending] = useState([]);
@@ -232,6 +267,7 @@ const Discover = () => {
   const [fallbacks, setFallbacks] = useState({ popular: [], news: [] });
   const [fallbacksLoading, setFallbacksLoading] = useState(false);
   const [iptvChannels, setIptvChannels] = useState([]);
+  const [iptvStatus, setIptvStatus] = useState({});
   const [favorites, setFavorites] = useState([]);
   const [weights, setWeights] = useState({ genre: [], artist: [], tag: [] });
   const [recLoading, setRecLoading] = useState(true);
@@ -294,7 +330,33 @@ const Discover = () => {
       try {
         const res = await api.getVideosBySource('IPTV');
         if (alive && res?.success && Array.isArray(res.data)) {
-          setIptvChannels(res.data.map(toIptvCard).filter((v) => v.videoUrl));
+          const cards = res.data.map(toIptvCard).filter((v) => v.videoUrl);
+          setIptvChannels(cards);
+          // v1.0.54 stream availability sweep: probe the top branded/recent
+          // channels in the background (main caches results for 24h) and mark
+          // dead streams so the Home feed can steer clear of them.
+          if (alive && api?.validateIptvStreams && cards.length > 0) {
+            const brandedFirst = [...cards].sort((a, b) => {
+              const ra = brandRank(a) < 0 ? Number.MAX_SAFE_INTEGER : brandRank(a);
+              const rb = brandRank(b) < 0 ? Number.MAX_SAFE_INTEGER : brandRank(b);
+              if (ra !== rb) return ra - rb;
+              return (b.lastPosition || 0) - (a.lastPosition || 0);
+            });
+            api.validateIptvStreams(brandedFirst.slice(0, 24).map((c) => ({ id: c.id, videoUrl: c.videoUrl })))
+              .then((vr) => {
+                if (!alive || !vr?.success || !Array.isArray(vr.results)) return;
+                setIptvStatus((prev) => {
+                  const next = { ...prev };
+                  for (const r of vr.results) {
+                    if (!r || typeof r.online !== 'boolean') continue;
+                    if (r.id) next[r.id] = r.online;
+                    if (r.url) next[r.url] = r.online;
+                  }
+                  return next;
+                });
+              })
+              .catch((err) => console.warn('[Home] IPTV availability sweep failed:', err.message));
+          }
         }
       } catch (err) {
         console.warn('[Home] IPTV channels load failed:', err.message);
@@ -370,25 +432,41 @@ const Discover = () => {
   // Spotlight = top trending item, else the first curated fallback stream.
   const spotlight = visibleTrending[0] || visibleFallbackPopular[0] || null;
 
-  // Live TV spotlight ordering (v1.0.53): recognized global brands (Disney,
-  // HBO, ESPN, CNN, ...) are prioritized first so the big LIVE pill and the
-  // strip lead with premium channels instead of obscure regional/numeric ones.
-  // Within equal priority, the most recently watched channel comes first.
+  // Live TV spotlight ordering (v1.0.54): dead streams (is_online=0, from the
+  // availability sweep above or the cached DB flag) are dropped entirely, then
+  // channels matching the active app language are prioritized, and within that
+  // the FAMOUS_BRANDS ranking still leads. When fewer than 10 famous brands
+  // match the app language, the feed falls back to the broader language-matched
+  // list so the spotlight never goes empty. Winning ties break on most recent.
   const liveTvSorted = useMemo(() => {
-    const channels = filterFamily(iptvChannels);
+    const langKeys = getLocaleLangKeys(language);
+    const online = (ch) => {
+      if (iptvStatus[ch.id] !== undefined) return iptvStatus[ch.id];
+      if (iptvStatus[ch.videoUrl] !== undefined) return iptvStatus[ch.videoUrl];
+      return ch.isOnline !== false;
+    };
+    const channels = filterFamily(iptvChannels).filter(online);
+    const match = (ch) => langMatches(ch, langKeys);
+    const inLang = channels.filter(match);
+    const brandInLang = inLang.filter((ch) => brandRank(ch) >= 0).length;
+    // With enough famous brands in the app language the feed stays themed to
+    // that language; when fewer than 10 brands match it falls back to the full
+    // online pool so neutral global channels (e.g. "HBO 2") never vanish.
+    const pool = brandInLang >= 10 ? inLang : channels;
     const rankOf = (ch) => {
       const r = brandRank(ch);
       return r < 0 ? Number.MAX_SAFE_INTEGER : r;
     };
-    return [...channels]
-      .map((ch) => ({ ch, brand: rankOf(ch), numeric: isRegionalNumeric(ch) ? 1 : 0 }))
+    return [...pool]
+      .map((ch) => ({ ch, lang: match(ch) ? 0 : 1, brand: rankOf(ch), numeric: isRegionalNumeric(ch) ? 1 : 0 }))
       .sort((a, b) => {
+        if (a.lang !== b.lang) return a.lang - b.lang;
         if (a.brand !== b.brand) return a.brand - b.brand;
         if (a.numeric !== b.numeric) return a.numeric - b.numeric;
         return (b.ch.lastPosition || 0) - (a.ch.lastPosition || 0);
       })
       .map((x) => x.ch);
-  }, [iptvChannels, filterFamily]);
+  }, [iptvChannels, filterFamily, language, iptvStatus]);
 
   // "Recommended For You" (v1.0.36): rank watch history + favorites against the
   // genre/artist/tag media weights, so continuing playback feeds the shelf with
