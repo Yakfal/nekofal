@@ -17,7 +17,7 @@ const ru = {
   'page.library.title': 'Медиатека',
   'page.favorites.title': 'Ваше избранное',
   'page.home.subtitle': 'Ищите в сети как на YouTube — или сразу переходите к чему-то популярному.',
-  'page.liveChannels.subtitle': 'Импортируйте любой M3U-плейлист — каждый канал автоматически сохраняется и сортируется по категориям.',
+  'page.liveChannels.subtitle': 'Смотрите подобранные каналы прямого ТВ, организованные по категории и языку.',
 
   // Общие действия
   'common.search': 'Поиск',
@@ -80,9 +80,9 @@ const ru = {
   'settings.syncNow': 'Синхронизировать сейчас',
   'settings.syncing': 'Синхронизация…',
   'settings.serverUrl': 'URL сервера',
-  'settings.serverUrlPlaceholder': 'http://132.145.159.2:8090',
+  'settings.serverUrlPlaceholder': 'https://your-pocketbase-server.com',
   'settings.test': 'Проверить',
-  'settings.serverUrlHint': 'Ваш сервер PocketBase (см. deploy/ — docker compose на 132.145.159.2). Схема создаётся скриптом развёртывания.',
+  'settings.serverUrlHint': 'Ваш сервер PocketBase (см. deploy/ — docker compose). Схема создаётся скриптом развёртывания.',
   'settings.usernameOptional': 'Имя пользователя (необязательно)',
   'settings.usernamePlaceholder': 'напр. myhub',
   'settings.email': 'Эл. почта',

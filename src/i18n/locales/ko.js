@@ -17,7 +17,7 @@ const ko = {
   'page.library.title': '미디어 라이브러리',
   'page.favorites.title': '즐겨찾기',
   'page.home.subtitle': 'YouTube처럼 웹을 검색하세요 — 또는 바로 인기 콘텐츠로 들어가세요.',
-  'page.liveChannels.subtitle': '모든 M3U 재생목록을 가져오세요 — 모든 채널이 자동으로 저장되고 카테고리별로 정리됩니다.',
+  'page.liveChannels.subtitle': '카테고리와 언어별로 정리된 엄선된 라이브 TV 채널을 시청하세요.',
 
   // 공통 작업
   'common.search': '검색',
@@ -80,9 +80,9 @@ const ko = {
   'settings.syncNow': '지금 동기화',
   'settings.syncing': '동기화 중…',
   'settings.serverUrl': '서버 URL',
-  'settings.serverUrlPlaceholder': 'http://132.145.159.2:8090',
+  'settings.serverUrlPlaceholder': 'https://your-pocketbase-server.com',
   'settings.test': '테스트',
-  'settings.serverUrlHint': 'PocketBase 서버( deploy/ 참조 — 132.145.159.2의 docker compose). 스키마는 배포 스크립트가 생성합니다.',
+  'settings.serverUrlHint': 'PocketBase 서버( deploy/ 참조 — docker compose). 스키마는 배포 스크립트가 생성합니다.',
   'settings.usernameOptional': '사용자 이름(선택 사항)',
   'settings.usernamePlaceholder': '예: myhub',
   'settings.email': '이메일',

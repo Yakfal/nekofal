@@ -48,6 +48,7 @@ const AppLayout = () => {
   const menuRef = useRef(null);
   const [updateToast, setUpdateToast] = useState(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
+  const [scrollFabUp, setScrollFabUp] = useState(false);
 
   // Keep the last "real" tab in mind so transient routes (`/video/...`, the
   // legacy player URL) show the tab the user was on instead of a blank page.
@@ -112,9 +113,10 @@ const AppLayout = () => {
 
   const toggleSidebar = () => setIsSidebarCollapsed(!isSidebarCollapsed);
 
-  // Show the scroll-down affordance only when the ACTIVE view actually
-  // overflows, and hide it once the user reaches the bottom. Each keep-alive
-  // view is its own scroll container, so this re-attaches on tab switch.
+  // Single smart scroll FAB. It appears only when the ACTIVE view actually
+  // overflows, and toggles direction based on scroll position: ↓ near the top
+  // (scroll down), ↑ once scrolled down (return to top). Each keep-alive view
+  // is its own scroll container, so this re-attaches on tab switch.
   useEffect(() => {
     const el = activeViewRef.current;
     if (!el) return undefined;
@@ -123,7 +125,9 @@ const AppLayout = () => {
       frame = 0;
       const overflow = el.scrollHeight - el.clientHeight;
       const nearBottom = el.scrollTop >= overflow - 140;
-      setShowScrollFab(overflow > 160 && !nearBottom);
+      const atTop = el.scrollTop <= 120;
+      setShowScrollFab(overflow > 160 && (atTop || !nearBottom));
+      setScrollFabUp(!atTop);
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
     update();
@@ -142,10 +146,14 @@ const AppLayout = () => {
     };
   }, [activeView]);
 
-  const scrollToLowerContent = () => {
+  const handleScrollFabClick = () => {
     const el = activeViewRef.current;
     if (!el) return;
-    el.scrollBy({ top: Math.max(el.clientHeight * 0.85, 320), behavior: 'smooth' });
+    if (scrollFabUp) {
+      el.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      el.scrollBy({ top: Math.max(el.clientHeight * 0.85, 320), behavior: 'smooth' });
+    }
   };
 
   const sidebarWidth = isSidebarCollapsed ? '72px' : '240px';
@@ -183,16 +191,17 @@ const AppLayout = () => {
         <DownloadManager />
       </div>
 
-      {/* Scroll-down FAB — appears only when the active page overflows */}
+      {/* Smart scroll FAB — appears only when the active page overflows; ↓ near
+          the top, ↑ once scrolled down. */}
       {showScrollFab && (
         <button
           type="button"
           className="scroll-fab"
-          onClick={scrollToLowerContent}
-          title="Scroll down for more"
-          aria-label="Scroll down for more content"
+          onClick={handleScrollFabClick}
+          title={scrollFabUp ? 'Scroll to top' : 'Scroll down for more'}
+          aria-label={scrollFabUp ? 'Scroll to top' : 'Scroll down for more content'}
         >
-          ↓
+          {scrollFabUp ? '↑' : '↓'}
         </button>
       )}
 

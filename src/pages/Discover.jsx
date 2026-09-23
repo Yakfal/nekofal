@@ -96,7 +96,7 @@ const LiveTvSpotlight = ({ channels, onPlay, onOpenAll }) => {
       </div>
 
       {featured && (
-        <button type="button" className="home-tv-featured" onClick={() => onPlay(featured)}>
+        <button type="button" className="home-tv-featured" onClick={() => onPlay(featured)} title={featured.videoTitle}>
           <span className="home-tv-live-pill">● LIVE</span>
           <span className="home-tv-featured-name" title={featured.videoTitle}>
             {featured.videoTitle}
@@ -116,7 +116,7 @@ const LiveTvSpotlight = ({ channels, onPlay, onOpenAll }) => {
       {strip.length > 0 && (
         <div className="home-tv-strip">
           {strip.map((ch) => (
-            <button key={ch.id} type="button" className="home-tv-chip" onClick={() => onPlay(ch)}>
+            <button key={ch.id} type="button" className="home-tv-chip" onClick={() => onPlay(ch)} title={ch.videoTitle}>
               {ch.thumbnailUrl && (
                 <img
                   className="home-tv-chip-logo"

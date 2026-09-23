@@ -17,7 +17,7 @@ const pt = {
   'page.library.title': 'Biblioteca de Mídia',
   'page.favorites.title': 'Seus Favoritos',
   'page.home.subtitle': 'Pesquise na web como no YouTube — ou vá direto para algo popular.',
-  'page.liveChannels.subtitle': 'Importe qualquer playlist M3U — cada canal é salvo e organizado automaticamente por categoria.',
+  'page.liveChannels.subtitle': 'Assista a canais de TV ao vivo selecionados, organizados por categoria e idioma.',
 
   // Ações comuns
   'common.search': 'Pesquisar',
@@ -80,9 +80,9 @@ const pt = {
   'settings.syncNow': 'Sincronizar agora',
   'settings.syncing': 'Sincronizando…',
   'settings.serverUrl': 'URL do servidor',
-  'settings.serverUrlPlaceholder': 'http://132.145.159.2:8090',
+  'settings.serverUrlPlaceholder': 'https://your-pocketbase-server.com',
   'settings.test': 'Testar',
-  'settings.serverUrlHint': 'Seu servidor PocketBase (veja deploy/ — docker compose em 132.145.159.2). O esquema é criado pelo script de implantação.',
+  'settings.serverUrlHint': 'Seu servidor PocketBase (veja deploy/ — docker compose). O esquema é criado pelo script de implantação.',
   'settings.usernameOptional': 'Nome de usuário (opcional)',
   'settings.usernamePlaceholder': 'ex.: myhub',
   'settings.email': 'E-mail',

@@ -125,6 +125,8 @@
   font-size: 0.75rem;
   font-weight: 700;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .iptv-mini.danger { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
@@ -504,6 +506,8 @@
   font-weight: 700;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .iptv-fav-btn:hover { border-color: var(--accent); color: var(--text); }

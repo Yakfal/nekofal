@@ -17,7 +17,7 @@ const de = {
   'page.library.title': 'Mediathek',
   'page.favorites.title': 'Deine Favoriten',
   'page.home.subtitle': 'Durchsuche das Web wie bei YouTube — oder spring direkt zu etwas Beliebten.',
-  'page.liveChannels.subtitle': 'Importiere jede M3U-Playlist — jeder Kanal wird automatisch gespeichert und nach Kategorie sortiert.',
+  'page.liveChannels.subtitle': 'Schaue ausgewählte Live-TV-Sender an — geordnet nach Kategorie und Sprache.',
 
   // Allgemeine Aktionen
   'common.search': 'Suchen',
@@ -80,9 +80,9 @@ const de = {
   'settings.syncNow': 'Jetzt synchronisieren',
   'settings.syncing': 'Synchronisiere…',
   'settings.serverUrl': 'Server-URL',
-  'settings.serverUrlPlaceholder': 'http://132.145.159.2:8090',
+  'settings.serverUrlPlaceholder': 'https://your-pocketbase-server.com',
   'settings.test': 'Testen',
-  'settings.serverUrlHint': 'Dein PocketBase-Server (siehe deploy/ — docker compose auf 132.145.159.2). Das Schema wird vom Deploy-Skript erstellt.',
+  'settings.serverUrlHint': 'Dein PocketBase-Server (siehe deploy/ — docker compose). Das Schema wird vom Deploy-Skript erstellt.',
   'settings.usernameOptional': 'Benutzername (optional)',
   'settings.usernamePlaceholder': 'z. B. myhub',
   'settings.email': 'E-Mail',

@@ -17,7 +17,7 @@ const zh = {
   'page.library.title': '媒体库',
   'page.favorites.title': '你的收藏',
   'page.home.subtitle': '像 YouTube 一样搜索网络 — 或直接开始观看热门内容。',
-  'page.liveChannels.subtitle': '导入任意 M3U 播放列表 — 每个频道都会自动保存并按类别整理。',
+  'page.liveChannels.subtitle': '观看按类别和语言整理的精选直播电视频道。',
 
   // 通用操作
   'common.search': '搜索',
@@ -80,9 +80,9 @@ const zh = {
   'settings.syncNow': '立即同步',
   'settings.syncing': '同步中…',
   'settings.serverUrl': '服务器地址',
-  'settings.serverUrlPlaceholder': 'http://132.145.159.2:8090',
+  'settings.serverUrlPlaceholder': 'https://your-pocketbase-server.com',
   'settings.test': '测试',
-  'settings.serverUrlHint': '你的 PocketBase 服务器（参见 deploy/ — 132.145.159.2 上的 docker compose）。数据库结构由部署脚本创建。',
+  'settings.serverUrlHint': '你的 PocketBase 服务器（参见 deploy/ — docker compose）。数据库结构由部署脚本创建。',
   'settings.usernameOptional': '用户名（可选）',
   'settings.usernamePlaceholder': '例如 myhub',
   'settings.email': '邮箱',

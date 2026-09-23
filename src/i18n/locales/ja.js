@@ -17,7 +17,7 @@ const ja = {
   'page.library.title': 'メディアライブラリ',
   'page.favorites.title': 'あなたのお気に入り',
   'page.home.subtitle': 'YouTubeのようにウェブを検索 — または人気のコンテンツへ直接ジャンプ。',
-  'page.liveChannels.subtitle': 'M3Uプレイリストをインポート — すべてのチャンネルは自動的にカテゴリ別に保存・整理されます。',
+  'page.liveChannels.subtitle': 'カテゴリと言語ごとに整理された、厳選されたライブTVチャンネルをご覧ください。',
 
   // 共通アクション
   'common.search': '検索',
@@ -80,9 +80,9 @@ const ja = {
   'settings.syncNow': '今すぐ同期',
   'settings.syncing': '同期中…',
   'settings.serverUrl': 'サーバーURL',
-  'settings.serverUrlPlaceholder': 'http://132.145.159.2:8090',
+  'settings.serverUrlPlaceholder': 'https://your-pocketbase-server.com',
   'settings.test': 'テスト',
-  'settings.serverUrlHint': 'あなたのPocketBaseサーバー（deploy/ を参照 — 132.145.159.2 の docker compose）。スキーマはデプロイスクリプトが作成します。',
+  'settings.serverUrlHint': 'あなたのPocketBaseサーバー（deploy/ を参照 — docker compose）。スキーマはデプロイスクリプトが作成します。',
   'settings.usernameOptional': 'ユーザー名（任意）',
   'settings.usernamePlaceholder': '例: myhub',
   'settings.email': 'メール',

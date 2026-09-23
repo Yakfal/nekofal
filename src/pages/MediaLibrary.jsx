@@ -7,6 +7,21 @@ import MediaCard from '../components/MediaCard.jsx';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import { getMediaId } from '../services/dbAdapter.js';
 
+// Category normalization: drop internal/junk tags ("AD", "Ads", ...) and merge
+// overlapping Web TV spellings into one canonical tag so the filter pills stay
+// clean instead of showing redundant variations.
+const JUNK_CATEGORIES = new Set(['ad', 'ads', 'advertisement', 'advertising', 'commercial', 'commercials', 'undefined', 'null']);
+const WEB_TV_ALIASES = new Set(['web tv', 'web tv & shows', 'free web tv', 'web tv channels', 'webtelevision']);
+
+const normalizeCategory = (c) => {
+  const s = String(c || '').trim().replace(/\s+/g, ' ');
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  if (JUNK_CATEGORIES.has(lower)) return null;
+  if (WEB_TV_ALIASES.has(lower)) return 'Web TV';
+  return s;
+};
+
 // Fallback mock data - only used if database is empty
 const MOCK_VIDEOS = [
   { id: 'mock-1', videoTitle: 'Sample Premium Video #1', category: '4K Ultra HD', thumbnailUrl: 'https://picsum.photos/seed/41/400/225', videoUrl: 'http://localhost:3000/demo/trailer.webm', duration: 52, isHLS: false, sourceSite: 'Demo', type: 'Scraped Show' },
@@ -35,7 +50,6 @@ const MediaLibrary = () => {
   const [sourceFilter, setSourceFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
-  const [categories, setCategories] = useState([]);
   const [types, setTypes] = useState([]);
   const [sourceSites, setSourceSites] = useState([]);
   // IPTV folder state
@@ -103,7 +117,6 @@ const MediaLibrary = () => {
       if (api?.getVideoCategories) {
         const result = await api.getVideoCategories();
         if (result.success) {
-          setCategories(result.categories || []);
           setTypes(result.types || []);
           setSourceSites(result.sourceSites || []);
         }
@@ -200,7 +213,7 @@ const MediaLibrary = () => {
       if (sourceFilter === 'scraped' && video.sourceSite === 'IPTV') return false;
       
       // Category filter
-      if (categoryFilter !== 'all' && video.category !== categoryFilter) return false;
+      if (categoryFilter !== 'all' && normalizeCategory(video.category) !== categoryFilter) return false;
       
       // Type filter
       if (typeFilter !== 'all' && video.type !== typeFilter) return false;
@@ -262,11 +275,14 @@ const MediaLibrary = () => {
       pills.push({ key: `type:${type}`, label: `${type} (${count})`, group: 'type' });
     });
     
-    // Category pills (top 8 most common)
+    // Category pills (top 8 most common) — normalized so junk tags are dropped
+    // and Web TV variants collapse into a single tab. Counts include every
+    // video whose normalized category matches, keeping pill numbers accurate.
     const categoryCounts = {};
-    categories.forEach(c => {
-      const count = videos.filter(v => v.category === c).length;
-      if (count > 0) categoryCounts[c] = count;
+    videos.forEach((v) => {
+      const norm = normalizeCategory(v.category);
+      if (!norm) return;
+      categoryCounts[norm] = (categoryCounts[norm] || 0) + 1;
     });
     Object.entries(categoryCounts)
       .sort((a, b) => b[1] - a[1])
