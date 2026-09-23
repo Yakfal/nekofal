@@ -1,6 +1,6 @@
 {
   "name": "nekofal",
-  "version": "1.0.54",
+  "version": "1.0.55",
   "description": "Nekofal - Desktop media streaming hub",
   "main": "electron/main.js",
   "scripts": {
