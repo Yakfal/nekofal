@@ -457,47 +457,6 @@ async function getVideosCount() {
 }
 
 /**
- * Insert or update a video in the scraped videos table
- */
-async function setVideo(videoData) {
-  const init = await initializeDatabase();
-  if (!init.success) throw new Error(init.error);
-  
-  try {
-    const sanitized = sanitizeVideoForInsert(videoData);
-    const stmt = db.prepare(`
-      INSERT OR REPLACE INTO videos 
-      (id, title, videoUrl, thumbnailUrl, duration, category, sourceSite, type, externalId, description, scrapedAt, isScraped, httpHeaders, lastPosition, isAdult)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    stmt.run([
-      sanitized.id,
-      sanitized.title,
-      sanitized.videoUrl,
-      sanitized.thumbnailUrl,
-      sanitized.duration,
-      sanitized.category,
-      sanitized.sourceSite,
-      sanitized.type,
-      sanitized.externalId,
-      sanitized.description,
-      sanitized.scrapedAt,
-      sanitized.isScraped,
-      sanitized.httpHeaders,
-      sanitized.lastPosition,
-      sanitized.isAdult
-    ]);
-
-    saveDatabase();
-    return { success: true };
-  } catch (error) {
-    console.error('Failed to set video:', error);
-    throw error;
-  }
-}
-
-/**
  * Sanitize video object for SQLite insertion - replaces undefined with null/defaults
  */
 function sanitizeVideoForInsert(video) {
@@ -569,23 +528,6 @@ async function bulkInsertVideos(videos) {
     return { success: true, inserted };
   } catch (error) {
     console.error('Failed to bulk insert videos:', error);
-    throw error;
-  }
-}
-
-/**
- * Clear scraped videos table
- */
-async function clearVideos() {
-  const init = await initializeDatabase();
-  if (!init.success) throw new Error(init.error);
-  
-  try {
-    db.exec(`DELETE FROM videos;`);
-    saveDatabase();
-    return { success: true };
-  } catch (error) {
-    console.error('Failed to clear videos:', error);
     throw error;
   }
 }
@@ -918,69 +860,6 @@ async function clearAll() {
 }
 
 /**
- * Get all saved scrapers
- */
-async function getScrapers() {
-  const init = await initializeDatabase();
-  if (!init.success) throw new Error(init.error);
-  
-  try {
-    const stmt = db.prepare(`
-      SELECT id, siteName, baseUrls, createdAt
-      FROM scrapers
-      ORDER BY createdAt DESC
-    `);
-
-    const results = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      row.baseUrls = JSON.parse(row.baseUrls);
-      results.push(row);
-    }
-    stmt.free();
-
-    return results;
-  } catch (error) {
-    console.error('Failed to get scrapers:', error);
-    throw error;
-  }
-}
-
-/**
- * Save scrapers to database
- */
-async function saveScrapers(scrapers) {
-  const init = await initializeDatabase();
-  if (!init.success) throw new Error(init.error);
-  
-  try {
-    // Clear existing scrapers
-    db.exec(`DELETE FROM scrapers;`);
-    
-    // Insert new scrapers
-    const stmt = db.prepare(`
-      INSERT INTO scrapers (id, siteName, baseUrls, createdAt)
-      VALUES (?, ?, ?, ?)
-    `);
-    
-    for (const scraper of scrapers) {
-      stmt.run([
-        scraper.id || `scraper-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        scraper.siteName,
-        JSON.stringify(scraper.baseUrls),
-        scraper.createdAt || new Date().toISOString()
-      ]);
-    }
-    
-    saveDatabase();
-    return { success: true };
-  } catch (error) {
-    console.error('Failed to save scrapers:', error);
-    throw error;
-  }
-}
-
-/**
  * IPTV Sources
  */
 async function addIptvSource(source) {
@@ -1021,13 +900,6 @@ async function removeIptvSource(sourceId) {
   db.run("DELETE FROM videos WHERE externalId = ? AND sourceSite = 'IPTV'", [sourceId]);
   saveDatabase();
   return { success: true };
-}
-
-async function updateIptvSource(sourceId, channelCount) {
-  const init = await initializeDatabase();
-  if (!init.success) throw new Error(init.error);
-  db.run('UPDATE iptv_sources SET channelCount = ?, lastRefreshed = ? WHERE id = ?', [channelCount, new Date().toISOString(), sourceId]);
-  saveDatabase();
 }
 
 /**
@@ -1507,11 +1379,9 @@ module.exports = {
   getVideosBySource,
   getVideosCount,
   getVideoCategories,
-  setVideo,
   bulkInsertVideos,
   getVideoAvailabilityByIds,
   updateVideoAvailability,
-  clearVideos,
   deleteVideo,
   // Playlists
   createPlaylist,
@@ -1520,9 +1390,6 @@ module.exports = {
   addToPlaylist,
   removeFromPlaylist,
   getPlaylistItems,
-  // Scrapers
-  getScrapers,
-  saveScrapers,
   // IPTV
   addIptvSource,
   getIptvSources,
@@ -1530,7 +1397,6 @@ module.exports = {
   removeIptvSource,
   deleteVideosByExternalId,
   deleteLegacyIptv,
-  updateIptvSource,
   // Favorites
   setFavorite,
   getFavorites,

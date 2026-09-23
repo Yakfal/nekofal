@@ -29,10 +29,6 @@ const api = {
   getVideoCategories: () => ipcRenderer.invoke('db:getVideoCategories'),
   getVideosBySource: (sourceSite) => ipcRenderer.invoke('db:getVideosBySource', sourceSite),
 
-  // Scraper operations
-  getScrapers: () => ipcRenderer.invoke('db:getScrapers'),
-  saveScrapers: (scrapers) => ipcRenderer.invoke('db:saveScrapers', scrapers),
-
   // Database operations for favorites and history
   setFavorite: (videoData) => ipcRenderer.invoke('db:setFavorite', videoData),
   getFavorites: () => ipcRenderer.invoke('db:getFavorites'),
@@ -116,10 +112,6 @@ const api = {
   // Register custom stream headers (referer/UA/cookies) for native injection
   setStreamHeaders: (url, headers) => ipcRenderer.invoke('streams:setHeaders', { url, headers }),
 
-  // Universal custom-site scraper (stealth browser automation)
-  customSearch: (baseUrl, query, count) =>
-    ipcRenderer.invoke('scraper:autoSearch', { baseUrl, query, count }),
-
   // Network stream sniffer — load a page in the stealth browser and capture the
   // .m3u8/.mp4/iframe media requests it makes
   sniffStreams: (url, watchMs) =>
@@ -183,7 +175,6 @@ const api = {
   // Secure credential vault (OS-encrypted API keys / tokens)
   secrets: {
     set: (key, value) => ipcRenderer.invoke('vault:set', { key, value }),
-    get: (key) => ipcRenderer.invoke('vault:get', key),
     list: () => ipcRenderer.invoke('vault:list'),
     remove: (key) => ipcRenderer.invoke('vault:delete', key)
   },

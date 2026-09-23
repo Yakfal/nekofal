@@ -17,29 +17,6 @@ export const IPTV_LANGUAGE_FEEDS = [
 // All iptv-org i18n playlists: `#EXTINF:-1,<name>` line, then the raw URL
 // (tvg-id / tvg-logo / tvg-country live in the preceding EXTINF, group-title in
 // a `group-title=` attr). We parse only what this page shows: name + logo + url.
-function parseM3UFragments(text) {
-  const lines = String(text || '').split(/\r?\n/);
-  const items = [];
-  let current = { title: '', logo: '', url: '' };
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (line.startsWith('#EXTINF')) {
-      const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
-      const titleMatch = line.match(/,(.+)$/);
-      current = {
-        title: titleMatch ? titleMatch[1].trim() : '',
-        logo: logoMatch ? logoMatch[1] : '',
-        url: ''
-      };
-    } else if (!line.startsWith('#') && /^https?:\/\//i.test(line)) {
-      current.url = line;
-      if (current.title) items.push(current);
-      current = { title: '', logo: '', url: '' };
-    }
-  }
-  return items;
-}
 
 export function getApi() {
   return window?.api || window?.electronAPI || window?.electron;
@@ -57,11 +34,4 @@ export async function importLanguageFeed(feed, onProgress) {
   } catch (err) {
     return { success: false, error: err.message };
   }
-}
-
-// Lightweight local renderer for the chips row when an import hasn't run yet —
-// returns the channel titles we expect so the page can show a live "counting…"
-// hint. Probably unnecessary on the real page; kept for previews/tests.
-export function previewFeedChannels(text) {
-  return parseM3UFragments(text).slice(0, 24);
 }

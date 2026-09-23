@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, forwardRef } from 'react';
+import React, { useEffect, useState, forwardRef } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useSearchContext } from '../contexts/SearchContext.jsx';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
@@ -60,13 +60,12 @@ const Navbar = forwardRef(function Navbar(props, ref) {
   }, []);
 
   // Forward the ref to the menu wrapper
-  const menuWrapperRef = useRef(null);
   React.useImperativeHandle(ref, () => ({
     toggleMenu: () => setShowMenu(prev => !prev),
     closeMenu: () => setShowMenu(false),
   }), []);
 
-  // Handle escape key to close search
+  // Handle escape key to close search and menu
   useEffect(() => {
     const handleEscape = (event) => {
       if (event.key === 'Escape') {
@@ -92,19 +91,6 @@ const Navbar = forwardRef(function Navbar(props, ref) {
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMenu]);
-
-  // Handle escape key to close search and menu
-  useEffect(() => {
-    const handleEscape = (event) => {
-      if (event.key === 'Escape') {
-        setIsSearchOpen(false);
-        setShowMenu(false);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, []);
 
   const handleMenuItemClick = (action) => {
     setShowMenu(false);

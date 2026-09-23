@@ -2,8 +2,4 @@
 // main process and the renderer stay in sync on one keyword list.
 import contentSafety from '../../electron/contentSafety.cjs';
 
-const { ADULT_KEYWORDS, ADULT_DOMAIN_HINTS, isAdultMedia } = contentSafety;
-
-export { ADULT_KEYWORDS, ADULT_DOMAIN_HINTS, isAdultMedia };
-
-export default isAdultMedia;
+export default contentSafety.isAdultMedia;

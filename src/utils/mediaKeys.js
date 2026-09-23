@@ -16,7 +16,7 @@ export const unbindMediaKey = (key) => {
   if (Object.prototype.hasOwnProperty.call(handlers, key)) handlers[key] = null;
 };
 
-export const triggerMediaKey = (key) => {
+const triggerMediaKey = (key) => {
   const fn = handlers[key];
   if (typeof fn === 'function') {
     try { fn(); } catch (err) { console.warn('[MediaKey] handler error:', err.message); }

@@ -1392,42 +1392,8 @@ async function sniffPageInStealth(url, watchMs = 9000) {
   }
 }
 
-ipcMain.handle('stealth:load', async (_event, { url, opts } = {}) => {
-  try {
-    const res = await loadInStealth(String(url || ''), opts || {});
-    return { success: res.success, url: res.url, title: res.title, href: res.href, error: res.error, cookies: res.cookies };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-});
-
-ipcMain.handle('stealth:eval', async (_event, { js } = {}) => {
-  try {
-    const res = await evalInStealth(String(js || ''), 8000);
-    return { success: true, result: res };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-});
-
-ipcMain.handle('stealth:cookies', async (_event, { url } = {}) => {
-  const cookies = await getSessionCookies(String(url || ''));
-  return { success: true, cookies };
-});
-
 ipcMain.handle('scraper:sniff', async (_event, { url, watchMs } = {}) => {
   return sniffPageInStealth(String(url || ''), Math.min(Math.max(Number(watchMs) || 9000, 3000), 45000));
-});
-
-ipcMain.handle('scraper:autoSearch', async (_event, { baseUrl, query, count } = {}) => {
-  try {
-    const q = String(query || '').trim();
-    if (!q) return { success: false, error: 'Nothing to search for' };
-    const videos = await stealthAutoSearch(String(baseUrl || ''), q, Number(count) || 25);
-    return { success: videos.length > 0, source: 'custom-form', videos };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
 });
 async function startVideoServer() {
   if (videoServerStarted) return;
@@ -1811,10 +1777,6 @@ ipcMain.handle('vault:set', async (_event, payload) => {
   } catch (err) {
     return { success: false, error: (err && err.message) || String(err) };
   }
-});
-
-ipcMain.handle('vault:get', async (_event, key) => {
-  return { success: true, value: credentialVault.getSecret(String(key || '')) };
 });
 
 ipcMain.handle('vault:list', async () => {
@@ -3409,44 +3371,6 @@ ipcMain.handle('scrapers:run', async (event, urls) => {
     return { 
       success: false, 
       error: 'Scraper run failed',
-      details: err.message 
-    };
-  }
-});
-
-// Get saved scrapers
-ipcMain.handle('db:getScrapers', async () => {
-  try {
-    const { db, error } = getDbSafe();
-    if (error) return { success: false, error: 'Database not available: ' + error };
-    
-    const scrapers = await db.getScrapers();
-    
-    return { success: true, data: scrapers };
-  } catch (err) {
-    console.error('Get scrapers error:', err);
-    return { 
-      success: false, 
-      error: 'Failed to get scrapers',
-      details: err.message 
-    };
-  }
-});
-
-// Save scrapers to database
-ipcMain.handle('db:saveScrapers', async (event, scrapers) => {
-  try {
-    const { db, error } = getDbSafe();
-    if (error) return { success: false, error: 'Database not available: ' + error };
-    
-    const result = await db.saveScrapers(scrapers);
-    
-    return { success: true, data: result };
-  } catch (err) {
-    console.error('Save scrapers error:', err);
-    return { 
-      success: false, 
-      error: 'Failed to save scrapers',
       details: err.message 
     };
   }
