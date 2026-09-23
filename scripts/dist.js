@@ -46,6 +46,52 @@ const version = require(path.join(root, 'package.json')).version;
 const PUBLISH_RETRIES = 3;
 const PUBLISH_RETRY_DELAY_MS = 5000;
 
+// electron-builder can also exit 0 while silently dropping one of the multipart
+// uploads (a known flake: the .blockmap or latest.yml never lands but no error
+// is raised). Since exit code 0 never triggered the backoff, such a missing
+// asset shipped silently. Close that loophole by verifying the release actually
+// holds every expected artifact after each publish attempt. Names are matched
+// exactly (version-aware), so a setup installer missing from the release is
+// caught even though plain '.exe' suffixes would overlap it.
+const REQUIRED_ASSETS = (version) => [
+  { label: 'portable exe', match: (name) => name === `Nekofal-${version}.exe` },
+  { label: 'setup exe', match: (name) => name === `Nekofal-Setup-${version}.exe` },
+  { label: 'blockmap', match: (name) => name === `Nekofal-Setup-${version}.exe.blockmap` },
+  { label: 'latest.yml', match: (name) => name === 'latest.yml' }
+];
+
+async function verifyReleaseAssets(version) {
+  const required = REQUIRED_ASSETS(version);
+  const headers = {
+    Authorization: `Bearer ${process.env.GH_TOKEN}`,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'nekofal-dist'
+  };
+  // Bounded read-retry: right after uploads finish a stale cache can briefly
+  // under-report assets, which would otherwise cause a spurious backfill pass.
+  let uploadedFiles = [];
+  for (let read = 1; read <= 3; read++) {
+    const res = await fetch(
+      `https://api.github.com/repos/Yakfal/nekofal/releases/tags/v${version}`,
+      { headers, signal: AbortSignal.timeout(30000) }
+    );
+    if (!res.ok) {
+      throw new Error(`Failed to fetch release info: ${res.status} ${res.statusText}`);
+    }
+    const releaseData = await res.json();
+    uploadedFiles = (releaseData.assets || []).map((a) => a.name);
+    if (uploadedFiles.length >= required.length) break;
+    if (read < 3) await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  console.log(`[dist] Found ${uploadedFiles.length} uploaded assets on GitHub.`);
+  const missing = required.filter((a) => !uploadedFiles.some(a.match)).map((a) => a.label);
+  if (missing.length > 0) {
+    throw new Error(`Incomplete release! Missing asset patterns: ${missing.join(', ')} (have: ${uploadedFiles.join(', ') || 'none'})`);
+  }
+  console.log('[dist] All required assets verified on GitHub Releases!');
+}
+
 // Pre-create and push the release tag (v<version> at HEAD) before building so
 // GitHub already has a valid ref when electron-builder tries to publish.
 function ensureReleaseTag() {
@@ -127,10 +173,25 @@ async function annotateReleaseBody(version) {
       process.exit(1);
     }
     buildCode = res.status == null ? 1 : res.status;
+    if (buildCode === 0) {
+      // electron-builder can exit 0 while silently dropping an uploaded asset
+      // (e.g. the .blockmap). Verify the release actually holds every artifact
+      // before accepting the attempt; a missing asset fails this pass so the
+      // backoff retry re-runs the upload to backfill it. Only meaningful for
+      // publishes — local builds have nothing to verify against.
+      if (publish) {
+        try {
+          await verifyReleaseAssets(version);
+        } catch (err) {
+          console.warn(`[dist] publish attempt ${attempt}/${PUBLISH_RETRIES} left the release incomplete: ${err.message}`);
+          buildCode = 2; // treat as a failed attempt → retry loop
+        }
+      }
+    }
     if (buildCode === 0) break;
     if (attempt === PUBLISH_RETRIES) break;
     console.warn(`[dist] publish attempt ${attempt}/${PUBLISH_RETRIES} failed (exit ${buildCode}); ` +
-                 `retrying in ${delayMs / 1000}s for GitHub tag/upload propagation…`);
+                 'retrying to finish tag/asset propagation…');
     await new Promise((r) => setTimeout(r, delayMs));
     delayMs *= 2;
   }
