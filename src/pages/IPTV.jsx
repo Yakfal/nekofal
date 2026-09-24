@@ -231,7 +231,7 @@ function EmbeddedPlayer({ channel }) {
 // Channels are HLS streams masquerading as random extensions; always treat as direct/stream
 function IPTV() {
   const { settings } = useAppSettings();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const familyMode = settings.familyMode;
   const [sources, setSources] = useState([]);
   const [channels, setChannels] = useState([]);
@@ -242,7 +242,10 @@ function IPTV() {
   const [favoriteSet, setFavoriteSet] = useState(() => new Set());
   const [query, setQuery] = useState('');
   const [sortBy, setSortBy] = useState('category');
-  const [tab, setTab] = useState('All');
+  // Active tab defaults to the focused app language when it is one of the
+  // primary buckets, otherwise everything ("All") so the grid pops open on
+  // first load without a manual click.
+  const [tab, setTab] = useState(() => (PRIMARY_CATEGORIES.includes(language) ? language : 'All'));
   const [langBusy, setLangBusy] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState(null);
   const [copied, setCopied] = useState(false);

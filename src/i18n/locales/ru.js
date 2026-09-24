@@ -38,6 +38,11 @@ const ru = {
   'common.all': 'Все',
   'common.channels': 'каналов',
 
+  // Onboarding (v1.0.56)
+  'onboarding.title': 'Добро пожаловать в Nekofal',
+  'onboarding.subtitle': 'Выберите предпочитаемый язык, чтобы настроить телевидение и интерфейс.',
+  'onboarding.hint': 'Вы можете изменить его в любой момент в настройках.',
+
   // Настройки
   'settings.appLanguage': 'Язык приложения',
   'settings.languageLabel': 'Язык',

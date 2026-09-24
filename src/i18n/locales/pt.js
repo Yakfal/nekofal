@@ -38,6 +38,11 @@ const pt = {
   'common.all': 'Todos',
   'common.channels': 'canais',
 
+  // Onboarding (v1.0.56)
+  'onboarding.title': 'Bem-vindo ao Nekofal',
+  'onboarding.subtitle': 'Escolha o seu idioma preferido para personalizar a sua TV ao vivo e a interface.',
+  'onboarding.hint': 'Pode alterá-lo a qualquer momento nas Definições.',
+
   // Configurações
   'settings.appLanguage': 'Idioma do aplicativo',
   'settings.languageLabel': 'Idioma',

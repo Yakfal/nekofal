@@ -438,6 +438,9 @@ const Discover = () => {
   // the FAMOUS_BRANDS ranking still leads. When fewer than 10 famous brands
   // match the app language, the feed falls back to the broader language-matched
   // list so the spotlight never goes empty. Winning ties break on most recent.
+  // Fail-safe (v1.0.56): if language-matched online channels number fewer than
+  // 5, general online branded channels (is_online === 1) are appended so the
+  // Live TV row (featured tile + 8 chips) always renders on first launch.
   const liveTvSorted = useMemo(() => {
     const langKeys = getLocaleLangKeys(language);
     const online = (ch) => {
@@ -457,7 +460,7 @@ const Discover = () => {
       const r = brandRank(ch);
       return r < 0 ? Number.MAX_SAFE_INTEGER : r;
     };
-    return [...pool]
+    const sorted = [...pool]
       .map((ch) => ({ ch, lang: match(ch) ? 0 : 1, brand: rankOf(ch), numeric: isRegionalNumeric(ch) ? 1 : 0 }))
       .sort((a, b) => {
         if (a.lang !== b.lang) return a.lang - b.lang;
@@ -466,6 +469,18 @@ const Discover = () => {
         return (b.ch.lastPosition || 0) - (a.ch.lastPosition || 0);
       })
       .map((x) => x.ch);
+    // In a brand-poor (or freshly imported) catalog the language pool can drop
+    // below a full row. Top the strip back up with the general online branded
+    // channels so the Live TV row never dies on first launch.
+    if (inLang.length < 5) {
+      const have = new Set(sorted.map((c) => c.id));
+      const backfill = channels
+        .filter((c) => !have.has(c.id))
+        .sort((a, b) => rankOf(a) - rankOf(b) || (b.lastPosition || 0) - (a.lastPosition || 0))
+        .slice(0, 9 - sorted.length);
+      return [...sorted, ...backfill];
+    }
+    return sorted;
   }, [iptvChannels, filterFamily, language, iptvStatus]);
 
   // "Recommended For You" (v1.0.36): rank watch history + favorites against the

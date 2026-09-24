@@ -11,6 +11,11 @@ import ru from './locales/ru.js';
 import ko from './locales/ko.js';
 
 export const STORAGE_KEY = 'nekofal-language';
+// Keys written by the first-launch onboarding flow (v1.0.56): the chosen
+// language persists under `nekofal_app_lang` and the welcomed flag under
+// `nekofal_onboarded`.
+export const APP_LANG_KEY = 'nekofal_app_lang';
+export const ONBOARDED_KEY = 'nekofal_onboarded';
 
 // All supported languages, listed in native script for the Settings selector.
 export const SUPPORTED_LANGUAGES = [
@@ -43,7 +48,11 @@ const detectBrowserLanguage = () => {
 
 const loadLanguage = () => {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    // First-launch onboarding writes the chosen language to `nekofal_app_lang`;
+    // the Settings selector still uses the historic `nekofal-language` key. Read
+    // the app-language key first, then fall back to the legacy storage key, so
+    // a language picked before onboarding landed is never lost.
+    const saved = localStorage.getItem(APP_LANG_KEY) || localStorage.getItem(STORAGE_KEY);
     if (isSupportedLanguage(saved)) return saved;
   } catch { /* keep default */ }
   return detectBrowserLanguage();
@@ -61,7 +70,8 @@ export const LanguageProvider = ({ children }) => {
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, language);
-    } catch { /* storage unavailable — session-only */}
+      localStorage.setItem(APP_LANG_KEY, language);
+    } catch { /* storage unavailable — session-only */ }
     document.documentElement.setAttribute('lang', language);
   }, [language]);
 

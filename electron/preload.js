@@ -73,6 +73,11 @@ const api = {
   // (is_online + last_checked) so repeat checks within 24h are served from cache.
   validateIptvStreams: (channels) => ipcRenderer.invoke('iptv:validate-streams', { channels }),
 
+  // Player-side availability feedback: lets the IPTV player mark a stream dead
+  // (isOnline: 0) the moment playback fails/watchdog-times-out, so dead channels
+  // are skipped on the next validation pass / Home shelf build.
+  updateVideoAvailability: (entries) => ipcRenderer.invoke('iptv:update-availability', { entries }),
+
   // Video download
   downloadVideo: (video) => ipcRenderer.invoke('video:download', video || {}),
   getDownloads: () => ipcRenderer.invoke('downloads:getState'),

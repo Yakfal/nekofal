@@ -18,13 +18,15 @@ import { AppSettingsProvider } from './contexts/AppSettingsContext.jsx';
 import { PlaylistsProvider } from './contexts/PlaylistsContext.jsx';
 import { PlaybackProvider } from './contexts/PlaybackContext.jsx';
 import { LanguageProvider } from './i18n/LanguageContext.jsx';
+import OnboardingModal from './components/OnboardingModal.jsx';
 
 const VideoPlayer = lazy(() => import('./components/VideoPlayer.jsx'));
 
 export default function App() {
   return (
     <LanguageProvider>
-    <AppSettingsProvider>
+      <OnboardingModal />
+      <AppSettingsProvider>
       <HashRouter>
         <SearchProvider>
           <PlaylistsProvider>

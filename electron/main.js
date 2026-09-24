@@ -3850,8 +3850,31 @@ ipcMain.handle('iptv:validate-streams', async (event, { channels }) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Web search: find/aggregate videos from anywhere (YouTube search, or any
+// Player-side availability feedback: the IPTV player can definitively say a
+// stream is dead (explicit error, or no playback within the watchdog window)
+// even when a HEAD/GET probe returned a 2xx. Write that verdict straight into
+// the videos table so the next validation pass / Home shelf skips the channel
+// instead of resurrecting it. Accepts { id, isOnline } entries (isOnline=0 for
+// dead streams found at play-time).
+ipcMain.handle('iptv:update-availability', async (event, { entries }) => {
+  try {
+    const { db, error } = getDbSafe();
+    if (error) return { success: false, error: 'Database not available: ' + error };
+
+    const raw = Array.isArray(entries) ? entries : [];
+    const updates = raw
+      .filter((e) => e && e.id != null)
+      .map((e) => ({ id: String(e.id), isOnline: e.isOnline ? 1 : 0, lastChecked: e.lastChecked || Date.now() }));
+    if (updates.length === 0) return { success: true, updated: 0 };
+
+    await db.updateVideoAvailability(updates);
+    console.log(`[iptv:update-availability] ${updates.length} record(s) updated isOnline=${JSON.stringify(updates.map(u => u.isOnline))}`);
+    return { success: true, updated: updates.length };
+  } catch (err) {
+    console.error('[iptv:update-availability] failed:', err.message);
+    return { success: false, error: err.message };
+  }
+});
 // URL/category/search page) using yt-dlp flat-playlist enumeration, with a
 // generic HTML scraper fallback for sites yt-dlp cannot flatten.
 // ---------------------------------------------------------------------------
@@ -6039,14 +6062,19 @@ async function runFlatPlaylist(searchUrlOrQuery, count = 25) {
   return entries;
 }
 
-ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, gatewayUrl }) => {
+ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, page = 1, gatewayUrl }) => {
   try {
     if (!query || typeof query !== 'string' || !query.trim()) {
       return { success: false, error: 'Nothing to search for' };
     }
 
     const q = query.trim();
+    const pageNum = Math.max(1, Number(page) || 1);
     const gatewayBase = resolveGatewayBaseUrl(gatewayUrl);
+    // yt-dlp enumeration fetches the full prefix (count * page) once, then the
+    // deduped list is sliced to the requested window so "Load More" pagination
+    // can page forward through the same run instead of re-scanning.
+    const sliceWindow = (videos) => videos.slice((pageNum - 1) * count, pageNum * count);
 
     // yt-dlp unavailable/broken: delegate the whole search to the server gateway.
     const binaryAvailable = await ensureYtDlpBinary();
@@ -6236,7 +6264,7 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
     }
 
     try {
-      entries = await runFlatPlaylist(target, count);
+      entries = await runFlatPlaylist(target, count * pageNum);
     } catch (flatErr) {
       console.warn(`[web:search] flat-playlist failed for ${target}: ${flatErr.message}`);
     }
@@ -6252,7 +6280,8 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, g
       if (seen.has(v.videoUrl)) return false;
       seen.add(v.videoUrl);
       return true;
-    }).slice(0, count);
+    });
+    videos = sliceWindow(videos);
 
     if (videos.length > 0) {
       return { success: true, source: 'yt-dlp', videos };

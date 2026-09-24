@@ -73,9 +73,15 @@ const VideoSearchSection = forwardRef(({
   const { t } = useLanguage();
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [results, setResults] = useState([]);
   const [searchInfo, setSearchInfo] = useState(null);
   const [searchError, setSearchError] = useState(null);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const countRef = useRef(0);
+  // Mirror of `results` used for synchronous dedupe when appending pages.
+  const resultsRef = useRef([]);
   const [addedIds, setAddedIds] = useState(() => new Set());
   // Favorite ROWS from the DB (not a shared id Set). Each card verifies its OWN
   // canonical pageUrl/id against this list, so a single card's star can never
@@ -149,29 +155,50 @@ const VideoSearchSection = forwardRef(({
   // never reintroduce a bookmark/login/premium tile.
   const JUNK_TITLE_RE = /^(?:sign|log)[- ]?in$|^sign[- ]?up$|^register$|^bookmarks?$|^premium\s*account?$|^upgrade$|^vip$|^join now$|^welcome back$/i;
 
-  const runSearch = useCallback(async (rawOverride) => {
-    const q = String(rawOverride != null ? rawOverride : query || '').trim();
-    setQuery(q);
-    if (!q) { showToast(t('search.typeNameOrPaste'), 'err'); return; }
+  const PAGE_SIZE = 30;
 
-    // Detect: full URL -> enumerate that page
-    const isUrl = /^https?:\/\//i.test(q);
-    let mode = 'enum';
-    let targetTemplate = null;
-    if (!isUrl && siteUrl) mode = 'site';
-    else if (!isUrl) mode = 'yt';
-
-    setSearching(true);
-    setSearchError(null);
+  // Resets the search box to pristine "Home lobby" state: empty query, no
+  // results/meta/error, page back to 1. Used by the clear ✕ button and by the
+  // sidebar Home-link interceptor below.
+  const clearSearch = useCallback(() => {
+    setQuery('');
     setResults([]);
+    resultsRef.current = [];
     setSearchInfo(null);
+    setSearchError(null);
+    setPage(1);
+    setHasMore(false);
+    countRef.current = 0;
+    if (inputRef.current) inputRef.current.focus();
+  }, []);
+
+  // Sidebar "Home" interceptor: when the user is ALREADY on the Home page and
+  // clicks Home again, the click clears the active search (returning the Home
+  // lobby) instead of being a no-op navigation. Adult's search box ignores this
+  // event key (only fires on /discover), so it can never clear that page.
+  useEffect(() => {
+    const onClearHomeSearch = () => clearSearch();
+    window.addEventListener('nek-clear-home-search', onClearHomeSearch);
+    return () => window.removeEventListener('nek-clear-home-search', onClearHomeSearch);
+  }, [clearSearch]);
+
+  // Executes one search page. `append=false` (fresh search) replaces results,
+  // `append=true` (Load More) pushes page+1 results onto the grid, de-duping
+  // against what is already shown so pagination never double-shows a card.
+  const performSearch = useCallback(async (q, { pageArg = 1, append = false } = {}) => {
+    if (append) setLoadingMore(true);
+    else setSearching(true);
+    setSearchError(null);
+    if (!append) { setResults([]); setSearchInfo(null); }
     try {
       const api = getApi();
       if (!api?.webSearch) {
         setSearchError(t('search.browserUnavailable'));
         setSearching(false);
+        setLoadingMore(false);
         return;
       }
+      const count = PAGE_SIZE;
       // Universal mode: fan out the SAME query to ALL adult engines in
       // parallel, then merge + dedupe. Every per-engine result was already
       // junk-gated server-side (shared SCRAPE_FILTER_PATH /
@@ -187,7 +214,8 @@ const VideoSearchSection = forwardRef(({
               mode: 'site',
               query: q,
               siteUrl: siteSrc,
-              count: 30,
+              count,
+              page: pageArg,
               gatewayUrl: getGatewayUrl()
             }).then((r) => ({ site: s, r })).catch((e) => ({ site: s, r: null, err: e }));
           });
@@ -204,43 +232,99 @@ const VideoSearchSection = forwardRef(({
             merged.push({ ...v, sourceSite: v.sourceSite || site?.name || v.sourceSite });
           }
         }
-        if (merged.length > 0) {
+const mode = 'site';
+        if (append) {
+          const prev = resultsRef.current;
+          const known = new Set(prev.map((v) => String(v.id || v.pageUrl || v.videoUrl || '')));
+          const fresh = merged.filter((v) => !known.has(String(v.id || v.pageUrl || v.videoUrl || '')));
+          resultsRef.current = [...prev, ...fresh];
+          setResults(resultsRef.current);
+          setHasMore(fresh.length > 0);
+          countRef.current += fresh.length;
+          setSearchInfo({ count: countRef.current, source: 'universal', mode });
+        } else if (merged.length > 0) {
+          countRef.current = merged.length;
+          resultsRef.current = merged;
           setResults(merged);
-          setSearchInfo({ count: merged.length, source: 'universal', mode: mode === 'site' ? 'site' : 'search' });
+          setHasMore(merged.length >= count);
+          setSearchInfo({ count: countRef.current, source: 'universal', mode });
         } else {
-          setSearchInfo({ count: 0, source: 'universal', mode: 'search' });
+          countRef.current = 0;
+          resultsRef.current = [];
+          setHasMore(false);
+          setSearchInfo({ count: 0, source: 'universal', mode });
         }
         return;
       }
+
+      // Detect: full URL -> enumerate that page
+      const isUrl = /^https?:\/\//i.test(q);
+      let mode = 'enum';
+      let targetTemplate = null;
+      if (!isUrl && siteUrl) mode = 'site';
+      else if (!isUrl) mode = 'yt';
 
       const res = await api.webSearch({
         mode,
         query: q,
         siteUrl: targetTemplate || siteUrl || undefined,
-        count: 30,
+        count,
+        page: pageArg,
         gatewayUrl: getGatewayUrl()
       });
       if (res?.success) {
-        setResults(res.videos || []);
-        setSearchInfo({
-          count: (res.videos || []).length,
-          source: res.source === 'yt-dlp' ? 'yt-dlp' : res.source === 'gateway' || (res.source || '').includes('gateway') ? 'server gateway' : 'HTML',
-          mode: mode === 'site' ? 'site' : isUrl ? 'url' : 'search'
-        });
-        if (!res.videos || res.videos.length === 0) {
-          setSearchError(t('search.foundNothing'));
+        const incoming = res.videos || [];
+        const source = res.source === 'yt-dlp' ? 'yt-dlp' : res.source === 'gateway' || (res.source || '').includes('gateway') ? 'server gateway' : 'HTML';
+        const metaMode = mode === 'site' ? 'site' : isUrl ? 'url' : 'search';
+        if (append) {
+          const prev = resultsRef.current;
+          const known = new Set(prev.map((v) => String(v.id || v.pageUrl || v.videoUrl || '')));
+          const fresh = incoming.filter((v) => !known.has(String(v.id || v.pageUrl || v.videoUrl || '')));
+          resultsRef.current = [...prev, ...fresh];
+          setResults(resultsRef.current);
+          setHasMore(fresh.length > 0);
+          countRef.current += fresh.length;
+          setSearchInfo({ count: countRef.current, source, mode: metaMode });
+        } else {
+          countRef.current = incoming.length;
+          resultsRef.current = incoming;
+          setResults(incoming);
+          setHasMore(incoming.length >= count);
+          setSearchInfo({ count: countRef.current, source, mode: metaMode });
+          if (incoming.length === 0) {
+            setSearchError(t('search.foundNothing'));
+          }
         }
       } else {
+        setHasMore(false);
         setSearchError(res?.error || res?.details || t('search.searchFailed'));
-        setResults([]);
+        if (!append) setResults([]);
       }
     } catch (err) {
       console.error('[Search] failed:', err);
+      setHasMore(false);
       setSearchError(`${t('search.searchFailed')}: ${err.message}`);
     } finally {
       setSearching(false);
+      setLoadingMore(false);
     }
-  }, [query, siteUrl, showToast, t]);
+  }, [query, siteUrl, allSites, safeOnly, showToast, t]);
+
+  const runSearch = useCallback(async (rawOverride) => {
+    const q = String(rawOverride != null ? rawOverride : query || '').trim();
+    setQuery(q);
+    if (!q) { showToast(t('search.typeNameOrPaste'), 'err'); return; }
+
+    setPage(1);
+    await performSearch(q, { pageArg: 1, append: false });
+  }, [query, performSearch, showToast, t]);
+
+  const loadMore = useCallback(() => {
+    if (searching || loadingMore) return;
+    const nextPage = page + 1;
+    setPage(nextPage);
+    performSearch(query, { pageArg: nextPage, append: true });
+  }, [page, query, searching, loadingMore, performSearch]);
 
   const handleSearch = (e) => {
     e?.preventDefault();
@@ -250,8 +334,9 @@ const VideoSearchSection = forwardRef(({
   useImperativeHandle(ref, () => ({
     runSearch,
     setQuery,
+    clearSearch,
     focus: () => { if (inputRef.current) inputRef.current.focus(); }
-  }), [runSearch]);
+  }), [runSearch, clearSearch]);
 
   const handleAddOne = async (v) => {
     try {
@@ -324,15 +409,28 @@ const VideoSearchSection = forwardRef(({
       </div>
 
       <form className="vss-searchbar" onSubmit={handleSearch}>
-        <input
-          ref={inputRef}
-          type="text"
-          className="vss-input"
-          placeholder={placeholder ?? t('search.searchPlaceholder')}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label={t('common.search')}
-        />
+        <div className="vss-input-wrap">
+          <input
+            ref={inputRef}
+            type="text"
+            className="vss-input"
+            placeholder={placeholder ?? t('search.searchPlaceholder')}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label={t('common.search')}
+          />
+          {query && (
+            <button
+              type="button"
+              className="vss-clear"
+              onClick={clearSearch}
+              aria-label={t('common.search') + ' ✕'}
+              title="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <button type="submit" className="vss-go" disabled={searching}>
           {searching ? t('common.searching') : t('common.search')}
         </button>
@@ -415,6 +513,14 @@ const VideoSearchSection = forwardRef(({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {results.length > 0 && hasMore && !searching && (
+        <div className="vss-more-wrap">
+          <button className="vss-more" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? t('common.searching') : t('common.loadMore')}
+          </button>
         </div>
       )}
 

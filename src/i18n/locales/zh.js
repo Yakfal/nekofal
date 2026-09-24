@@ -38,6 +38,11 @@ const zh = {
   'common.all': '全部',
   'common.channels': '个频道',
 
+  // Onboarding (v1.0.56)
+  'onboarding.title': '欢迎使用 Nekofal',
+  'onboarding.subtitle': '选择您的首选语言，以个性化您的直播电视和界面。',
+  'onboarding.hint': '您可以随时在设置中更改。',
+
   // 设置
   'settings.appLanguage': '应用语言',
   'settings.languageLabel': '语言',

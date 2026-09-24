@@ -38,6 +38,11 @@ const ja = {
   'common.all': 'すべて',
   'common.channels': 'チャンネル',
 
+  // Onboarding (v1.0.56)
+  'onboarding.title': 'Nekofal へようこそ',
+  'onboarding.subtitle': '好みの言語を選んで、ライブ TV とインターフェースをカスタマイズします。',
+  'onboarding.hint': '設定からいつでも変更できます。',
+
   // 設定
   'settings.appLanguage': 'アプリの言語',
   'settings.languageLabel': '言語',

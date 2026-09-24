@@ -32,6 +32,10 @@ var QUALITY_FALLBACKS = [
 // network, with exponential backoff between attempts.
 var MAX_PLAYBACK_RETRIES = 5;
 var RETRY_BACKOFF_MS = [800, 1600, 3200, 6400, 12800];
+// IPTV/Web TV dead-stream budget: if a live channel does not reach
+// 'playing' within this window (no manifest, stalled tunnel, server reject),
+// it is treated as unavailable — mark it dead in the DB and skip/close.
+var IPTV_WATCHTIMEOUT_MS = 12000;
 
 // Local video server port (from electron main.js). Defaults to 5001 but can be
 // dynamic if the preferred ports were busy — refresh via getVideoServerInfo().
@@ -167,6 +171,11 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const retryTimerRef = useRef(null);
   const audioCtxRef = useRef(null);
   const audioNodesRef = useRef(null);
+  // IPTV watchdog: a live/Web TV channel must start PLAYING within
+  // IPTV_WATCHTIMEOUT_MS of stream load, or it is treated as dead (skip/close).
+  const iptvWatchRef = useRef(null);
+  const deadIptvMarkedRef = useRef(new Set());
+  const [streamUnavailable, setStreamUnavailable] = useState(false);
 
   // ---------------------------------------------------------------------------
   // WebAudio enhancement: route the media element through a light EQ +
@@ -627,6 +636,43 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     resetControlsTimeout();
     if (onZapTo) onZapTo(ch, next);
   }, [isZapping, channelList, showOsd, onZapTo, resetControlsTimeout]);
+
+  // ---- IPTV dead-stream watchdog (v1.0.57) ---------------------------------
+  // A live channel that never reaches 'playing' (bad manifest, geo-block,
+  // dead relay, server drop) is marked unavailable in the DB so the next
+  // validation pass / shelf build skips it, then the player zaps forward or
+  // closes. The mark is fire-once per channel id to avoid spamming the DB.
+  const clearIptvWatch = useCallback(() => {
+    if (iptvWatchRef.current) {
+      clearTimeout(iptvWatchRef.current);
+      iptvWatchRef.current = null;
+    }
+  }, []);
+
+  const handleIptvUnavailable = useCallback((fromWatchdog) => {
+    clearIptvWatch();
+    const chId = video && (video.id || video.videoId);
+    if (chId != null && !deadIptvMarkedRef.current.has(String(chId))) {
+      deadIptvMarkedRef.current.add(String(chId));
+      const api = window.api || window.electronAPI;
+      api?.updateVideoAvailability?.([{ id: chId, isOnline: 0 }]).catch((err) => {
+        console.warn('[VideoPlayer] updateVideoAvailability failed:', err && err.message ? err.message : err);
+      });
+    }
+    setStreamUnavailable(true);
+    setTimeout(() => setStreamUnavailable(false), 2600);
+    if (osdTimerRef.current) clearTimeout(osdTimerRef.current);
+    setOsd(null);
+    if (isZapping && channelList && channelList.length > 0) {
+      const idx = channelIndexRef.current;
+      const next = idx + 1;
+      if (next >= 0 && next < channelList.length) {
+        zap(1);
+        return;
+      }
+    }
+    closePlayer();
+  }, [video, isZapping, channelList, channelIndexRef, clearIptvWatch, zap, closePlayer]);
 
   useEffect(() => {
     if (isZapping && channelList && channelList.length) {
@@ -1266,9 +1312,23 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     const handlePlaying = () => {
       stallCountRef.current = 0;
       networkRetryRef.current = 0;
+      clearIptvWatch();
     };
     videoEl.addEventListener('stalled', handleStalled);
     videoEl.addEventListener('playing', handlePlaying);
+
+    // ---- IPTV/Web TV dead-stream watchdog (v1.0.57) -------------------------
+    // Live channels must start actual playback within IPTV_WATCHTIMEOUT_MS of
+    // load. Firing means a silent hang (no manifest, dead relay, geo-block);
+    // mark the channel dead + skip/close exactly like an explicit error would.
+    const isIptvLike = video.sourceSite === 'IPTV' || video.type === 'Web TV';
+    if (isIptvLike || isZapping) {
+      clearIptvWatch();
+      iptvWatchRef.current = setTimeout(() => {
+        iptvWatchRef.current = null;
+        handleIptvUnavailable(true);
+      }, IPTV_WATCHTIMEOUT_MS);
+    }
 
     const playNative = (includeFallbackSeek) => {
       if (hlsRef.current) {
@@ -1366,6 +1426,10 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               }
               // Temporary network blip: recover via startLoad with backoff.
               if (!scheduleRetry(streamUrlRef.current || streamUrl, 'hls')) {
+                if (isZapping || video.sourceSite === 'IPTV' || video.type === 'Web TV') {
+                  handleIptvUnavailable(false);
+                  return;
+                }
                 hls.destroy();
                 setStreamError('Network error — playback could not recover: ' + (data.details || ''));
                 setHasError(true);
@@ -1375,6 +1439,10 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               hls.recoverMediaError();
               break;
             default:
+              if (isZapping || video.sourceSite === 'IPTV' || video.type === 'Web TV') {
+                handleIptvUnavailable(false);
+                return;
+              }
               hls.destroy();
               setStreamError('HLS playback error: ' + data.details);
               setHasError(true);
@@ -1417,6 +1485,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
 
     return () => {
+      clearIptvWatch();
       videoEl.removeEventListener('stalled', handleStalled);
       videoEl.removeEventListener('playing', handlePlaying);
       if (hlsRef.current) {
@@ -1426,7 +1495,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       videoEl.pause();
       videoEl.src = '';
     };
-  }, [streamUrl, isDRM, shouldResume, seekToResume, scheduleRetry, hlsRetryKey]);
+  }, [streamUrl, isDRM, shouldResume, seekToResume, scheduleRetry, hlsRetryKey, clearIptvWatch, handleIptvUnavailable]);
 
   // Handle overlay click (but not on controls)
   const handleOverlayClick = useCallback((e) => {
@@ -1537,11 +1606,19 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         return;
       }
 
+      // IPTV/Web TV live streams: an unrecoverable error means the channel is
+      // dead right now. Mark it (isOnline: 0) + toast + zap forward or close,
+      // instead of parking on the generic error overlay.
+      if (isIptvLike || isZapping) {
+        handleIptvUnavailable(false);
+        return;
+      }
+
       const msg = `Playback error (code ${error.code}): ${error.message || 'Unknown error'}`;
       setStreamError(msg);
       setHasError(true);
     }
-  }, [video, scheduleRetry]);
+  }, [video, scheduleRetry, isZapping, handleIptvUnavailable]);
 
   // Handle webview load events for DRM content
   const handleWebviewLoadStart = () => {
@@ -1608,7 +1685,10 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
           <div className="loading-spinner"></div>
           <p>{isExtracting ? 'Extracting stream...' : (isDRM ? 'Loading DRM content...' : 'Loading video...')}</p>
         </div>
-        
+
+        {/* Stream-unavailable toast (IPTV dead channel feedback) */}
+        {streamUnavailable && <div className="vp-toast">Stream unavailable</div>}
+
         {/* Always-visible close button */}
         <button 
           className="absolute-close-btn" 
@@ -1633,6 +1713,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       }}
     >
       <div className="video-player-container">
+        {/* Stream-unavailable toast (IPTV dead channel feedback) */}
+        {streamUnavailable && <div className="vp-toast">Stream unavailable</div>}
+
         {/* DRM Protected Content - WebView Fallback */}
         {isDRM && drmWebUrl && (
           <webview

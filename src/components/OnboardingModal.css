@@ -1,0 +1,110 @@
+/* ============================================================================
+   Onboarding Modal — first-launch language picker
+   ============================================================================ */
+
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 8000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 8, 14, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: onboard-fade 0.25s ease;
+}
+
+@keyframes onboard-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.onboarding-card {
+  width: min(520px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 36px 32px 28px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: center;
+  animation: onboard-pop 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes onboard-pop {
+  from { opacity: 0; transform: translateY(18px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.onboarding-mark {
+  width: 74px;
+  height: 74px;
+  margin: 0 auto 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 20px;
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
+  color: var(--text);
+  font-size: 2rem;
+  padding-left: 6px;
+  box-shadow: 0 12px 34px rgba(16, 185, 129, 0.35);
+}
+
+.onboarding-title {
+  margin: 0 0 10px;
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.onboarding-sub {
+  margin: 0 auto 24px;
+  max-width: 420px;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.onboarding-langs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.onboarding-lang {
+  padding: 14px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
+}
+
+.onboarding-lang:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+  transform: translateY(-1px);
+}
+
+.onboarding-lang:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.onboarding-lang.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.onboarding-hint {
+  margin: 22px 0 0;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}

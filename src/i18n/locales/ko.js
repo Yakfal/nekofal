@@ -38,6 +38,11 @@ const ko = {
   'common.all': '전체',
   'common.channels': '채널',
 
+  // Onboarding (v1.0.56)
+  'onboarding.title': 'Nekofal에 오신 것을 환영합니다',
+  'onboarding.subtitle': '선호하는 언어를 선택하여 라이브 TV와 인터페이스를 맞춤 설정하세요.',
+  'onboarding.hint': '설정에서 언제든지 변경할 수 있습니다.',
+
   // 설정
   'settings.appLanguage': '앱 언어',
   'settings.languageLabel': '언어',

@@ -42,6 +42,67 @@
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+.vss-input-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.vss-input-wrap .vss-input {
+  width: 100%;
+}
+
+.vss-clear {
+  position: absolute;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--input-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1;
+  transition: filter 0.15s, color 0.15s;
+}
+
+.vss-clear:hover {
+  filter: brightness(1.2);
+  color: var(--text);
+}
+
+.vss-input:focus ~ .vss-clear,
+.vss-clear:focus-visible {
+  color: var(--text);
+}
+
+.vss-more-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 4px 0 40px;
+}
+
+.vss-more {
+  background: var(--vss-accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 11px 34px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.2s, transform 0.1s, opacity 0.15s;
+}
+
+.vss-more:hover { filter: brightness(1.1); }
+.vss-more:active { transform: scale(0.98); }
+.vss-more:disabled { opacity: 0.55; cursor: wait; }
+
 .vss-input:focus {
   border-color: var(--vss-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vss-accent) 25%, transparent);

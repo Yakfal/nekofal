@@ -765,3 +765,26 @@
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
+
+/* Stream-unavailable toast (IPTV dead channel feedback) */
+.vp-toast {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  background: #b91c1c;
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  animation: vp-toast-in 0.2s ease-out;
+  pointer-events: none;
+}
+
+@keyframes vp-toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}

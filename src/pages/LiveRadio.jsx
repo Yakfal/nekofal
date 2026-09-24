@@ -14,6 +14,7 @@ const LiveRadio = () => {
   const [error, setError] = useState('');
   const [current, setCurrent] = useState(null);
   const [playing, setPlaying] = useState(false);
+  const [buffering, setBuffering] = useState(false);
   const [search, setSearch] = useState('');
   const audioRef = useRef(null);
   const audioRetryRef = useRef(0);
@@ -41,7 +42,7 @@ const LiveRadio = () => {
         audio.play().catch((err) => {
           console.warn('[Radio] resume on tab return failed:', err.message);
         });
-        setPlaying(true);
+        setBuffering(true);
       }
       wasPlayingRef.current = false;
     }
@@ -134,6 +135,7 @@ const LiveRadio = () => {
     }
     audioRetryRef.current = 0;
     setPlaying(false);
+    setBuffering(false);
     setCurrent(null);
   }, []);
 
@@ -164,16 +166,15 @@ const LiveRadio = () => {
     if (!audioRef.current) return;
     if (current?.id === station.id && playing) {
       audioRef.current.pause();
-      setPlaying(false);
       return;
     }
     if (current?.id === station.id && !playing) {
       audioRef.current.play().catch(() => setError('Playback blocked for this stream'));
-      setPlaying(true);
+      setBuffering(true);
       return;
     }
     setCurrent(station);
-    setPlaying(true);
+    setBuffering(true);
   };
 
   useEffect(() => {
@@ -197,6 +198,7 @@ const LiveRadio = () => {
     if (!audio || !current) return;
     if (audioRetryRef.current >= 4) {
       setPlaying(false);
+      setBuffering(false);
       return;
     }
     const attempt = audioRetryRef.current + 1;
@@ -214,12 +216,15 @@ const LiveRadio = () => {
         console.warn('[Radio] retry play error:', err.message);
         setError('Could not play this stream (may be geo/format blocked)');
         setPlaying(false);
+        setBuffering(false);
       });
     }, delay);
   }, [current]);
 
   const resetBlip = useCallback(() => {
     audioRetryRef.current = 0;
+    setBuffering(false);
+    setPlaying(true);
   }, []);
 
   const floatToMini = useCallback(async () => {
@@ -336,15 +341,25 @@ const LiveRadio = () => {
         </div>
       )}
 
-      <audio ref={audioRef} onError={retryPlay} onStalled={retryPlay} onPlaying={resetBlip} onEnded={() => setPlaying(false)} />
+      <audio
+        ref={audioRef}
+        onError={retryPlay}
+        onStalled={retryPlay}
+        onLoadStart={() => setBuffering(true)}
+        onWaiting={() => setBuffering(true)}
+        onPlaying={resetBlip}
+        onPlay={() => { setBuffering(false); setPlaying(true); }}
+        onPause={() => { setBuffering(false); setPlaying(false); }}
+        onEnded={() => { setBuffering(false); setPlaying(false); }}
+      />
 
       {current && (
         <div className="radio-nowplaying">
           <div className="radio-nowplaying-info">
-            {playing ? '● LIVE' : 'Paused'} — {current.name}
+            {buffering ? 'Buffering…' : playing ? '● LIVE' : 'Paused'} — {current.name}
           </div>
           <button className="radio-nowplaying-toggle" onClick={() => playStation(current)}>
-            {playing ? '⏸' : '▶'}
+            {buffering ? <span className="radio-spinner" /> : playing ? '⏸' : '▶'}
           </button>
           <button className="radio-nowplaying-float" onClick={floatToMini} title="Float in mini player">
             ⁝

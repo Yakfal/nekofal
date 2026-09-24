@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { useAppSettings } from '../contexts/AppSettingsContext.jsx';
 import { useLanguage } from '../i18n/LanguageContext.jsx';
 import './Sidebar.css';
@@ -72,6 +72,7 @@ const makeBrowseSection = (t) => ({
 const Sidebar = ({ isCollapsed, toggleSidebar, width }) => {
   const { settings } = useAppSettings();
   const { t } = useLanguage();
+  const location = useLocation();
   const [appVersion, setAppVersion] = useState(null);
   const withAdult = !settings.familyMode;
 
@@ -124,6 +125,12 @@ const Sidebar = ({ isCollapsed, toggleSidebar, width }) => {
               <NavLink 
                 key={item.path} 
                 to={item.path}
+                onClick={(e) => {
+                  if (item.path === '/discover' && location.pathname === '/discover') {
+                    e.preventDefault();
+                    window.dispatchEvent(new CustomEvent('nek-clear-home-search'));
+                  }
+                }}
                 className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
               >
                 <span className="sidebar-icon">{item.icon}</span>
