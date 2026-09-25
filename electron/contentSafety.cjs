@@ -1,25 +1,10 @@
 // Keyword-based adult content tagging. Canonical CJS copy used by the MAIN
-// process (db inserts). The renderer imports this via src/utils/contentSafety.js
-// so both sides share one list.
+// process (db inserts). The keyword data lives in contentSafety.data.json so
+// the renderer (src/utils/contentSafety.js) can consume the SAME lists through
+// Vite's native JSON import — a CommonJS module cannot be statically imported
+// by Vite in dev, which left the renderer (and Electron dev window) blank.
 
-const ADULT_KEYWORDS = [
-  'xvideos', 'xnxx', 'pornhub', 'hentai', 'hanime', 'onlyfans', 'fansly',
-  'xhamster', 'redtube', 'youporn', 'spankbang', 'motherless', 'erome',
-  'adult', 'nsfw', 'xxx', 'porn', 'sex', 'sextape', 'sex tape', 'milf',
-  'escort', 'strip', 'striptease', 'camgirl', 'webcam model', 'erotica',
-  'pussy', 'cock', 'tits', 'boobs', 'anal', 'blowjob', 'oral sex',
-  'intercourse', 'nude', 'naked', 'threesome', 'bdsm', 'fetish', 'fetish porn',
-  'masturbat', 'dildo', 'vibrator', 'orgasm', 'penis', 'vagina', 'squirt',
-  'sensual massage', 'xxxvideos', 'jav', 'bareback', 'gangbang',
-  'cream pie', 'creampie', 'onlyfans leak', 'horny', 'slut', 'whore',
-  'adult content', 'male enhancement', 'hookup', 'swinger', 'orgy'
-];
-
-const ADULT_DOMAIN_HINTS = [
-  'xvideos.com', 'xnxx.com', 'pornhub.com', 'hanime.tv', 'hentai', 'onlyfans.com',
-  'xhamster.com', 'redtube.com', 'youporn.com', 'spankbang.com', 'erome.com',
-  'eporner.com', 'beeeg.net', 'porn'
-];
+const { ADULT_KEYWORDS, ADULT_DOMAIN_HINTS } = require('./contentSafety.data.json');
 
 const normalize = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 

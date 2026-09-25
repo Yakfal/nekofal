@@ -41,8 +41,33 @@
   const ACTIVATE_KEYS = new Set(['Enter', ' ', 'NumpadEnter']);
   const ACTIVATE_CODES = new Set([13, 32, 23, 66, 160, 962]); // Enter, Space, DPAD_CENTER, KEYCODE_ENTER, KEYCODE_NUMPAD_ENTER, DPAD_CENTER_ALT
 
+  // Focus-scoping containers. D-Pad navigation must stay inside the currently
+  // open modal / overlay / dropdown / panel: without this the nearest-element
+  // math happily jumps to chrome that sits *behind* the modal (it still has a
+  // painted rect), which is disorienting and can strand the remote off-screen.
+  const SCOPE_SELECTOR = [
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    '.onboarding-overlay',
+    '.app-menu-dropdown',
+    '.cinema-modal-backdrop',
+    '.cinema-modal',
+    '.pm-backdrop',
+    '.passcode-overlay',
+    '.passcode-dialog',
+    '.dm-panel',
+    '.save-panel',
+    '.error-overlay',
+    '.player-controls-overlay',
+    '.playback-resolving-overlay',
+  ].join(',');
+
+  // Only elements that are actually interactive (not decorative overlays).
+  const SCOPED_ACTIVATABLE = '[role="dialog"] [tabindex], [role="dialog"] button, [role="dialog"] a, [role="dialog"] input, .onboarding-overlay button, .app-menu-dropdown .dropdown-item, .app-menu-dropdown button, .cinema-modal *[tabindex], .cinema-modal button, .pm-backdrop *:is(button,a,[tabindex]), .passcode-dialog *:is(button,input,a,[tabindex]), .dm-panel *:is(button,a,[tabindex]), .save-panel *:is(button,a,[tabindex]), .error-overlay *:is(button,a,[tabindex]), .player-controls-overlay *:is(button,a,[tabindex]), .playback-resolving-overlay *:is(button,a,[tabindex])';
+
   let enabled = false;
   let lastFocused = null;
+  let scopeObserver = null;
 
   function isEditable(el) {
     if (!el) return false;
@@ -84,6 +109,36 @@
   function center(el) {
     const r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, r };
+  }
+
+  // Nearest containing focus-scope (modal/overlay/dropdown) for an element, or
+  // null when the element lives directly in the page chrome.
+  function scopeOf(el) {
+    if (!el || el === document.body) return null;
+    const chain = [];
+    let n = el;
+    while (n && n !== document.body && n !== document.documentElement) {
+      if (n.matches && n.matches(SCOPE_SELECTOR)) return n;
+      chain.push(n);
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  // Candidates must belong to the SAME focus-scope as the focused element.
+  // This keeps the remote inside an open dialog/overlay instead of bouncing to
+  // interactive chrome that is merely painted behind it. When the focused
+  // element is page chrome but a modal is open, navigation naturally locks into
+  // that visible scope so the remote cannot wander behind the modal.
+  function scopeFilter(cands, cur) {
+    let scope = scopeOf(cur);
+    if (!scope) {
+      const openScope = Array.from(document.querySelectorAll(SCOPE_SELECTOR))
+        .find((s) => visible(s) && !s.hasAttribute('aria-hidden'));
+      if (openScope) scope = openScope;
+    }
+    if (!scope) return cands;
+    return cands.filter((c) => scopeOf(c) === scope);
   }
 
   // Nearest-neighbour pick in `dir` (dx, dy in [-1,0,1]). Candidates must lie
@@ -141,7 +196,7 @@
     if (dir) {
       e.preventDefault();
       const start = ae && ae !== document.body ? ae : document.body;
-      const cands = getFocusables();
+      const cands = scopeFilter(getFocusables(), start);
       const next = nearest(cands, start, dir);
       if (next) {
         next.focus();
