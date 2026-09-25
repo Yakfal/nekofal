@@ -1,6 +1,6 @@
 {
   "name": "nekofal",
-  "version": "1.0.57",
+  "version": "1.0.58",
   "description": "Nekofal - Desktop media streaming hub",
   "main": "electron/main.js",
   "scripts": {
@@ -11,11 +11,11 @@
     "pack": "electron-builder --dir",
     "dist": "node scripts/dist.js",
     "dist:publish": "node scripts/dist.js --publish && node scripts/publish-release.js",
-"dist:local": "npm run build && electron-builder --win",
-      "cap:sync": "npm run build && npx cap sync android",
-      "cap:open": "npx cap open android",
-      "cap:build": "npm run cap:sync && cd android && gradlew assembleDebug"
-    },
+    "dist:local": "npm run build && electron-builder --win",
+    "cap:sync": "npm run build && npx cap sync android",
+    "cap:open": "npx cap open android",
+    "cap:build": "npm run cap:sync && cd android && gradlew assembleDebug"
+  },
   "keywords": [
     "media",
     "streaming",

@@ -28,6 +28,23 @@
   transform: scale(1.05);
 }
 
+/* TV / D-Pad focus: reveal the play overlay + content the same way hover does,
+   since Android TV has no pointer/hover to trigger `group-hover` styles. */
+.media-card:focus .poster-image,
+.media-card.tv-focused .poster-image {
+  transform: scale(1.05);
+}
+
+.media-card:focus .play-overlay,
+.media-card.tv-focused .play-overlay {
+  opacity: 1;
+}
+
+.media-card:focus .card-content,
+.media-card.tv-focused .card-content {
+  opacity: 1;
+}
+
 .poster-placeholder,
 .image-loading {
   width: 100%;

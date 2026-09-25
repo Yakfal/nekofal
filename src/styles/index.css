@@ -74,6 +74,29 @@ body {
   outline-offset: 2px;
 }
 
+/* ---------------------------------------------------------------------------
+   Android TV D-Pad focus ring (spatialNav engine).
+   `tv-focused` is applied by src/utils/spatialNav.js to whichever element the
+   remote has selected. It must be a strong, unmistakable ring that overrides
+   the per-component `outline: none` resets found in the card CSS files, so it
+   ships with a generous outline width + glow instead of depending on those.
+   --------------------------------------------------------------------------- */
+.tv-focused,
+body[data-tv-nav] .tv-focused {
+  outline: 3px solid var(--accent) !important;
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 4px var(--accent-soft),
+    0 0 18px 2px var(--accent-soft);
+  border-radius: inherit;
+  transition: outline-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+body[data-tv-nav] ::selection {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* Custom scrollbar throughout app */
 ::-webkit-scrollbar {
   width: 8px;

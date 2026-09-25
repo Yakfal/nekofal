@@ -118,6 +118,9 @@ const MediaCard = ({
       className="media-card group"
       onClick={handleCardClick}
       data-id={video.id}
+      role="button"
+      tabIndex={0}
+      aria-label={video.videoTitle}
     >
       {/* Thumbnail Image */}
       <div className="card-image-container relative">

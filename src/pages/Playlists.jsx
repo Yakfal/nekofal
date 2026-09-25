@@ -244,6 +244,8 @@ const Playlists = () => {
               className="playlist-card smart daily"
               onClick={() => openSmart('daily-mix')}
               title="Auto-mixed from your most-played genres"
+              role="button"
+              tabIndex={0}
             >
               <div className="playlist-card-icon">☀️</div>
               <div className="playlist-card-info">
@@ -258,6 +260,8 @@ const Playlists = () => {
               className="playlist-card smart favorites"
               onClick={() => openSmart('favorites-shuffle')}
               title="Continuous play of all saved items"
+              role="button"
+              tabIndex={0}
             >
               <div className="playlist-card-icon">🔀</div>
               <div className="playlist-card-info">
@@ -269,7 +273,7 @@ const Playlists = () => {
             </div>
 
             {visiblePlaylists.map(pl => (
-              <div key={pl.id} className="playlist-card" onClick={() => openCustom(pl)}>
+              <div key={pl.id} className="playlist-card" onClick={() => openCustom(pl)} role="button" tabIndex={0} aria-label={pl.name}>
                 <div className="playlist-card-icon">🎵</div>
                 <div className="playlist-card-info">
                   <div className="playlist-card-name">{pl.name}</div>

@@ -391,7 +391,7 @@ function Cinema() {
               const favKey = getMediaId(v);
               const isFav = favoriteSet.has(favKey);
               return (
-                <div key={v.id} className="cinema-card" onClick={() => openVideo(v)}>
+                <div key={v.id} className="cinema-card" onClick={() => openVideo(v)} role="button" tabIndex={0} aria-label={v.videoTitle}>
                   <div className="cinema-thumb">
                     <img src={v.thumbnailUrl} alt="" loading="lazy"
                       onError={(e) => { e.currentTarget.style.display = 'none'; }}

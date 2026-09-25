@@ -469,7 +469,7 @@ const mode = 'site';
             const isFav = isCardFavorited(v);
             return (
               <div key={favKey} className="vss-card" data-id={favKey}>
-                <div className="vss-thumb" onClick={() => playVideo(toPlayerPayload(v))}>
+                <div className="vss-thumb" onClick={() => playVideo(toPlayerPayload(v))} role="button" tabIndex={0} aria-label={v.title}>
                   {v.thumbnailUrl ? (
                     <img src={v.thumbnailUrl} alt={v.title} loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
                   ) : (
