@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Placeholder Android TV banner (Leanback launcher, 320x180 equivalent).
+         Replace with a real artwork banner before shipping to Play/TV stores. -->
+    <color name="tv_banner_bg">#0B1220</color>
+</resources>
