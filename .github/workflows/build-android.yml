@@ -136,7 +136,8 @@ jobs:
         if: env.HAS_KEYSTORE == 'true'
         run: |
           cd android
-          $ANDROID_HOME/build-tools/*/apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+          BTDIR=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          java -jar "$BTDIR/lib/apksigner.jar" verify --print-certs app/build/outputs/apk/release/app-release.apk
           cd app/build/outputs/apk/release
           ls -la
 
