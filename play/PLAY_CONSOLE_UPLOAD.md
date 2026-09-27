@@ -7,7 +7,7 @@ dimensions have been verified with System.Drawing (exact pixel sizes required by
 
 | Item | Path / URL |
 | ---- | ---------- |
-| Signed AAB (v1.0.59, versionCode 59) | `https://github.com/Yakfal/nekofal/actions/runs/36341505039/artifacts/10939230818` (Download `app-release.aab`) |
+| Signed AAB (v1.0.59, versionCode 59) | `https://github.com/Yakfal/nekofal/actions/runs/36343043672/artifacts/10939666584` (Download `app-release.aab`) |
 
 Upload via Play Console → **Testing → Internal testing → Create release → Upload**.
 Then copy the opt-in via the "Manage testers" link on the Internal testing page
