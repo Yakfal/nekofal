@@ -51,6 +51,7 @@ const api = {
   
   setWatchHistory: (videoData) => ipcRenderer.invoke('db:setHistory', videoData),
   getWatchHistory: () => ipcRenderer.invoke('db:getHistory'),
+  getVideoPositions: () => ipcRenderer.invoke('db:getPositions'),
 
   // Media preference weights (Because You Watched / recommended mixes)
   addMediaWeight: (payload) => ipcRenderer.invoke('db:addMediaWeight', payload),
@@ -210,7 +211,7 @@ if (process.env.NODE_ENV === 'development') {
     'getVideos', 'getVideoCategories',
     'setFavorite', 'getFavorites', 'removeFavorite',
     'toggleFavorite', 'checkIsFavorite',
-    'setWatchHistory', 'getWatchHistory',
+    'setWatchHistory', 'getWatchHistory', 'getVideoPositions',
     'clearAll', 'openDevTools'
   ];
 

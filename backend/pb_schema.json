@@ -93,6 +93,28 @@
       ],
       "options": {}
     },
+    "watch_history": {
+      "type": "base",
+      "rules": {
+        "listRule": "user = @request.auth.id",
+        "viewRule": "user = @request.auth.id",
+        "createRule": "@request.auth.id != \"\"",
+        "updateRule": "user = @request.auth.id",
+        "deleteRule": "user = @request.auth.id"
+      },
+      "fields": [
+        { "type": "relation", "name": "user", "maxSelect": 1, "cascadeDelete": true, "required": true, "collectionId": "users" },
+        { "type": "text", "name": "media_id", "required": true },
+        { "type": "text", "name": "title" },
+        { "type": "text", "name": "url" },
+        { "type": "text", "name": "type" },
+        { "type": "text", "name": "thumbnail" },
+        { "type": "number", "name": "position_seconds" },
+        { "type": "number", "name": "duration_seconds" },
+        { "type": "text", "name": "updated_at" }
+      ],
+      "options": {}
+    },
     "user_preferences": {
       "type": "base",
       "rules": {

@@ -2929,6 +2929,24 @@ ipcMain.handle('db:getHistory', async () => {
   }
 });
 
+ipcMain.handle('db:getPositions', async () => {
+  try {
+    const { db, error } = getDbSafe();
+    if (error) return { success: false, error: 'Database not available: ' + error };
+    
+    const positions = await db.getVideoPositions();
+    
+    return { success: true, data: positions };
+  } catch (err) {
+    console.error('Get positions error:', err);
+    return { 
+      success: false, 
+      error: 'Failed to get resume positions',
+      details: err.message 
+    };
+  }
+});
+
 ipcMain.handle('db:addMediaWeight', async (_event, payload) => {
   try {
     const { db, error } = getDbSafe();

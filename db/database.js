@@ -201,6 +201,16 @@ async function initializeDatabase() {
       console.log('[DB] lastPosition column migration skipped:', migrationErr.message);
     }
 
+    // Migration: epoch-ms of the last position write (for cloud LWW merge on
+    // updated_at, v1.0.60). Old rows default to 0 so unpushed positions are
+    // easy to spot, but any positive lastPosition without a stamp falls back
+    // to the video's scrapedAt so it still participates in conflict resolution.
+    try {
+      db.run(`ALTER TABLE videos ADD COLUMN positionUpdatedAt INTEGER DEFAULT 0;`);
+    } catch (migrationErr) {
+      console.log('[DB] positionUpdatedAt column migration skipped:', migrationErr.message);
+    }
+
     // Migration: Add 'isAdult' column if it doesn't exist (family mode tagging)
     try {
       db.run(`ALTER TABLE videos ADD COLUMN isAdult INTEGER DEFAULT 0;`);
@@ -714,7 +724,7 @@ async function setWatchHistory(videoData) {
       videoData.videoUrl,
       videoData.pageUrl || null,
       videoData.thumbnailUrl,
-      new Date().toISOString()
+      videoData.watchedAt || new Date().toISOString()
     ]);
     
     saveDatabase();
@@ -1181,12 +1191,45 @@ async function setVideoPosition(videoId, lastPosition) {
 
   try {
     const pos = Math.max(0, Math.floor(Number(lastPosition) || 0));
-    db.run('UPDATE videos SET lastPosition = ? WHERE id = ?', [pos, videoId]);
+    db.run('UPDATE videos SET lastPosition = ?, positionUpdatedAt = ? WHERE id = ?', [pos, Date.now(), videoId]);
     saveDatabase();
     return { success: true };
   } catch (error) {
     console.error('Failed to save video position:', error);
     return { success: false, error: error.message };
+  }
+}
+
+/**
+ * All saved resume positions (id + lastPosition + positionUpdatedAt), used by
+ * the cloud sync engine (v1.0.60) to merge watch progress across devices with
+ * LWW on updated_at.
+ */
+async function getVideoPositions() {
+  const init = await initializeDatabase();
+  if (!init.success) throw new Error(init.error);
+
+  try {
+    const stmt = db.prepare(`
+      SELECT id, COALESCE(lastPosition, 0) AS lastPosition,
+             CASE WHEN COALESCE(positionUpdatedAt, 0) > 0 THEN positionUpdatedAt
+                  ELSE CAST(strftime('%s', scrapedAt) * 1000 AS INTEGER)
+             END AS positionUpdatedAt
+      FROM videos
+      WHERE COALESCE(lastPosition, 0) > 0
+      ORDER BY positionUpdatedAt DESC
+    `);
+
+    const results = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    return results;
+  } catch (error) {
+    console.error('Failed to get video positions:', error);
+    throw error;
   }
 }
 
@@ -1411,6 +1454,7 @@ module.exports = {
   getTopMediaWeights,
   // Playback position (resume)
   setVideoPosition,
+  getVideoPositions,
   // Downloads
   addDownload,
   getDownloads,

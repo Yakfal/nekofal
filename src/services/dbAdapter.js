@@ -274,6 +274,7 @@ export async function syncNow() {
     await syncFavorites(api, report);
     await syncPlaylists(api, report);
     await syncIptv(api, report);
+    await syncWatchHistory(api, report);
     await syncPreferences(api, report);
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('scrapers-synced'));
     return { success: true, ...report, at: new Date().toISOString() };
@@ -581,6 +582,156 @@ async function syncPreferences(api, report) {
 }
 
 const PREFS_STORAGE_KEY = 'yakfal-hub-preferences';
+
+/** Normalize a watch-history/position savedAt value (ISO string or epoch-ms)
+ *  to epoch-ms so LWW comparisons are apples-to-apples across platforms. */
+function toEpochMs(v) {
+  if (v == null || v === '') return 0;
+  const n = Number(v);
+  if (!Number.isNaN(n) && String(v).trim() !== '') return n;
+  const t = Date.parse(String(v));
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/** Stable sync key shared by a history row and its resume position: both are
+ *  keyed off the same playback id, so they merge into one cloud record. */
+function histKey(x) {
+  return String(x && (x.media_id || x.id || x.externalId || x.videoUrl || x.pageUrl || x.url) || '').trim();
+}
+
+/**
+ * Watch history + resume positions mirror (v1.0.60). New collection; both
+ * watch_history rows and resume positions are merged per-media on updated_at
+ * (LWW) so progress follows the account across devices.
+ *
+ * The latest write wins per media_id: a remote row whose `updated_at` is newer
+ * than the local effective timestamp (max of history watchedAt and position
+ * positionUpdatedAt) replaces local state, and vice-versa.
+ */
+async function syncWatchHistory(api, report) {
+  const myId = state.user && state.user.id;
+  if (!myId) return;
+
+  // Local picture: merge watch_history + resume positions under the same key,
+  // keeping each side's own timestamp so the union has a true updated_at.
+  const localByKey = new Map();
+  let localHist = [];
+  let localPos = [];
+  try {
+    localHist = localList(await api.getWatchHistory());
+  } catch (err) {
+    report.errors.push(`history.local: ${err.message}`);
+  }
+  try {
+    localPos = localList(await api.getVideoPositions());
+  } catch (err) {
+    report.errors.push(`history.positions: ${err.message}`);
+  }
+
+  for (const h of localHist) {
+    const key = histKey(h);
+    if (!key) continue;
+    localByKey.set(key, {
+      hist: h,
+      position: null,
+      updatedAt: toEpochMs(h.watchedAt || h.addedAt),
+    });
+  }
+  for (const p of localPos) {
+    const key = histKey(p);
+    if (!key) continue;
+    const entry = localByKey.get(key) || { hist: null, position: null, updatedAt: 0 };
+    entry.position = p;
+    entry.updatedAt = Math.max(entry.updatedAt, toEpochMs(p.positionUpdatedAt || p.updatedAt));
+    localByKey.set(key, entry);
+  }
+
+  // Remote picture
+  let remote = [];
+  try {
+    remote = await pbList('watch_history', `(user="${myId}")`);
+  } catch (err) {
+    report.errors.push(`history.listen: ${err.message}`);
+    return;
+  }
+  const remoteByKey = new Map(remote.map((r) => [histKey(r), r]));
+
+  // Pull remote -> local (LWW: replace only when remote is strictly newer, or
+  // the media is entirely missing locally).
+  for (const r of remote) {
+    const key = histKey(r);
+    if (!key) continue;
+    const local = localByKey.get(key);
+    const remoteT = toEpochMs(r.updated_at || r.updated || r.watched_at);
+    const localT = local ? (local.updatedAt || toEpochMs(local.hist && local.hist.watchedAt)) : 0;
+    // LWW: only apply remote when it carries a real timestamp that is strictly
+    // newer than local. Untimestamped rows are imported only if entirely new.
+    if (remoteT > 0 && local && localT >= remoteT) continue;
+    if (!remoteT && local) continue;
+    try {
+      // History row (page URL outlives rotating CDN streams, keep it preferred)
+      if (r.media_id || r.title) {
+        await api.setWatchHistory({
+          id: String(r.media_id || key),
+          media_id: String(r.media_id || ''),
+          title: String(r.title || 'Untitled'),
+          videoUrl: String(r.url || ''),
+          pageUrl: String(r.url || ''),
+          thumbnailUrl: String(r.thumbnail || ''),
+          watchedAt: remoteT ? new Date(remoteT).toISOString() : new Date().toISOString(),
+        });
+      }
+      // Resume position
+      const pos = Number(r.position_seconds) || 0;
+      if (pos > 0 && api.saveVideoPosition) {
+        await api.saveVideoPosition(String(r.media_id || key), pos);
+      }
+      localByKey.set(key, { hist: { id: r.media_id, watchedAt: remoteT }, position: null, updatedAt: remoteT });
+      report.pulled++;
+    } catch (err) {
+      report.errors.push(`history.pulled: ${err.message}`);
+    }
+  }
+
+  // Push local -> remote (LWW: create missing, patch stale)
+  const myRemoteIds = new Map(remote.map((r) => [histKey(r), r]));
+  for (const [key, entry] of localByKey) {
+    if (!key) continue;
+    const h = entry.hist || {};
+    const p = entry.position;
+    const updatedAt = entry.updatedAt || toEpochMs(h.watchedAt);
+    if (!updatedAt) continue;
+    const payload = {
+      media_id: String(p && p.id ? p.id : h.id || key),
+      title: String((h.title || h.videoTitle || (p && p.title) || 'Untitled') || '').trim(),
+      url: String(h.pageUrl || h.videoUrl || '').trim(),
+      type: String(h.sourceSite || h.type || 'video').trim(),
+      thumbnail: String(h.thumbnailUrl || '').trim(),
+      position_seconds: Number(p && p.lastPosition) || 0,
+      duration_seconds: Number(h.duration || h.duration_seconds || 0),
+      updated_at: new Date(updatedAt).toISOString(),
+    };
+    const existing = myRemoteIds.get(key);
+    if (!existing) {
+      try {
+        await pbCreate('watch_history', { user: myId, ...payload });
+        report.pushed++;
+      } catch (err) {
+        report.errors.push(`history.pushed: ${err.message}`);
+      }
+    } else if (toEpochMs(existing.updated_at || existing.updated) < updatedAt) {
+      try {
+        await pb(`/api/collections/watch_history/records/${existing.id}`, {
+          method: 'PATCH',
+          body: payload,
+        });
+        report.pushed++;
+      } catch (err) {
+        report.errors.push(`history.updated: ${err.message}`);
+      }
+    }
+  }
+}
 
 /** Raw preference object persisted by AppSettingsContext (localStorage). */
 export function getStoredPrefs() {

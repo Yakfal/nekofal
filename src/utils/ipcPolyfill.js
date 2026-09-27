@@ -289,7 +289,7 @@
     // --- history / positions --------------------------------------------
     setWatchHistory: async (videoData) => {
       const row = histRow(videoData);
-      await idb.set('history', row.id, { ...row, watchedAt: Date.now() });
+      await idb.set('history', row.id, { ...row, watchedAt: videoData && videoData.watchedAt ? new Date(videoData.watchedAt).getTime() || Date.now() : Date.now() });
       return { success: true };
     },
     getWatchHistory: async () => {
@@ -299,6 +299,10 @@
     saveVideoPosition: async (videoId, lastPosition) => {
       await idb.set('positions', String(videoId || 'last'), { id: String(videoId || 'last'), lastPosition: Number(lastPosition) || 0, updatedAt: Date.now() });
       return { success: true };
+    },
+    getVideoPositions: async () => {
+      const all = await idb.all('positions');
+      return { success: true, data: all.map((p) => ({ id: String(p && (p.id || p.videoId || 'last')), lastPosition: Number(p && p.lastPosition) || 0, positionUpdatedAt: Number(p && p.updatedAt) || 0 })) };
     },
 
     // --- playlists ------------------------------------------------------
