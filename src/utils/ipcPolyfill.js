@@ -132,6 +132,30 @@
   const favRow = (item) => videoRow(item);
   const histRow = (item) => videoRow(item);
 
+  // Overlay resume positions from the `positions` store onto any list of rows
+  // keyed by the same id (videos / favorites / history). Without this the
+  // mobile UI would never see synced progress, because positions live in a
+  // separate store on mobile (v1.0.60 cloud sync SAVES them but nothing read
+  // them back onto cards until now).
+  let positionsCache = null;
+  let positionsFetchedAt = 0;
+  const fetchPositions = async () => {
+    const now = Date.now();
+    if (positionsCache && now - positionsFetchedAt < 500) return positionsCache;
+    try {
+      const rows = await idb.all('positions');
+      positionsCache = new Map(rows.map((p) => [String(p && (p.id || p.videoId)), Number(p && p.lastPosition) || 0]));
+    } catch {
+      positionsCache = new Map();
+    }
+    positionsFetchedAt = now;
+    return positionsCache;
+  };
+  const stampPositions = async (rows) => {
+    const map = await fetchPositions();
+    return (rows || []).map((r) => ({ ...r, lastPosition: Number(r && r.lastPosition) || map.get(String(r && (r.id || r.media_id))) || 0 }));
+  };
+
   const playlistPlaylist = (p) => ({
     id: p && p.id,
     name: p && (p.name || p.title || 'Untitled'),
@@ -225,7 +249,7 @@
 
     // --- database: videos ----------------------------------------------
     getVideos: async (limit, offset) => {
-      const all = await idb.all('videos');
+      const all = await stampPositions(await idb.all('videos'));
       const start = Number(offset) || 0;
       const end = Number(limit) ? start + Number(limit) : undefined;
       return { success: true, data: end ? all.slice(start, end) : all.slice(start), total: all.length, totalFiltered: all.length };
@@ -241,7 +265,7 @@
       return { success: true, data: [...cats.values()] };
     },
     getVideosBySource: async (sourceSite) => {
-      const all = await idb.all('videos');
+      const all = await stampPositions(await idb.all('videos'));
       const src = String(sourceSite || '');
       return { success: true, data: all.filter((v) => String((v && (v.sourceSite || v.source)) || '') === src) };
     },
@@ -269,7 +293,7 @@
       return { success: true, favorited: !!existing };
     },
     getFavorites: async () => {
-      const all = await idb.all('favorites');
+      const all = await stampPositions(await idb.all('favorites'));
       return { success: true, data: all };
     },
     removeFavorite: async (videoId) => {
@@ -293,7 +317,7 @@
       return { success: true };
     },
     getWatchHistory: async () => {
-      const all = await idb.all('history');
+      const all = await stampPositions(await idb.all('history'));
       return { success: true, data: all.sort((a, b) => (b.watchedAt || 0) - (a.watchedAt || 0)) };
     },
     saveVideoPosition: async (videoId, lastPosition) => {
