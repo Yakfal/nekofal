@@ -1,11 +1,7 @@
 name: Build Android APK
 # NOTE: This file is gitignored (/.github/workflows/) by repo convention
 # ("CI workflows are kept local until the GitHub token gains workflow scope").
-# To actually use it on GitHub you must either:
-#   a) grant your PAT/secret the `workflow` scope and run:
-#        git add -f .github/workflows/build-android.yml
-#   b) or temporarily comment out the `/.github/workflows/` line in .gitignore
-#      and commit the file normally.
+# It is uploaded to GitHub via the Contents API (docs/deploy-workflow.mjs).
 
 on:
   workflow_dispatch:          # manual run from the Actions tab
@@ -14,7 +10,8 @@ on:
       - 'v*'
 
 jobs:
-  build-android:
+  build-android-debug:
+    name: Debug APK (unsigned)
     runs-on: ubuntu-latest    # GitHub runners ship the Android SDK preinstalled
     defaults:
       run:
@@ -61,10 +58,92 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Upload APK artifact
+      - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: nekofal-android-${{ steps.version.outputs.ver }}
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  build-android-release:
+    name: Release APK + AAB (signed)
+    runs-on: ubuntu-latest
+    # Only runs when signing secrets are configured (set once via the setup script).
+    if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Read version from package.json
+        id: version
+        run: echo "ver=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Decode release keystore
+        run: |
+          mkdir -p android/app
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+
+      - name: Cache Gradle + npm
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            node_modules
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle', 'android/**/gradle-wrapper.properties') }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Build web assets + cap sync
+        run: |
+          npm run build
+          npx cap sync android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Assemble signed release APK + AAB
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease bundleRelease --no-daemon
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Verify APK signature
+        run: |
+          cd android
+          $ANDROID_HOME/build-tools/*/apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nekofal-release-${{ steps.version.outputs.ver }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nekofal-aab-${{ steps.version.outputs.ver }}
+          path: android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 30
