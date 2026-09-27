@@ -75,6 +75,8 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
 
     steps:
       - name: Checkout
@@ -91,7 +93,7 @@ jobs:
         run: echo "ver=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
       - name: Decode release keystore
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == 'true'
         run: |
           mkdir -p android/app
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
@@ -119,7 +121,7 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Assemble signed release APK + AAB
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == 'true'
         run: |
           cd android
           chmod +x gradlew
@@ -131,7 +133,7 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Verify APK signature
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == 'true'
         run: |
           cd android
           $ANDROID_HOME/build-tools/*/apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
@@ -139,7 +141,7 @@ jobs:
           ls -la
 
       - name: Upload release APK artifact
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: nekofal-release-${{ steps.version.outputs.ver }}
@@ -148,7 +150,7 @@ jobs:
           retention-days: 30
 
       - name: Upload AAB artifact
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: nekofal-aab-${{ steps.version.outputs.ver }}
