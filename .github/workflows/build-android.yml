@@ -69,8 +69,9 @@ jobs:
   build-android-release:
     name: Release APK + AAB (signed)
     runs-on: ubuntu-latest
-    # Only runs when signing secrets are configured (set once via the setup script).
-    if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    # Signing secrets may be unset (skip gracefully). Step-level `if` guards
+    # below use the secrets context, which is not allowed at job level.
+    needs: build-android-debug
     defaults:
       run:
         working-directory: .
@@ -90,6 +91,7 @@ jobs:
         run: echo "ver=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
       - name: Decode release keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         run: |
           mkdir -p android/app
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
@@ -117,6 +119,7 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Assemble signed release APK + AAB
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         run: |
           cd android
           chmod +x gradlew
@@ -128,11 +131,15 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Verify APK signature
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         run: |
           cd android
           $ANDROID_HOME/build-tools/*/apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+          cd app/build/outputs/apk/release
+          ls -la
 
       - name: Upload release APK artifact
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: nekofal-release-${{ steps.version.outputs.ver }}
@@ -141,6 +148,7 @@ jobs:
           retention-days: 30
 
       - name: Upload AAB artifact
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: nekofal-aab-${{ steps.version.outputs.ver }}
