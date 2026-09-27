@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nekofal Privacy Policy</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 3rem 1rem;
+    font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+    background: #0b0f17; color: #e6f7f1; line-height: 1.6;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 2rem; color: #34d399; margin-bottom: .25rem; }
+  h2 { font-size: 1.35rem; color: #34d399; margin-top: 2rem; }
+  .meta { color: #9fb3ac; font-size: .9rem; margin-bottom: 2rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid #1f3a33; padding: .55rem .7rem; text-align: left; vertical-align: top; }
+  th { background: #12201a; color: #34d399; }
+  a { color: #34d399; }
+  footer { margin-top: 3rem; color: #9fb3ac; font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>Nekofal Privacy Policy</h1>
+<p class="meta"><strong>Effective date:</strong> September 27, 2026 &nbsp;·&nbsp; <strong>Version:</strong> 1.0</p>
+
+<h2>1. Overview</h2>
+<p>Nekofal ("the app", "we") is a local, self-hosted media streaming hub for Android TV, Android phone/tablet, and Desktop (Electron). This policy explains what data the app stores, what it sends over the network, and the choices you have.</p>
+<p>The short version: <strong>Nekofal does not collect, sell, or share any personal data.</strong> All bookmarks, favorites, watch history, language preferences, and settings are stored <strong>only on your own device</strong>.</p>
+
+<h2>2. Data stored on your device</h2>
+<p>The app keeps the following information locally, on the device you are using:</p>
+<table>
+<tr><th>Data</th><th>Where it is stored</th><th>Purpose</th></tr>
+<tr><td>Favorites, watch history, bookmarks</td><td>IndexedDB / localStorage (WebView storage)</td><td>Restore your lists and progress on relaunch</td></tr>
+<tr><td>Language and UI preferences</td><td>localStorage</td><td>Remember how you configured the app</td></tr>
+<tr><td>Media server connection details</td><td>localStorage</td><td>Connect to your own server/instance</td></tr>
+<tr><td>Adult-content site configuration</td><td>localStorage</td><td>Home URLs and settings for the optional adult section</td></tr>
+<tr><td>Desktop secrets vault</td><td>Electron safeStorage (OS keychain)</td><td>Store credentials you enter on Desktop only</td></tr>
+</table>
+<p>On Android, data lives inside the app's private WebView storage. Deleting the app clears this data. On Desktop, data lives in the Electron user-data folder; uninstalling it removes it. We do not back it up anywhere else.</p>
+
+<h2>3. Data sent over the network</h2>
+<p>When you actively use a feature, the app makes network requests <strong>only to destinations you trigger or that you have configured</strong>:</p>
+<ul>
+<li><strong>Streams &amp; playlists:</strong> IPTV playlist sources (e.g. iptv-org), radio directories (e.g. radio-browser.info), public archives (e.g. archive.org), and any stream URL you open. The app fetches exactly the URLs the current feature requires.</li>
+<li><strong>Custom servers:</strong> If you configure a self-hosted server URL (PocketBase or your own media server), the app communicates with that server using the credentials you supply. Those are sent only to the server you configured.</li>
+<li><strong>Optional adult section:</strong> Only when you enable and use it, the app loads the adult site URLs you have defined.</li>
+</ul>
+<p>Nekofal itself runs <strong>no analytics, no advertising SDKs, no third-party tracking, and no crash-reporting service</strong>. It does not phone home. There is no central Nekofal account or Nekofal-operated server.</p>
+
+<h2>4. Cloud sync (if enabled in future)</h2>
+<p>If cloud sync is enabled in a future version, it will sync your favorites, watch progress, and history to a <strong>server you run yourself</strong> using your own credentials. Sync is optional and off by default. Data synced to your own server is governed by your control of that server; Nekofal will not operate a cloud service.</p>
+
+<h2>5. Children</h2>
+<p>Nekofal is not directed at children. The app may surface links to third-party streaming/web content, including an adult section that is disabled by default and requires explicit user configuration to enable. The app does not knowingly collect information from children.</p>
+
+<h2>6. Third-party content</h2>
+<p>Media thumbnails, streamed video/audio, and playlists are served by third parties you choose to load. Those third parties may collect data under their own privacy policies. Nekofal cannot control, and is not responsible for, the privacy practices of those sites.</p>
+
+<h2>7. Security</h2>
+<ul>
+<li>Data stays on your device and is not transmitted unless you use a feature that requires it.</li>
+<li>Secrets entered in Desktop mode are protected by the operating system keychain (Electron <code>safeStorage</code>).</li>
+<li>We recommend you use your own server with HTTPS if you enable sync.</li>
+</ul>
+
+<h2>8. Your choices</h2>
+<ul>
+<li>Clear favorites/history within the app or by clearing app data in your OS settings.</li>
+<li>Uninstall the app to remove all locally stored data.</li>
+<li>Disable or refrain from enabling the optional adult section.</li>
+<li>Control sync (when available) by simply not configuring a server.</li>
+</ul>
+
+<h2>9. Changes to this policy</h2>
+<p>We may update this policy as features evolve. Material changes will be reflected by an updated version number and effective date at the top of this document.</p>
+
+<h2>10. Contact</h2>
+<p>For questions about this policy: open an issue in the project repository (Yakfal/nekofal).</p>
+
+<footer>Nekofal · Privacy Policy v1.0 · Effective September 27, 2026</footer>
+</main>
+</body>
+</html>
