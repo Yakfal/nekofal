@@ -19,6 +19,9 @@ real-dist/
 .env
 .env.local
 *.secret
+.keystore/
+*.keystore
+*.jks
 
 # Logs / OS noise
 npm-debug.log*

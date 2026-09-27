@@ -1,3 +1,24 @@
+// Top-level app build file for the Capacitor Android app.
+def keystoreFile = null
+String storePassword = null
+String keyAlias = null
+String keyPassword = null
+def localKs = file("../../.keystore/nekofal-release.keystore")
+
+if (System.getenv("KEYSTORE_BASE64") && file("release.keystore").exists()) {
+    // CI: workflow decodes KEYSTORE_BASE64 into android/app/release.keystore
+    keystoreFile = file("release.keystore")
+    storePassword = System.getenv("RELEASE_STORE_PASSWORD")
+    keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+    keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+} else if (localKs.exists() && System.getenv("RELEASE_STORE_PASSWORD")) {
+    // Local dev: keystore kept in repo-root .keystore/ (gitignored), secrets in .env
+    keystoreFile = localKs
+    storePassword = System.getenv("RELEASE_STORE_PASSWORD")
+    keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+    keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+}
+
 apply plugin: 'com.android.application'
 
 android {
@@ -16,10 +37,23 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (keystoreFile != null) {
+                storeFile = keystoreFile
+                storePassword = storePassword
+                keyAlias = keyAlias
+                keyPassword = keyPassword
+            }
+        }
+    }
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystoreFile != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
