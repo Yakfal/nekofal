@@ -43,7 +43,7 @@ android {
                 storeFile = keystoreFile
                 storePassword = relStorePw
                 keyAlias = relKeyAlias
-                keyPassword = relKeyPw
+                keyPassword = relStorePw
             }
         }
     }
