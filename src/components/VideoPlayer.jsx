@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Hls from 'hls.js';
 import { bindMediaKey, unbindMediaKey } from '../utils/mediaKeys.js';
 import { pickBestStream, isYouTubeUrl } from '../services/customScraper.js';
-import { favoritePayloadFor, getMediaId } from '../services/dbAdapter.js';
+import { favoritePayloadFor, getMediaId, autoSync } from '../services/dbAdapter.js';
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import './VideoPlayer.css';
 
@@ -151,6 +151,11 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     return typeof p.defaultRate === 'number' ? p.defaultRate : 1;
   });
   const [qualityLevels, setQualityLevels] = useState([]);
+  // v1.0.61: extractor-enumerated HLS variant tiers ({ height, label, url }).
+  // Kept separate from the hls.js-derived menu because a tokenized master
+  // (hanime) collapses to ONE height-0 level — the extracted variants give
+  // the dropdown real resolutions and per-variant URLs to switch to.
+  const [extractQualityLevels, setExtractQualityLevels] = useState([]);
   // Dual-engine fallback: direct-URL format list ({ label, height, url })
   // from extraction when hls.js has no levels (non-HLS playback). Used to
   // hot-swap quality by re-pointing <video> without re-running yt-dlp.
@@ -161,6 +166,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const [isDownloading, setIsDownloading] = useState(false);
   const pendingSeekRef = useRef(null);
   const lastSaveTimeRef = useRef(0);
+  // v1.0.61: the active httpHeaders handed to getProxiedUrl — re-used when
+  // switching to an HLS variant URL (segment/CDN hosts need them, too).
+  const activeHttpHeadersRef = useRef(null);
+  // v1.0.61: remember which stream the saved-quality pref was auto-applied to,
+  // so a variant switch doesn't re-trigger the same switch on the next
+  // manifest parse.
+  const variantAppliedRef = useRef(null);
+  // v1.0.61: debounce watch-history progress pushes to the cloud (continue
+  // watching crosses devices while the video is still on screen).
+  const syncTimerRef = useRef(null);
   const [hlsRetryKey, setHlsRetryKey] = useState(0);
   const hlsFallbackUsedRef = useRef(false);
   const hlsSelfHealUsedRef = useRef(false);
@@ -379,6 +394,39 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     api.saveVideoPosition(video.id, rounded).catch(() => {});
   }, [video]);
 
+  // v1.0.61: upsert the watch_history row (continue-watching feed) with the
+  // latest progress + duration. Fires on timeupdate (>30s), pause, ended and
+  // close so the shelf and the cloud mirror stay fresh even for videos whose
+  // resume position has no `videos` row (e.g. hanime search results).
+  const recordWatchHistory = useCallback((pos, dur) => {
+    const api = window.api || window.electronAPI;
+    if (!api?.setWatchHistory || !video || !video.id) return;
+    const now = new Date().toISOString();
+    const position = Math.max(0, Math.floor(Number(pos) || 0));
+    const duration = Math.max(0, Math.floor(Number(dur) || Number(video.duration) || 0));
+    api.setWatchHistory({
+      id: video.id,
+      media_id: video.id,
+      title: video.videoTitle || video.title || 'Untitled',
+      videoUrl: video.videoUrl || video.url || '',
+      pageUrl: video.pageUrl || video.webUrl || '',
+      thumbnailUrl: video.thumbnailUrl || video.thumbnail || '',
+      duration,
+      position,
+      positionUpdatedAt: Date.now(),
+      watchedAt: now
+    }).catch(() => {});
+  }, [video]);
+
+  // v1.0.61: debounced cloud push of watch progress (no-op when offline).
+  const scheduleSync = useCallback(() => {
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      syncTimerRef.current = null;
+      try { autoSync(); } catch (_e) { /* best-effort */ }
+    }, 2500);
+  }, []);
+
   // Skip seeking to resume positions that are basically done watching
   const shouldResume = useCallback((pos) => {
     const p = Number(pos) || 0;
@@ -412,6 +460,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       const dur = videoEl.duration || 0;
       // Persist final position so we can resume next time (reset if finished)
       savePosition(pos >= 5 && (dur <= 0 || pos < dur - 10) ? pos : 0);
+      // v1.0.61: flush the continue-watching row + cloud progress on close.
+      recordWatchHistory(pos, dur);
+      scheduleSync();
       videoEl.pause();
       videoEl.src = '';
     }
@@ -423,7 +474,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       webviewRef.current.src = 'about:blank';
     }
     if (onClose) onClose();
-  }, [onClose, savePosition]);
+  }, [onClose, savePosition, recordWatchHistory, scheduleSync]);
 
   // ---- Native OS media controls bridge --------------------------------------
   // PlaybackContext owns navigator.mediaSession and forwards OS media commands
@@ -838,9 +889,44 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     setSelectedQuality(fmt.label || qualityLabel(fmt.height) || 'Auto');
   }, [getProxiedUrl]);
 
-  // Quality selection (HLS levels → direct formats → yt-dlp re-extraction)
+  // v1.0.61: switch an HLS stream to an EXTRACTOR-ENUMERATED variant
+  // sub-playlist (hanime quality tiers). Since the variant is itself HLS, it
+  // re-enters through hls.js (plays a single-level media playlist natively
+  // well) — native <video> cannot play .m3u8, so we can't reuse the direct
+  // format hot-swap for these. Position is preserved via pendingSeekRef.
+  const applyVariantLevel = useCallback((item) => {
+    if (!item || !item.url) return;
+    const videoEl = videoRef.current;
+    const pos = videoEl ? videoEl.currentTime || 0 : 0;
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+    streamHlsRef.current = true;
+    // Preserve an outstanding resume seek (first manifold parse before
+    // playback) — fall back to the live position when already playing.
+    pendingSeekRef.current = pendingSeekRef.current || pos;
+    setStreamUrl(getProxiedUrl(item.url, activeHttpHeadersRef.current));
+    setSelectedQuality(item.label || qualityLabel(item.height) || 'Auto');
+  }, [getProxiedUrl]);
+
+  // Quality selection (HLS levels → enumerated variants → direct formats →
+  // yt-dlp re-extraction)
   const handleQualityChange = useCallback(async (val) => {
     const hls = hlsRef.current;
+    // 0) v1.0.61: enumerated variant URL (hanime). hls.js can't
+    //    currentLevel-switch a degenerate/single-level master capture, so
+    //    point the whole pipeline at the chosen variant sub-playlist.
+    if (typeof val === 'number') {
+      const item = qualityLevels[val] || null;
+      if (item && item.url && /(\.m3u8|\.m3u|\/hls\/)/i.test(item.url)) {
+        setSelectedQuality(item.label || 'Auto');
+        const pref = item.height || item.label;
+        if (pref) writePref('preferredQuality', pref);
+        await applyVariantLevel(item);
+        return;
+      }
+    }
     // 1) HLS path (master .m3u8 in hls.js): switch levels in-place.
     if (hls && hls.levels && hls.levels.length) {
       setSelectedQuality(val);
@@ -869,7 +955,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       }
     }
     setSelectedQuality(val);
-  }, [directFormats, qualityLevels, switchDirectFormat, switchYtQuality]);
+  }, [directFormats, qualityLevels, switchDirectFormat, switchYtQuality, applyVariantLevel]);
 
   // Playback speed selection
   const handleRateChange = useCallback((rate) => {
@@ -1107,12 +1193,15 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     setIsDRM(false);
     setDrmWebUrl(null);
     setQualityLevels([]);
+    setExtractQualityLevels([]);
     setSelectedQuality('auto');
     setDirectFormats(Array.isArray(video.formats) && video.formats.length ? video.formats.map((f) => ({ ...f })) : []);
     streamHlsRef.current = false;
     sourceUrlRef.current = video.pageUrl || video.webUrl || video.videoUrl || video.url;
     networkRetryRef.current = 0;
     stallCountRef.current = 0;
+    activeHttpHeadersRef.current = video.httpHeaders || null;
+    variantAppliedRef.current = null;
 
     // Remember where to jump once metadata is ready
     const saved = Number(video.lastPosition) || 0;
@@ -1199,6 +1288,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             httpHeaders = extraction.httpHeaders || null;
             isHLS = extraction.isHLS || false;
             streamHlsRef.current = !!extraction.isHLS;
+            activeHttpHeadersRef.current = httpHeaders;
 
             // yt-dlp direct-URL format list (non-HLS quality switching)
             if (Array.isArray(extraction.formats)) {
@@ -1211,6 +1301,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 setQualityLevels(extraction.qualityLevels);
                 setSelectedQuality(extraction.selectedQuality || extraction.qualityLevels[0].label);
               }
+              // v1.0.61: keep EXTRACTOR-ENUMERATED HLS variants separately —
+              // a tokenized hanime master collapses in hls.js to one level,
+              // but these URLs back real resolution rows in the dropdown.
+              const variants = extraction.qualityLevels
+                .filter((q) => q && q.url && /(\.m3u8|\.m3u|\/hls\/)/i.test(q.url) && (q.height || q.label));
+              if (variants.length > 0) setExtractQualityLevels(variants);
             }
           } else if (result && result.error === 'DRM_PROTECTED') {
             console.log('[VideoPlayer] DRM protected content detected, using webview fallback');
@@ -1235,6 +1331,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 isHLS = /m3u8|hls_variant|\/api\/manifest\//i.test(streamUrl);
                 streamHlsRef.current = isHLS;
                 httpHeaders = null;
+                activeHttpHeadersRef.current = null;
                 console.log('[VideoPlayer] Sniff fallback adopted stream:', streamUrl);
               } else {
                 setStreamError(`Stream extraction failed: ${errDetail}`);
@@ -1253,6 +1350,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               isHLS = /m3u8|hls_variant|\/api\/manifest\//i.test(streamUrl);
               streamHlsRef.current = isHLS;
               httpHeaders = null;
+              activeHttpHeadersRef.current = null;
               console.log('[VideoPlayer] Sniff fallback adopted stream:', streamUrl);
             } else {
               setStreamError(`Stream extraction failed: ${extractErr.message || 'timed out'}`);
@@ -1375,23 +1473,31 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         networkRetryRef.current = 0;
         stallCountRef.current = 0;
-        if (hls.levels && hls.levels.length) {
-          setQualityLevels(hls.levels.map((l, i) => {
-            const res = parseHlsResolution(l);
-            return {
-              index: i,
-              height: res.height,
-              width: res.width,
-              bitrate: l.bitrate,
-              label: qualityLabel(res.height) || `Quality ${i + 1}`
-            };
-          }));
+        const levelMenu = hls.levels && hls.levels.length
+          ? hls.levels.map((l, i) => {
+              const res = parseHlsResolution(l);
+              return { index: i, height: res.height, width: res.width, bitrate: l.bitrate, label: qualityLabel(res.height) || `Quality ${i + 1}` };
+            })
+          : [];
+        // v1.0.61: a tokenized HLS master (hanime) frequently yields ONE
+        // height-0 level → the old menu showed only "Auto + Quality 1". When
+        // the extractor enumerated real variant tiers, prefer those rows and
+        // use their per-variant URLs for quality switching.
+        const rich = extractQualityLevels.length
+          ? extractQualityLevels.map((q, i) => ({ ...q, index: i }))
+          : [];
+        const degenerate = !hls.levels || hls.levels.length <= 1
+          || levelMenu.every((l) => !l.height);
+        const useRich = degenerate && rich.length >= 2;
+        const menu = useRich ? rich : levelMenu;
+        if (menu.length) {
+          setQualityLevels(menu);
           // Resolve the saved quality preference (auto | max | <num> | height string)
           const savedPref = readPrefs().preferredQuality;
           let lvl = -1;
-          if (savedPref === 'max' && hls.levels.length) {
-            lvl = hls.levels.length - 1;
-          } else if (typeof savedPref === 'number' && savedPref >= 0 && savedPref < hls.levels.length) {
+          if (savedPref === 'max' && menu.length) {
+            lvl = menu.length - 1;
+          } else if (typeof savedPref === 'number' && savedPref >= 0 && savedPref < menu.length) {
             lvl = savedPref;
           } else {
             const target = typeof savedPref === 'string' && !['auto', 'max'].includes(savedPref)
@@ -1400,16 +1506,29 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             if (!isNaN(target)) {
               let exact = -1;
               let below = -1;
-              for (let i = 0; i < hls.levels.length; i++) {
-                const h = parseHlsResolution(hls.levels[i]).height;
+              for (let i = 0; i < menu.length; i++) {
+                const h = menu[i].height || 0;
                 if (h === target && exact === -1) exact = i;
-                if (h < target && h > (parseHlsResolution(hls.levels[below]).height || 0)) below = i;
+                if (h < target && h > (below === -1 ? 0 : menu[below].height || 0)) below = i;
               }
-              lvl = exact !== -1 ? exact : (below !== -1 ? below : hls.levels.length - 1);
+              lvl = exact !== -1 ? exact : (below !== -1 ? below : -1);
             }
           }
-          hls.currentLevel = lvl;
-          setSelectedQuality(lvl === -1 ? 'auto' : lvl);
+          if (useRich) {
+            // One level in hls.js → can't drive hls.currentLevel. Auto-apply
+            // the saved pref ONCE per master by pointing the pipeline at the
+            // chosen variant sub-playlist (guarded against a switch loop).
+            const chosen = lvl >= 0 ? menu[lvl] : null;
+            if (chosen && chosen.url && chosen.url !== streamUrl && variantAppliedRef.current !== streamUrl) {
+              variantAppliedRef.current = streamUrl;
+              applyVariantLevel(chosen);
+              return;
+            }
+            setSelectedQuality(lvl >= 0 ? menu[lvl].label : 'auto');
+          } else {
+            hls.currentLevel = lvl;
+            setSelectedQuality(lvl === -1 ? 'auto' : lvl);
+          }
         }
         if (pendingSeekRef.current) {
           const pos = pendingSeekRef.current;
@@ -1505,7 +1624,17 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       videoEl.pause();
       videoEl.src = '';
     };
-  }, [streamUrl, isDRM, shouldResume, seekToResume, scheduleRetry, hlsRetryKey]);
+  }, [streamUrl, isDRM, shouldResume, seekToResume, scheduleRetry, hlsRetryKey, extractQualityLevels, applyVariantLevel]);
+
+  // v1.0.61: flush + cancel any pending cloud progress sync on unmount.
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Handle overlay click (but not on controls)
   const handleOverlayClick = useCallback((e) => {
@@ -1529,21 +1658,21 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const handlePause = useCallback(() => {
     setIsPlaying(false);
     const videoEl = videoRef.current;
-    if (videoEl) savePosition(videoEl.currentTime || 0);
-  }, [savePosition]);
+    const pos = videoEl ? videoEl.currentTime || 0 : 0;
+    savePosition(pos);
+    // v1.0.61: refresh the continue-watching row on explicit pause (even
+    // under 30s) and push progress to the cloud shortly after.
+    recordWatchHistory(pos, videoEl ? videoEl.duration : 0);
+    scheduleSync();
+  }, [savePosition, recordWatchHistory, scheduleSync]);
 
   const handleEnded = useCallback(() => {
     setIsPlaying(false);
     savePosition(0);
-    const api = window.api || window.electronAPI;
-    api?.setWatchHistory?.({
-      id: video.id,
-      title: video.videoTitle,
-      videoUrl: video.videoUrl,
-      pageUrl: video.pageUrl || video.webUrl || '',
-      watchedAt: new Date().toISOString()
-    });
-  }, [video, savePosition]);
+    const videoEl = videoRef.current;
+    recordWatchHistory(0, videoEl ? videoEl.duration : 0);
+    scheduleSync();
+  }, [video, savePosition, recordWatchHistory, scheduleSync]);
   
   const handleTimeUpdate = useCallback(() => {
     const videoEl = videoRef.current;
@@ -1551,27 +1680,22 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     setCurrentTime(videoEl.currentTime);
     if (videoEl.duration) setDuration(videoEl.duration);
 
-    // Periodically persist position (throttled to ~5s) for resume support
+    // Periodically persist position + continue-watching history (throttled to
+    // ~5s) so resume AND cloud-progress stay current mid-play (v1.0.61).
     const now = Date.now();
     if (now - lastSaveTimeRef.current >= 5000) {
       lastSaveTimeRef.current = now;
       const pos = videoEl.currentTime || 0;
       const dur = videoEl.duration || 0;
       savePosition(pos >= 5 && (dur <= 0 || pos < dur - 10) ? pos : 0);
+      // The watch_history row (and its cloud mirror) only counts a video once
+      // it has played for a bit (~30s), matching the shelf's convention.
+      if (pos > 30) {
+        recordWatchHistory(pos, dur);
+        scheduleSync();
+      }
     }
-
-    const api = window.api || window.electronAPI;
-    if (videoEl.currentTime > 30 && !videoEl.dataset.progressTracked) {
-      videoEl.dataset.progressTracked = 'true';
-      api?.setWatchHistory?.({
-        id: video.id,
-        title: video.videoTitle,
-        videoUrl: video.videoUrl,
-        pageUrl: video.pageUrl || video.webUrl || '',
-        watchedAt: new Date().toISOString()
-      });
-    }
-  }, [video, savePosition]);
+  }, [video, savePosition, recordWatchHistory, scheduleSync]);
 
   const handleDurationChange = useCallback(() => {
     const videoEl = videoRef.current;

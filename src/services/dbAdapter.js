@@ -631,10 +631,13 @@ async function syncWatchHistory(api, report) {
   for (const h of localHist) {
     const key = histKey(h);
     if (!key) continue;
+    // v1.0.61: a watch_history row may carry its own resume position (for
+    // videos with no `videos` row — e.g. hanime search results).
+    const histPos = Number(h.position) || 0;
     localByKey.set(key, {
       hist: h,
-      position: null,
-      updatedAt: toEpochMs(h.watchedAt || h.addedAt),
+      position: histPos > 0 ? { id: h.id, lastPosition: histPos, positionUpdatedAt: Number(h.positionUpdatedAt) || 0 } : null,
+      updatedAt: Math.max(toEpochMs(h.watchedAt || h.addedAt), Number(h.positionUpdatedAt) || 0),
     });
   }
   for (const p of localPos) {
@@ -678,6 +681,9 @@ async function syncWatchHistory(api, report) {
           videoUrl: String(r.url || ''),
           pageUrl: String(r.url || ''),
           thumbnailUrl: String(r.thumbnail || ''),
+          duration: Number(r.duration_seconds) || 0,
+          position: Number(r.position_seconds) || 0,
+          positionUpdatedAt: remoteT,
           watchedAt: remoteT ? new Date(remoteT).toISOString() : new Date().toISOString(),
         });
       }
@@ -686,7 +692,7 @@ async function syncWatchHistory(api, report) {
       if (pos > 0 && api.saveVideoPosition) {
         await api.saveVideoPosition(String(r.media_id || key), pos);
       }
-      localByKey.set(key, { hist: { id: r.media_id, watchedAt: remoteT }, position: null, updatedAt: remoteT });
+      localByKey.set(key, { hist: { id: r.media_id, watchedAt: remoteT }, position: pos > 0 ? { id: r.media_id, lastPosition: pos, positionUpdatedAt: remoteT } : null, updatedAt: remoteT });
       report.pulled++;
     } catch (err) {
       report.errors.push(`history.pulled: ${err.message}`);
@@ -707,7 +713,7 @@ async function syncWatchHistory(api, report) {
       url: String(h.pageUrl || h.videoUrl || '').trim(),
       type: String(h.sourceSite || h.type || 'video').trim(),
       thumbnail: String(h.thumbnailUrl || '').trim(),
-      position_seconds: Number(p && p.lastPosition) || 0,
+      position_seconds: Number((p && p.lastPosition) || h.position) || 0,
       duration_seconds: Number(h.duration || h.duration_seconds || 0),
       updated_at: new Date(updatedAt).toISOString(),
     };

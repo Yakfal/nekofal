@@ -114,6 +114,9 @@ async function initializeDatabase() {
         videoUrl TEXT,
         pageUrl TEXT,
         thumbnailUrl TEXT,
+        duration INTEGER DEFAULT 0,
+        position INTEGER DEFAULT 0,
+        positionUpdatedAt INTEGER DEFAULT 0,
         watchedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -209,6 +212,26 @@ async function initializeDatabase() {
       db.run(`ALTER TABLE videos ADD COLUMN positionUpdatedAt INTEGER DEFAULT 0;`);
     } catch (migrationErr) {
       console.log('[DB] positionUpdatedAt column migration skipped:', migrationErr.message);
+    }
+
+    // v1.0.61: watch_history gains duration + progress columns so the
+    // continue-watching shelf and cloud mirror carry play position for videos
+    // that have no `videos` row (e.g. hanime search results — their resume
+    // position would otherwise have nowhere to live).
+    try {
+      db.run(`ALTER TABLE watch_history ADD COLUMN duration INTEGER DEFAULT 0;`);
+    } catch (migrationErr) {
+      console.log('[DB] watch_history.duration migration skipped:', migrationErr.message);
+    }
+    try {
+      db.run(`ALTER TABLE watch_history ADD COLUMN position INTEGER DEFAULT 0;`);
+    } catch (migrationErr) {
+      console.log('[DB] watch_history.position migration skipped:', migrationErr.message);
+    }
+    try {
+      db.run(`ALTER TABLE watch_history ADD COLUMN positionUpdatedAt INTEGER DEFAULT 0;`);
+    } catch (migrationErr) {
+      console.log('[DB] watch_history.positionUpdatedAt migration skipped:', migrationErr.message);
     }
 
     // Migration: Add 'isAdult' column if it doesn't exist (family mode tagging)
@@ -712,10 +735,12 @@ async function setWatchHistory(videoData) {
   if (!init.success) throw new Error(init.error);
   
   try {
+    // v1.0.61: also persist duration + resume position so continue-watching
+    // (and its cloud mirror) works even when no `videos` row exists.
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO watch_history 
-      (id, videoTitle, videoUrl, pageUrl, thumbnailUrl, watchedAt)
-      VALUES (?, ?, ?, ?, ?, ?)
+      (id, videoTitle, videoUrl, pageUrl, thumbnailUrl, duration, position, positionUpdatedAt, watchedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run([
@@ -724,6 +749,9 @@ async function setWatchHistory(videoData) {
       videoData.videoUrl,
       videoData.pageUrl || null,
       videoData.thumbnailUrl,
+      Math.max(0, Math.floor(Number(videoData.duration) || 0)),
+      Math.max(0, Math.floor(Number(videoData.position) || 0)),
+      Math.max(0, Number(videoData.positionUpdatedAt) || 0),
       videoData.watchedAt || new Date().toISOString()
     ]);
     
@@ -748,7 +776,10 @@ async function getWatchHistory() {
              videoTitle as title, 
              videoUrl, 
              pageUrl,
-             thumbnailUrl, 
+             thumbnailUrl,
+             duration,
+             position,
+             positionUpdatedAt,
              watchedAt
       FROM watch_history
       ORDER BY watchedAt DESC

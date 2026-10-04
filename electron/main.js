@@ -701,6 +701,18 @@ function setupWebRequestHeaders() {
       headers['Origin'] = 'https://www.pornhub.com';
       headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
     }
+
+    // Hanime CDN fix (v1.0.61): the master playlist comes from
+    // hanime.tv/hls/<id>/<token> but its AES-128 keys + variant sub-playlists
+    // + TS/m4s segments are served from `*.htv-*.com` CDN hosts. The generic
+    // isStream branch stamps a self-referer there, which the CDN's hotlink
+    // check rejects → mid-stream 403. Stamp the hanime.tv referer/origin/UA
+    // on the whole CDN family so the whole pipeline authenticates.
+    if (/\.htv-[a-z0-9-]*\.(?:com|net|org|io)$/i.test(hostname)) {
+      headers['Referer'] = 'https://hanime.tv/';
+      headers['Origin'] = 'https://hanime.tv';
+      headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+    }
     
     callback({ requestHeaders: headers });
   });
@@ -1105,7 +1117,7 @@ function pickUsableStreams(captured) {
 // itself). The offscreen window is destroyed immediately on resolution, and
 // cf_clearance/__cf_bm cookies persist in session.defaultSession for the
 // next (challenge-free) load.
-async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoadMs = 1500, match, probe, extraHeaders, visibleWindow = false, keepAlive = false } = {}) {
+async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoadMs = 1500, match, probe, extraHeaders, visibleWindow = false, keepAlive = false, resolveHook = null } = {}) {
   const pageUrl$ = String(pageUrl || '').trim();
   if (!/^https?:\/\//i.test(pageUrl$)) return { success: false, error: 'Invalid URL' };
   // Some sites (hanime.tv since its Astro rewrite) only boot their player when
@@ -1124,11 +1136,24 @@ async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoad
   let settle = null;
   let probeTimer = null;
 
-  const finish = (extra) => {
+  const finish = async (extra) => {
     if (settled) return;
     settled = true;
     activeSniff = null;
     if (probeTimer) clearTimeout(probeTimer);
+    // v1.0.61: let the caller read the live page (same-origin master fetch for
+    // quality enumeration) BEFORE a keepAlive window is parked/blanked — after
+    // it blanks there is no page left to query. activeSniff is already null so
+    // no stale capture can pollute the result while this runs.
+    if (resolveHook && win && !win.isDestroyed()) {
+      try {
+        const hookResult = await Promise.race([
+          Promise.resolve(resolveHook(win, earlyUrl)),
+          sleep(9000).then(() => null)
+        ]);
+        if (hookResult && typeof hookResult === 'object') extra = { ...extra, ...hookResult };
+      } catch (_e) { /* hook is best-effort */ }
+    }
     const streams = [...new Set(captured.map(e => e.url))];
     if (earlyUrl) streams.unshift(earlyUrl);
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1139,19 +1164,19 @@ async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoad
     // (cf_clearance / __cf_bm) live in defaultSession, not the window.
     // keepAlive (hanime): destroying a window whose renderer is actively
     // decoding video.js output can deadlock the browser process, so instead
-    // park the sniff window off-screen and let it keep quietly buffering —
-    // it is torn down on app quit via the 'before-quit' handler.
+    // park the sniff window alive — but BLANK it first (v1.0.61). A window
+    // left parked still decoding the PREVIOUS video keeps serving the old
+    // /hls/<id>/<token> master + stale resource-timing entries to the NEXT
+    // sniff that reuses this window, which resolves the 2nd video to the 1st
+    // video's manifest — the standard "only the first video plays" bug.
+    // Blanking stops the media pipeline just like destroyStealthWindow().
     try {
       if (win && !win.isDestroyed() && win.webContents.debugger.isAttached()) {
         win.webContents.debugger.detach();
       }
     } catch (_e) { /* detach best-effort */ }
     if (keepAlive && win && !win.isDestroyed()) {
-      // Keep the (already invisible: show:false + opacity 0) sniff window
-      // alive and reusable — destroying a renderer that is mid video.js
-      // decode can deadlock the browser process, and parking it off-screen
-      // would defeat IntersectionObserver hydration for the NEXT sniff.
-      // A before-quit handler tears it down when the app exits.
+      try { win.webContents.loadURL('about:blank').catch(() => {}); } catch (_e) { /* best-effort */ }
     } else {
       destroyStealthWindow();
     }
@@ -1911,6 +1936,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           extractor: info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8',
           title: info.title,
           duration: info.duration,
+          qualityLevels: Array.isArray(info.qualityLevels) ? info.qualityLevels : [],
           httpHeaders: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Referer': 'https://hanime.tv/',
@@ -4848,6 +4874,77 @@ async function hanimeStealthSearch(query, count = 25) {
   }
 }
 
+// v1.0.61 dynamic quality: parse a master .m3u8 into per-variant resolution
+// tiers ({ index, height, width, bitrate, url, label }), so the player's
+// quality dropdown lists real resolutions — hls.js alone often collapses a
+// tokenized master to a single height-0 level ("Quality 1" only).
+function qualityLabelForHeight(h) {
+  h = Number(h) || 0;
+  const tiers = [
+    [4320, '4320p (8K)'], [2160, '2160p (4K)'], [1440, '1440p (2K)'],
+    [1080, '1080p'], [720, '720p'], [480, '480p'], [360, '360p'],
+    [240, '240p'], [144, '144p']
+  ];
+  for (const [tier, name] of tiers) {
+    if (h >= tier) return name;
+  }
+  return '';
+}
+
+function parseHlsMasterQuality(m3u8Text, baseUrl) {
+  const lines = String(m3u8Text || '').split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^#EXT-X-STREAM-INF:([^\n]*)$/.exec(lines[i]);
+    if (!m) continue;
+    let url = '';
+    for (let j = i + 1; j < lines.length; j++) {
+      const t = lines[j].trim();
+      if (!t) continue;
+      if (t[0] === '#') break; // next tag — no URI on this INF line
+      url = t;
+      break;
+    }
+    if (!url) continue;
+    const attrs = {};
+    (m[1].match(/([A-Z0-9-]+)=("[^"]*"|[^,]*)/g) || []).forEach((a) => {
+      const eq = a.indexOf('=');
+      if (eq <= 0) return;
+      let v = a.slice(eq + 1);
+      if (v.charAt(0) === '"') v = v.slice(1, v.length - 1);
+      attrs[a.slice(0, eq)] = v;
+    });
+    const res = /^(\d+)x(\d+)$/.exec(String(attrs.RESOLUTION || ''));
+    if (!res) continue; // audio-only / unresolved rendition — skip
+    const width = parseInt(res[1], 10);
+    const height = parseInt(res[2], 10);
+    const bitrate = parseInt(String(attrs.BANDWIDTH || '0'), 10) || 0;
+    let absUrl = url;
+    try { absUrl = new URL(url, baseUrl).href; } catch (_e) { /* keep raw */ }
+    out.push({
+      index: out.length,
+      height,
+      width,
+      bitrate,
+      url: absUrl,
+      label: qualityLabelForHeight(height) || `Quality ${out.length + 1}`
+    });
+  }
+  return out;
+}
+
+async function fetchHlsQualities(m3u8Url, headers) {
+  try {
+    const res = await fetch(m3u8Url, { headers, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return [];
+    const text = await res.text();
+    if (typeof text !== 'string' || text.indexOf('#EXT') === -1) return [];
+    return parseHlsMasterQuality(text, m3u8Url);
+  } catch (_e) {
+    return [];
+  }
+}
+
 async function hanimeV8Video(slug) {
   const cookieHeader = await getSessionCookieHeader('https://hanime.tv/');
   const res = await fetch(`${HANIME_API}/video?id=${encodeURIComponent(slug)}`, {
@@ -4876,12 +4973,19 @@ async function hanimeV8Video(slug) {
     if (m3u8) break;
   }
   const playable = m3u8 || direct;
+  // v1.0.61: enumerate real resolutions from the master so the player menu is
+  // not stuck on "Auto + Quality 1". Best-effort — a CDN 403 just yields [].
+  let qualityLevels = [];
+  if (m3u8) {
+    qualityLevels = await fetchHlsQualities(m3u8, hanimeHeaders(cookieHeader, true));
+  }
   return {
     id: String(v.id || slug),
     title: v.name || v.title || 'Untitled',
     thumbnailUrl: v.poster_url || v.cover_url || '',
     duration: v.duration_in_ms ? Math.floor(Number(v.duration_in_ms) / 1000) : 0,
     m3u8: playable,
+    qualityLevels,
     canPlay: /\.m3u8/i.test(playable) || /\.mp4/i.test(playable)
   };
 }
@@ -4917,7 +5021,7 @@ async function resolveHanimeStream(pageUrl) {
   // The Astro player needs a play interaction before video.js emits its
   // /hls/<id>/<token> master request; nudge (click overlay + force muted
   // play) every ~1.2s for as long as the sniff window lives.
-  const HANIME_PLAY_NUDGE = `
+  const HANIME_PLAY_NUDGE = `(function(){
 var __p0 = Date.now();
 async function __nudge(){
   while (Date.now() - __p0 < 16000) {
@@ -4933,13 +5037,30 @@ async function __nudge(){
   }
   return null;
 }
-__nudge();
-`;
+return __nudge();
+})()`;
   const sniff = await sniffWithEarlyReturn(pageUrl, {
     timeoutMs: 20000,
     visibleWindow: true,
     keepAlive: true,
     extraHeaders: HANIME_SNIFF_HEADERS,
+    resolveHook: async (win, matched) => {
+      const target = (matched && isMaster(matched)) ? matched : null;
+      if (!target || !win || win.isDestroyed()) return {};
+      try {
+        // Fetch the captured master from INSIDE the authed sniff window (same
+        // origin, cookies, cf_clearance) and enumerate its #EXT-X-STREAM-INF
+        // variant tiers so the player's quality dropdown lists real
+        // resolutions (v1.0.61). hls.js alone sees a degenerate single level.
+        const text = await evalInStealth(`(function(){
+          return fetch(${JSON.stringify(target)}, { method: 'GET', credentials: 'include', headers: { 'Referer': 'https://hanime.tv/' } })
+            .then(function(r){ return r.ok ? r.text() : null; })
+            .catch(function(){ return null; });
+        })()`, 9000, win);
+        if (typeof text !== 'string' || text.indexOf('#EXT') === -1) return {};
+        return { qualityLevels: parseHlsMasterQuality(text, target) };
+      } catch (_e) { return {}; }
+    },
     probe: async (win) => {
       if (!win || win.isDestroyed()) return null;
       try { return await evalInStealth(HANIME_PLAY_NUDGE, 17000, win); } catch (_e) { return null; }
@@ -4954,7 +5075,14 @@ __nudge();
     || null;
   if (!m3u8) throw new Error('No playable manifest found for ' + slug);
   console.info(`[resolveHanimeStream] captured manifest via sniff: ${String(m3u8).slice(0, 140)}`);
-  return { id: `hanime-${slug}`, slug, m3u8, canPlay: true, isHls: true, title: '', thumbnailUrl: '', duration: 0, viaSniff: true };
+  // v1.0.61: enrich the response with the master's real quality tiers (the
+  // capture frequently yields the tokenized master which hls.js collapses to
+  // a single height-0 level — the "only Auto + Quality 1" symptom).
+  const qualityLevels = Array.isArray(sniff.qualityLevels) ? sniff.qualityLevels : [];
+  if (qualityLevels.length > 1) {
+    console.info(`[resolveHanimeStream] quality tiers: ${qualityLevels.map(q => q.height || q.label).join('/')}`);
+  }
+  return { id: `hanime-${slug}`, slug, m3u8, canPlay: true, isHls: true, title: '', thumbnailUrl: '', duration: 0, viaSniff: true, qualityLevels };
 }
 
 // ---- Pornhub resolver ----------------------------------------------------
