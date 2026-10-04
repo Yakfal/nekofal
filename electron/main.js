@@ -2174,7 +2174,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           success: true,
           streamUrl: info.m3u8,
           isHls: typeof info.isHls === 'boolean' ? info.isHls : /(\.m3u8|hanime\.tv\/hls\/)/i.test(info.m3u8),
-          extractor: info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8',
+          extractor: info.viaWin ? 'hanime-v8-window' : (info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8'),
           title: info.title,
           duration: info.duration,
           qualityLevels: Array.isArray(info.qualityLevels) ? info.qualityLevels : [],
@@ -5315,6 +5315,84 @@ async function hanimeV8Video(slug) {
   };
 }
 
+// v1.0.64: keep the Cloudflare-cleared session permanently. The sniff window is
+// a strict singleton that lives for the whole app lifecycle (hanime finish()
+// keep-alives it instead of destroying it, and never parks it on about:blank).
+// Extraction for video #2..#N runs INSIDE that persistent window's page context
+// with an in-page fetch, so every request presents the live cf_clearance /
+// __cf_bm cookies and a genuine Chromium network stack — never a main-process
+// client that Cloudflare can fingerprint as a bot.
+async function ensureOnOrigin(win, origin) {
+  if (!win || win.isDestroyed()) win = ensureVisibleSniffWindow();
+  let cur = '';
+  try { cur = new URL(win.webContents.getURL()).origin; } catch (_e) { /* no url yet */ }
+  if (cur === origin) return win;
+  try {
+    await loadInStealth(`${origin}/`, {
+      win,
+      pauseAfterLoadMs: 1500,
+      challengeTimeoutMs: 20000,
+      timeoutMs: 26000,
+      extraHeaders: HANIME_SNIFF_HEADERS
+    });
+  } catch (_e) { /* best-effort — callers proceed on their own */ }
+  return win;
+}
+
+async function hanimeV8InWindow(slug, win) {
+  const targetPlain = 'https://hanime.tv';
+  win = await ensureOnOrigin(win, targetPlain);
+  const js = `(async function(){
+    try {
+      const r = await fetch('/api/v8/video?id=' + encodeURIComponent(${JSON.stringify(slug)}), { method: 'GET', credentials: 'include' });
+      if (!r.ok) return { __err: 'HTTP ' + r.status };
+      const data = await r.json();
+      const v = data && data.data ? data.data.video : (data.video || data);
+      if (!v) return { __err: 'no payload' };
+      const manifest = v.videos_manifest || {};
+      const servers = Array.isArray(manifest.servers) ? manifest.servers : [];
+      let m3u8 = '', direct = '';
+      outer: for (let s = 0; s < servers.length; s++) {
+        const streams = (servers[s].streams || []);
+        for (let t = 0; t < streams.length; t++) {
+          const u = String((streams[t] && streams[t].url) || '');
+          if (!u) continue;
+          if (/\.m3u8/i.test(u)) { m3u8 = u; break outer; }
+          if (!direct && /\.mp4/i.test(u)) direct = u;
+        }
+      }
+      const playable = m3u8 || direct;
+      if (!playable) return { __err: 'no playable stream' };
+      return {
+        m3u8: playable,
+        duration: v.duration_in_ms ? Math.floor(Number(v.duration_in_ms) / 1000) : 0,
+        title: v.name || v.title || '',
+        thumbnailUrl: v.poster_url || v.cover_url || ''
+      };
+    } catch (e) { return { __err: String((e && e.message) || e) }; }
+  })()`;
+  const res = await evalInStealth(js, 12000, win);
+  if (!res || res.__err) throw new Error(`in-window v8: ${(res && res.__err) || 'no result'}`);
+  if (!res.m3u8) throw new Error('in-window v8: no playable stream');
+  // Enumerate the master's variant tiers with another in-window fetch (same
+  // origin — the /hls/<id>/<token> master is served from hanime.tv) so the
+  // player's quality dropdown lists real resolutions.
+  let qualityLevels = [];
+  if (/\.m3u8/i.test(res.m3u8)) {
+    const tjs = `(async function(){
+      try {
+        const r = await fetch(${JSON.stringify(res.m3u8)}, { method: 'GET', credentials: 'include' });
+        if (!r.ok) return null;
+        const t = await r.text();
+        return (t && t.indexOf('#EXT') !== -1) ? t : null;
+      } catch (e) { return null; }
+    })()`;
+    const text = await evalInStealth(tjs, 15000, win);
+    if (typeof text === 'string') qualityLevels = parseHlsMasterQuality(text, res.m3u8);
+  }
+  return { ...res, qualityLevels };
+}
+
 // Resolve a hanime.tv page URL to its playable master playlist.
 // The legacy `/api/v8/video` endpoint is deprecated (returns 404 for every
 // slug) and the current site is an Astro SPA that serves its master playlist
@@ -5359,6 +5437,14 @@ async function __nudge(){
 }
 return __nudge();
 })()`;
+
+  // v1.0.64: the fastest + most CF-resistant engine is the in-window v8 fetch
+  // (persistent singleton window, live cookies). Each round tries it FIRST.
+  const tryV8Win = async () => {
+    const info = await hanimeV8InWindow(slug);
+    if (info.m3u8) return { ...info, slug, id: `hanime-${slug}`, canPlay: true, isHls: true, viaWin: true };
+    throw new Error('in-window v8: no playable stream');
+  };
 
   const tryV8 = async () => {
     const info = await hanimeV8Video(slug); // throws on 404 / unresolved challenge
@@ -5425,6 +5511,15 @@ return __nudge();
       await solveCloudflareChallenge(pageUrl, { timeoutMs: 18000 });
       if (!withinBudget(5000)) break;
     }
+    try {
+      const v8Win = await tryV8Win();
+      if (v8Win) return v8Win;
+      failures.push('in-window v8 returned no playable stream');
+    } catch (winErr) {
+      failures.push(`win-v8: ${winErr.message}`);
+      console.warn(`[resolveHanimeStream] in-window v8 failed (${round === 0 ? 'trying main-process v8' : 'after CF re-solve'}): ${winErr.message}`);
+    }
+    if (!withinBudget(5000)) break;
     try {
       const v8 = await tryV8();
       if (v8) return v8;

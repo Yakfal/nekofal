@@ -1075,26 +1075,27 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   ).sort((a, b) => b - a);
   const hasQualityLevels = availableQualityHeights.length > 0;
 
-  // Quality menu rows: the active engine items when present, otherwise the
-  // standard resolution tiers for YouTube/direct streams whose extraction did
-  // not enumerate per-height formats (each row re-extracts on selection).
-  const qualityMenuItems = engineItems.length > 0 ? engineItems : QUALITY_FALLBACKS;
-
   // Stream identity for the quality affordance: a YouTube watch page or an
   // already-direct media file always has quality options even before (or when)
   // extraction yields no explicit format list.
   const rawSource = String(video?.pageUrl || video?.webUrl || video?.videoUrl || video?.url || video?.streamUrl || '');
   const isYouTube = isYouTubeUrl(rawSource);
-  const isDirectVideo = /\.(mp4|webm|m3u8|ts|m4s|mkv|m4v|mov|avi)(\?|$)/i.test(rawSource)
-    || /^(srt|rtmp|rtsp|mms):\/\//i.test(rawSource);
 
-  // The control-bar Quality button is visible whenever quality is a real option:
-  // HLS master levels, a direct-format list, or a YouTube/direct source that can
-  // still be re-extracted at a standard resolution.
-  const hasQualityOptions = (qualityLevels && qualityLevels.length > 0)
-    || (directFormats && directFormats.length > 0)
-    || isYouTube
-    || isDirectVideo;
+  // v1.0.64: the Quality button is ALWAYS rendered while a video stream is
+  // loaded (never hidden by missing quality data). The menu populates by
+  // priority:
+  //   1) engine rows — extractor `qualities`, hls.js `MANIFEST_PARSED`
+  //      levels mapped to '1080p/720p/...', or direct-URL formats
+  //   2) YouTube re-extract standard tiers (switching re-extracts there)
+  //   3) single "Auto (Source Default)" option — the menu is never empty.
+  const streamActive = !!streamUrl && !hasError;
+  const qualityRows = engineItems.length > 0 ? engineItems : (isYouTube ? QUALITY_FALLBACKS : []);
+  const qualityResolutionLabels = qualityRows.map((l) =>
+    (l && (l.label || (l.height ? `${l.height}p` : ''))) || ''
+  );
+  const hasMultipleResolutions = new Set(qualityResolutionLabels).size >= 2;
+  const qualityMenuItems = hasMultipleResolutions ? qualityRows : [];
+  const qualityHasFallbackOnly = qualityMenuItems.length === 0;
 
   // Map a chosen chip height to the ACTIVE engine's item index (HLS levels or
   // direct formats) and route through the shared quality handler.
@@ -2044,8 +2045,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
           {/* Bottom Controls */}
           <div className="controls-bottom-bar">
-            {/* Quality menu (HLS levels | direct-URL formats | standard fallbacks) */}
-            {menuOpen === 'quality' && qualityMenuItems.length > 0 && (
+            {/* Quality menu (engine rows | standard tiers | Auto source default) */}
+            {menuOpen === 'quality' && (
               <div className="popup-menu quality-menu">
                 <button 
                   className={`menu-item ${selectedQuality === 'auto' ? 'active' : ''}`}
@@ -2053,7 +2054,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 >
                   Auto
                 </button>
-                {qualityMenuItems.map((lvl, i) => (
+                {qualityMenuItems.length > 0 ? qualityMenuItems.map((lvl, i) => (
                   <button 
                     key={lvl.formatId || lvl.index || i} 
                     className={`menu-item ${String(selectedQuality) === String(lvl.index) || selectedQuality === lvl.label ? 'active' : ''}`}
@@ -2065,7 +2066,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                     {lvl.url && lvl.hasAudio === false ? ' · audio-less' : ''}
                     {!lvl.url && !lvl.formatId && lvl.height ? ' · re-extract' : ''}
                   </button>
-                ))}
+                )) : (
+                  // v1.0.64: single-tier / unenumerated source — the source's
+                  // own default quality; keeps the menu non-empty.
+                  <button 
+                    className="menu-item"
+                    onClick={() => { handleQualityChange('auto'); setMenuOpen(null); }}
+                  >
+                    Auto (Source Default)
+                  </button>
+                )}
               </div>
             )}
 
@@ -2165,8 +2175,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                   {playbackRate}x
                 </button>
 
-                {/* Quality (engine-aware: HLS master | direct formats | standard tiers) */}
-                {hasQualityOptions && (
+                {/* Quality (v1.0.64: always rendered for a loaded stream — never hidden) */}
+                {streamActive && (
                   <button 
                     className="control-btn"
                     onClick={(e) => { e.stopPropagation(); setMenuOpen(menuOpen === 'quality' ? null : 'quality'); }}
