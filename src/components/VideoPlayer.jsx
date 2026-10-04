@@ -106,6 +106,35 @@ function qualityLabel(h) {
   return `${h}p`;
 }
 
+// v1.0.66: UNIVERSAL quality-menu deduplicator. Multiple sources hand the
+// dropdown rows that render the SAME label (two "720p" entries — hls.js
+// separates 720p30/720p60, the adult inline parsers can emit a script-call row
+// AND a JSON-key row for one resolution, YouTube's roster can carry two
+// formats at one height). Collapse by the DISPLAY string (label → height →
+// width), keep the FIRST occurrence (best/first in engine order), and stamp
+// the source-engine index so quality switching still routes to the correct
+// level/format even though the display list is sorted high→low.
+function dedupeQualityRows(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Map();
+  for (let i = 0; i < raw.length; i++) {
+    const q = raw[i];
+    if (!q) continue;
+    const label = (typeof q.label === 'string' && q.label.trim())
+      || qualityLabel(q.height)
+      || (q.width ? `${Math.round(q.width)}px` : '')
+      || (q.formatId ? String(q.formatId) : '');
+    const key = label.toLowerCase();
+    if (!key) continue;
+    if (!seen.has(key)) {
+      seen.set(key, { ...q, _engineIndex: i });
+    }
+  }
+  return [...seen.values()].sort((a, b) =>
+    ((b.height || 0) - (a.height || 0)) || (a._engineIndex - b._engineIndex)
+  );
+}
+
 function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const { setMediaSession } = usePlayback();
   const videoRef = useRef(null);
@@ -879,31 +908,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
   }, [video, getProxiedUrl]);
 
-  // Instant format hot-swap: point <video> straight at the chosen format's URL
-  // (no re-extraction). The stream-URL state change re-initializes the media
-  // element through the standard pipeline, which resumes at the saved position.
-  const switchDirectFormat = useCallback((fmt) => {
-    if (!fmt || !fmt.url) return;
-    const videoEl = videoRef.current;
-    const pos = videoEl ? videoEl.currentTime || 0 : 0;
-    // Convert off the HLS engine for this stream so playback re-enters via the
-    // native path with the raw URL (the re-init effect reads this ref).
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-    streamHlsRef.current = false;
-    pendingSeekRef.current = pos;
-    const proxied = getProxiedUrl(fmt.url, fmt.httpHeaders || null);
-    setStreamUrl(proxied);
-    setSelectedQuality(fmt.label || qualityLabel(fmt.height) || 'Auto');
-  }, [getProxiedUrl]);
-
   // v1.0.61: switch an HLS stream to an EXTRACTOR-ENUMERATED variant
   // sub-playlist (hanime quality tiers). Since the variant is itself HLS, it
   // re-enters through hls.js (plays a single-level media playlist natively
   // well) — native <video> cannot play .m3u8, so we can't reuse the direct
   // format hot-swap for these. Position is preserved via pendingSeekRef.
+  // Declared BEFORE switchDirectFormat (which routes HLS-tier rows through it).
   const applyVariantLevel = useCallback((item) => {
     if (!item || !item.url) return;
     const videoEl = videoRef.current;
@@ -922,6 +932,35 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     setStreamUrl(getProxiedUrl(item.url, activeHttpHeadersRef.current));
     setSelectedQuality(item.label || qualityLabel(item.height) || 'Auto');
   }, [getProxiedUrl]);
+
+  // Instant format hot-swap: point <video> straight at the chosen format's URL
+  // (no re-extraction). The stream-URL state change re-initializes the media
+  // element through the standard pipeline, which resumes at the saved position.
+  const switchDirectFormat = useCallback((fmt) => {
+    if (!fmt || !fmt.url) return;
+    // v1.0.66: an HLS URL (a YT per-tier roster row, or a variant sub-playlist)
+    // MUST go back through hls.js — a raw .m3u8 handed to native <video> is
+    // unplayable on Chromium. Route those through the variant engine, which
+    // preserves position + play/pause state across the swap.
+    if (typeof Hls !== 'undefined' && Hls.isSupported && Hls.isSupported()
+        && /\.m3u8|\.m3u|\/hls\/|api\/manifest/i.test(fmt.url)) {
+      applyVariantLevel(fmt);
+      return;
+    }
+    const videoEl = videoRef.current;
+    const pos = videoEl ? videoEl.currentTime || 0 : 0;
+    // Convert off the HLS engine for this stream so playback re-enters via the
+    // native path with the raw URL (the re-init effect reads this ref).
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+    streamHlsRef.current = false;
+    pendingSeekRef.current = pos;
+    const proxied = getProxiedUrl(fmt.url, fmt.httpHeaders || null);
+    setStreamUrl(proxied);
+    setSelectedQuality(fmt.label || qualityLabel(fmt.height) || 'Auto');
+  }, [getProxiedUrl, applyVariantLevel]);
 
   // Quality selection (HLS levels → enumerated variants → direct formats →
   // yt-dlp re-extraction)
@@ -1089,7 +1128,13 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   //   2) YouTube re-extract standard tiers (switching re-extracts there)
   //   3) single "Auto (Source Default)" option — the menu is never empty.
   const streamActive = !!streamUrl && !hasError;
-  const qualityRows = engineItems.length > 0 ? engineItems : (isYouTube ? QUALITY_FALLBACKS : []);
+  // v1.0.66: the dropdown renders the deduplicated list (one label per
+  // resolution, sorted 1080p→360p) — each row carries the ORIGINAL engine
+  // index (_engineIndex) so clicking a menu entry routes straight to the right
+  // hls.js level / direct format without an off-by-one from the dedup.
+  const qualityRows = dedupeQualityRows(
+    engineItems.length > 0 ? engineItems : (isYouTube ? QUALITY_FALLBACKS : [])
+  );
   const qualityResolutionLabels = qualityRows.map((l) =>
     (l && (l.label || (l.height ? `${l.height}p` : ''))) || ''
   );
@@ -2062,7 +2107,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                   <button 
                     key={lvl.formatId || lvl.index || i} 
                     className={`menu-item ${String(selectedQuality) === String(lvl.index) || selectedQuality === lvl.label ? 'active' : ''}`}
-                    onClick={() => { handleQualityChange(i); setMenuOpen(null); }}
+                    onClick={() => { handleQualityChange(lvl._engineIndex !== undefined ? lvl._engineIndex : i); setMenuOpen(null); }}
                   >
                     {lvl.label || (lvl.height ? `${lvl.height}p` : (lvl.width ? `${lvl.width}px` : qualityLabel(lvl.height) || `Quality ${i}`))}
                     {lvl.bitrate ? ` · ${Math.round(lvl.bitrate / 1000)}kbps` : ''}

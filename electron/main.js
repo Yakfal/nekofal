@@ -2279,7 +2279,10 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           extractor: info.viaWin ? 'hanime-v8-window' : (info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8'),
           title: info.title,
           duration: info.duration,
-          qualityLevels: Array.isArray(info.qualityLevels) ? info.qualityLevels : [],
+          // v1.0.66: clean, distinct quality objects for BOTH envelope fields —
+          // the dropdown consumes `qualities` and the variant-switch reader
+          // consumes `qualityLevels`, so neither may carry duplicate rows.
+          qualityLevels: toQualityRows(info.qualityLevels),
           // v1.0.63: structured per-quality variant URLs for the dropdown.
           qualities: toQualityRows(info.qualityLevels),
           httpHeaders: {
@@ -2314,7 +2317,8 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           extractor: 'pornhub-media-definitions',
           title: md.title,
           duration: 0,
-          qualityLevels: md.qualityLevels,
+          // v1.0.66: clean distinct tier objects for both envelope fields.
+          qualityLevels: toQualityRows(md.qualityLevels),
           qualities: toQualityRows(md.qualityLevels),
           httpHeaders: {
             'User-Agent': PAGE_UA,
@@ -2351,7 +2355,8 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           extractor: ph.fromYT ? 'yt-dlp-pornhub' : 'pornhub-stealth-sniff',
           title: ph.title,
           duration: ph.duration,
-          qualityLevels: phQualities,
+          // v1.0.66: clean distinct tier objects for both envelope fields.
+          qualityLevels: toQualityRows(phQualities),
           qualities: toQualityRows(phQualities),
           httpHeaders: {
             'User-Agent': PH_UA,
@@ -2385,7 +2390,8 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           agegated: !!xv.agegated,
           title: xv.title,
           duration: 0,
-          qualityLevels: xv.qualityLevels,
+          // v1.0.66: clean distinct tier objects for both envelope fields.
+          qualityLevels: toQualityRows(xv.qualityLevels),
           qualities: toQualityRows(xv.qualityLevels),
           httpHeaders: { 'User-Agent': PAGE_UA, 'Referer': 'https://www.xvideos.com/' }
         };
@@ -2405,7 +2411,8 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           agegated: !!xn.agegated,
           title: xn.title,
           duration: 0,
-          qualityLevels: xn.qualityLevels,
+          // v1.0.66: clean distinct tier objects for both envelope fields.
+          qualityLevels: toQualityRows(xn.qualityLevels),
           qualities: toQualityRows(xn.qualityLevels),
           httpHeaders: { 'User-Agent': PAGE_UA, 'Referer': 'https://www.xnxx.com/' }
         };
@@ -5422,23 +5429,41 @@ ipcMain.handle('scrapers:parseMasterStream', async (_event, { url } = {}) => {
 // v1.0.63: normalize extractor-enumerated quality tiers into the structured
 // `qualities: [{ label, url, height, bitrate }]` shape the player consumes
 // directly (per-quality variant URLs for the dropdown — no hls.js parsing).
+// v1.0.66: collapse duplicate RESOLUTION rows (the XVideos/XNXX script-call
+// ladder AND its JSON-key mirror can both emit a row for one height) into one
+// clean, distinct object per quality — the dropdown stays deduplicated even
+// before the player-side deduplicator runs. INPUT ORDER is preserved so the
+// LAST row is always the best/largest tier (the player defaults its
+// highlighted quality to that last row).
 function toQualityRows(levels) {
   if (!Array.isArray(levels)) return [];
-  const seen = new Set();
+  const seenUrl = new Set();
   const rows = [];
   for (const q of levels) {
     if (!q || !q.url) continue;
     const u = String(q.url);
-    if (seen.has(u)) continue;
-    seen.add(u);
-    rows.push({
-      label: q.label || qualityLabelForHeight(q.height) || `Quality ${rows.length + 1}`,
-      url: u,
-      height: q.height || 0,
-      bitrate: q.bitrate || 0
-    });
+    if (seenUrl.has(u)) continue;
+    seenUrl.add(u);
+    const height = Math.round(Number(q.height) || 0);
+    const label = q.label || qualityLabelForHeight(height) || `Quality ${rows.length + 1}`;
+    rows.push({ label: String(label), url: u, height, bitrate: q.bitrate || 0 });
   }
-  return rows;
+  const seenKey = new Map();
+  const onePerKey = [];
+  for (const row of rows) {
+    const key = row.height > 0 ? `h:${row.height}` : `l:${String(row.label).toLowerCase()}`;
+    const prevIndex = seenKey.get(key);
+    if (prevIndex !== undefined) {
+      const prev = onePerKey[prevIndex];
+      if (row.height === prev.height && (row.bitrate || 0) > (prev.bitrate || 0)) {
+        onePerKey[prevIndex] = row;
+      }
+      continue;
+    }
+    seenKey.set(key, onePerKey.length);
+    onePerKey.push(row);
+  }
+  return onePerKey;
 }
 
 async function hanimeV8Video(slug) {

@@ -101,6 +101,138 @@ function qualityRows(result) {
   return src.filter((q) => q && q.url && /(\.m3u8|\.m3u|\/hls\/|\.mp4|\.webm)/i.test(q.url) && (q.height || q.label));
 }
 
+// Dedup key identical to the player's dropdown deduplicator: display label →
+// height → width → format_id. Two rows sharing a key would render as
+// duplicate entries ("720p", "720p") in the quality menu.
+function dedupKey(q) {
+  if (!q) return null;
+  const label = (q.label && String(q.label).trim().toLowerCase()) || '';
+  if (label) return label;
+  if (q.height) return `${Math.round(Number(q.height))}p`;
+  if (q.width) return `${Math.round(Number(q.width))}px`;
+  return q.formatId ? String(q.formatId) : null;
+}
+
+function fieldDupKeys(list) {
+  const seen = new Map();
+  const dups = new Set();
+  for (const q of list) {
+    const k = dedupKey(q);
+    if (!k) continue;
+    if (seen.has(k)) dups.add(k);
+    else seen.set(k, q);
+  }
+  return [...dups];
+}
+
+// v1.0.66: the player resolves its dropdown from a SINGLE envelope field, in
+// priority order — `qualities` (≥2 structured tiers) else `qualityLevels` else
+// `data.formats` (see VideoPlayer.init). Several adult envelopes carry the SAME
+// clean set in both `qualities` and `qualityLevels` for different consumers;
+// merging fields before dup-checking would therefore double-report every key.
+// So assert each field is internally duplicate-free (extractors must ship clean
+// arrays even though the player-side deduplicator would survive a dupe).
+function duplicateQualityKeys(result) {
+  const groups = [
+    ['formats', result && result.data && Array.isArray(result.data.formats) ? result.data.formats : []],
+    ['qualities', Array.isArray(result && result.qualities) ? result.qualities : []],
+    ['qualityLevels', Array.isArray(result && result.qualityLevels) ? result.qualityLevels : []]
+  ];
+  const out = [];
+  for (const [name, list] of groups) {
+    const d = fieldDupKeys(list);
+    if (d.length) out.push(`${name}: ${d.join(', ')}`);
+  }
+  return out;
+}
+
+// ---- real playback-surface checks ------------------------------------------
+// Fetch the URL from INSIDE the app window, so the request crosses the same
+// Chromium CORS enforcement, session interceptors (YT isolation, CDN header
+// stamping, ad-block) and proxy surface the actual <video> + hls.js use.
+// Returns { ok, status, ctype, bytes, head, cors, error }.
+async function fetchFromApp(url, label, ms) {
+  const script = `(async () => {
+    const target = ${JSON.stringify(url)};
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 25000);
+    try {
+      const r = await fetch(target, {
+        cache: 'no-store',
+        credentials: 'omit',
+        signal: ctl.signal,
+        headers: { Range: 'bytes=0-4095' }
+      });
+      clearTimeout(t);
+      const buf = await r.arrayBuffer();
+      const txt = new TextDecoder('utf-8').decode(buf.slice(0, Math.min(buf.byteLength, 131072)));
+      return { ok: r.ok && r.status >= 200 && r.status < 300, status: r.status, ctype: (r.headers.get('content-type') || '').slice(0, 64), bytes: buf.byteLength, head: txt.slice(0, 24000), cors: true };
+    } catch (e) {
+      clearTimeout(t);
+      if (e && e.name === 'AbortError') return { ok: false, cors: true, aborted: true, status: 0, error: 'timeout' };
+      return { ok: false, cors: false, status: 0, error: String((e && e.message) || e) };
+    }
+  })()`;
+  const res = await callWindow(script, ms);
+  res.__label = label;
+  return res;
+}
+
+// Mirror the player's registerStreamHeaders: the app stamps Referer/Origin/UA
+// on the exact stream URL at main-process level (Chromium forbids setting
+// Referer from a renderer fetch), so a probe that skips it would spuriously
+// 403/410 on header-gated CDNs (Pornhub's HLS manifests are one).
+async function registerStreamHeadersForFetch(url, headers) {
+  if (!url || !headers || typeof headers !== 'object') return;
+  const keys = Object.keys(headers).filter((k) => String(headers[k]));
+  if (!keys.length) return;
+  await callWindow(
+    `window.electronAPI.setStreamHeaders(${JSON.stringify(url)}, ${JSON.stringify(headers)}).then(() => true)`,
+    15_000
+  ).catch(() => {});
+}
+
+// First plain URI line of an HLS playlist (variant / media-playlist / segment
+// URL), resolved against the playlist's own URL; null when the body carries none.
+function firstPlaylistUri(head, baseUrl) {
+  const lines = String(head || '').split(/\r?\n/);
+  for (const raw of lines) {
+    const line = (raw || '').trim();
+    if (!line || line.startsWith('#')) continue;
+    if (/^https?:\/\//i.test(line)) return line;
+    try { return new URL(line, baseUrl).href; } catch (_e) { /* relative broken */ }
+  }
+  return null;
+}
+
+// Walk an HLS chain from a master playlist: master → first variant → first
+// segment, fetching each THROUGH the app renderer like hls.js would. Asserts
+// 2xx at every hop so a 403/CORS mid-chain cannot pass silently.
+async function probeHlsMaster(masterUrl, ms) {
+  const master = await fetchFromApp(masterUrl, 'master', ms);
+  const chain = [{ name: 'master', ...master }];
+  if (!master.ok) return { ok: false, chain };
+  if (!String(master.head).includes('#EXTM3U')) {
+    return { ok: false, chain, why: `master did not return #EXTM3U (ctype=${master.ctype})` };
+  }
+  const variant = firstPlaylistUri(master.head, masterUrl);
+  if (!variant) return { ok: false, chain, why: 'master has no variant URI in the probed head' };
+  const vp = await fetchFromApp(variant, 'variant', ms);
+  chain.push({ name: 'variant', ...vp });
+  if (!vp.ok) return { ok: false, chain, why: `first variant returned HTTP ${vp.status}${vp.cors ? '' : ' (CORS blocked)'}` };
+  const seg = firstPlaylistUri(vp.head, variant);
+  if (seg) {
+    const sg = await fetchFromApp(seg, 'segment', ms);
+    chain.push({ name: 'segment', ...sg });
+    if (!sg.ok) return { ok: false, chain, why: `first segment returned HTTP ${sg.status}${sg.cors ? '' : ' (CORS blocked)'}` };
+  }
+  return { ok: true, chain };
+}
+
+function probeSummary(chain) {
+  return chain.map((s) => `${s.name}=${s.status || s.error || '?'}${s.bytes ? `(${s.bytes}b)` : ''}`).join(' → ');
+}
+
 function finalUrl(result) {
   if (!result) return null;
   return (result.data && result.data.videoUrl) || result.streamUrl || null;
@@ -183,7 +315,21 @@ async function testYouTube() {
   );
   const ladder = tandem.filter((q) => q && (q.url || q.height || q.label) && (q.height || q.label)).length;
   if (ladder < 1) return report('YouTube', false, `quality ladder too small (${ladder}) — data.formats=${(res.data && res.data.formats && res.data.formats.length) || 0}`);
-  report('YouTube', true, `${ms}ms · ${res.data && res.data.sourceSite ? res.data.sourceSite : 'yt-dlp'} · ${ladder} tiers · ${fu.slice(0, 80)}`);
+  const dups = duplicateQualityKeys(res);
+  if (dups.length) return report('YouTube', false, `duplicate quality labels in roster: ${dups.join(', ')}`);
+  // Real playback-surface check: walk the HLS chain (master → variant →
+  // segment) with in-window fetches so a googlevideo 403/CORS surfaces here,
+  // exactly like it would in the player.
+  if (/\.m3u8|hls_variant|\/api\/manifest\//i.test(fu)) {
+    const probe = await probeHlsMaster(fu, 90_000);
+    if (!probe.ok) return report('YouTube', false, `stream not playable through the app pipeline: ${probe.why} (${probeSummary(probe.chain)})`);
+    report('YouTube', true, `${ms}ms · ${res.data && res.data.sourceSite ? res.data.sourceSite : 'yt-dlp'} · ${ladder} tiers · ${probeSummary(probe.chain)} · ${fu.slice(0, 70)}`);
+  } else {
+    await registerStreamHeadersForFetch(fu, res.httpHeaders);
+    const pf = await fetchFromApp(fu, 'direct', 90_000);
+    if (!pf.ok) return report('YouTube', false, `direct stream unplayable: HTTP ${pf.status}${pf.cors ? '' : ' (CORS blocked)'} · ${fu.slice(0, 90)}`);
+    report('YouTube', true, `${ms}ms · ${res.data && res.data.sourceSite ? res.data.sourceSite : 'yt-dlp'} · ${ladder} tiers · direct ${pf.status}(${pf.bytes}b) · ${fu.slice(0, 70)}`);
+  }
 }
 
 async function testInlineSite(label, template, query, expectedExtractorPrefix, envKey) {
@@ -211,7 +357,26 @@ async function testInlineSite(label, template, query, expectedExtractorPrefix, e
   if (!extractor.startsWith(expectedExtractorPrefix)) {
     return report(label, false, `extractor "${extractor}" — expected "${expectedExtractorPrefix}*" (inline parser must be primary)`);
   }
-  report(label, true, `${ms}ms · ${extractor} · ${rows.length} tier${rows.length === 1 ? '' : 's'} (${rows.map((r) => /\.m3u8/i.test(r.url) ? 'm3u8' : 'mp4').join(',')})${agegated ? ' [age-gate: single JSON-LD tier]' : ''} · ${fu.slice(0, 90)}`);
+  const dups = duplicateQualityKeys(res);
+  if (dups.length) return report(label, false, `duplicate quality labels: ${dups.join(', ')}`);
+  const badTier = rows.find((q) => !validMediaUrl(q.url) || isAdUrl(q.url));
+  if (badTier) return report(label, false, `quality tier points at non-media/ad URL: "${badTier.url}"`);
+  // v1.0.66: prove the top quality tier actually serves media bytes through
+  // the app's interceptor + CORS surface (403/404/CORS here = broken switch).
+  const top = rows[rows.length - 1];
+  await registerStreamHeadersForFetch(top.url, res.httpHeaders);
+  let pf;
+  let chainSummary = null;
+  if (/\.m3u8|\.m3u|\/hls\/|api\/manifest/i.test(top.url)) {
+    const chain = await probeHlsMaster(top.url, 90_000);
+    if (!chain.ok) return report(label, false, `top quality tier (HLS) unplayable through the app pipeline: ${chain.why} (${probeSummary(chain.chain)}) · ${top.url.slice(0, 80)}`);
+    pf = chain.chain[0];
+    chainSummary = probeSummary(chain.chain);
+  } else {
+    pf = await fetchFromApp(top.url, 'top-tier', 90_000);
+    if (!pf.ok) return report(label, false, `top quality tier unplayable through the app pipeline: HTTP ${pf.status}${pf.cors ? '' : ' (CORS blocked)'}${pf.error ? ' · ' + pf.error : ''} · ${top.url.slice(0, 90)}`);
+  }
+  report(label, true, `${ms}ms · ${extractor} · ${rows.length} tier${rows.length === 1 ? '' : 's'} (${rows.map((r) => /\.m3u8|\.m3u|\/hls\//i.test(r.url) ? 'm3u8' : 'mp4').join(',')}) · top ${pf.status}(${pf.bytes}b)${chainSummary ? ` ${chainSummary}` : ''}${agegated ? ' [age-gate: single JSON-LD tier]' : ''} · ${fu.slice(0, 90)}`);
 }
 
 async function testHanime() {
@@ -239,6 +404,10 @@ async function testHanime() {
     const rows = qualityRows(res);
     const extractor = String(res.extractor || '');
     if (!extractor.includes('hanime')) return { ok: false, why: `${tag} unexpected extractor "${extractor}"` };
+    const dups = duplicateQualityKeys(res);
+    if (dups.length) return { ok: false, why: `${tag} duplicate quality labels: ${dups.join(', ')}` };
+    const badTier = rows.find((q) => !validMediaUrl(q.url) || isAdUrl(q.url));
+    if (badTier) return { ok: false, why: `${tag} quality tier at non-media/ad URL "${badTier.url}"` };
     console.log(`  [HAnime] ${tag} OK (${ms}ms) · ${extractor} · ${rows.length} tiers · via-win=${!!res.viaWin}`);
     return { ok: true };
   };
