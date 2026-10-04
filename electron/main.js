@@ -631,6 +631,22 @@ function registerStreamHeaders({ url, headers }) {
 
 ipcMain.handle('streams:setHeaders', (event, payload = {}) => registerStreamHeaders(payload));
 
+// Read back the stored per-origin stream headers (referer/UA/cookie) so the
+// CORS-free master parser can attach the same credentials the player uses.
+function streamHeadersFor(url) {
+  try {
+    const hint = streamHeaderHints.get(new URL(String(url)).origin);
+    if (!hint) return null;
+    const h = {};
+    if (hint.referer) h.Referer = hint.referer;
+    if (hint.userAgent) h['User-Agent'] = hint.userAgent;
+    if (hint.cookie) h.Cookie = hint.cookie;
+    return h;
+  } catch (_e) {
+    return null;
+  }
+}
+
 // A hidden BrowserWindow is used as a stealth browsing layer (see the stealth
 // engine below). Its requests must pass through untouched — real browser UA,
 // session cookies (cf_clearance, tokens) and order — or the anti-bot pages it
@@ -838,6 +854,50 @@ function destroyStealthWindow() {
   visibleSniffWindow = null;
 }
 
+// v1.0.62: halt everything media-related inside a sniff window WITHOUT leaving
+// the origin. Destroying/parking the pre-v1.0.62 way (about:blank) ─ or here,
+// navigating away after capture ─ revokes the Cloudflare clearance the window
+// earned, so the NEXT video re-enters a Turnstile challenge. Pausing + blanking
+// the <video>/<audio> elements and clearing resource-timing entries stops the
+// OLD pipeline's /hls/ requests + stale captures (the v1.0.61 single-play
+// lockup) while the session cookies stay live.
+async function stopAllMediaInWindow(win) {
+  if (!win || win.isDestroyed()) return 0;
+  try {
+    return await win.webContents.executeJavaScript(`(function(){
+      var stopped = 0;
+      try {
+        if (window.htv_player && typeof window.htv_player.destroy === 'function') { try { window.htv_player.destroy(); } catch(e){} stopped++; }
+        if (window.player && typeof window.player.dispose === 'function' && window.player.tech) { try { window.player.dispose(); } catch(e){} stopped++; }
+        if (window.player && typeof window.player.destroy === 'function') { try { window.player.destroy(); } catch(e){} stopped++; }
+      } catch(e){}
+      var els = [].slice.call(document.querySelectorAll('video,audio'));
+      for (var i = 0; i < els.length; i++) {
+        try { var v = els[i]; v.pause(); v.removeAttribute('src'); v.load(); } catch(e){}
+        stopped++;
+      }
+      try { performance.clearResourceTimings(); } catch(e){}
+      return stopped;
+    })()`);
+  } catch (_e) {
+    return 0;
+  }
+}
+
+// Lightweight same-origin "keep-warm" target for a parked keepAlive sniff
+// window: stays on the cleared origin (cookies stay valid, any fresh Turnstile
+// from a mid-session rotation is solved in the background) instead of dumping
+// the window on about:blank where the clearance goes stale.
+function keepWarmUrlFor(pageUrl) {
+  try {
+    const origin = new URL(String(pageUrl || '')).origin;
+    if (/^https:\/\/([a-z0-9-]+\.)*hanime\.tv$/i.test(origin)) return 'https://hanime.tv/';
+    return origin;
+  } catch (_e) {
+    return 'https://hanime.tv/';
+  }
+}
+
 // Hydratable sniff window for sites whose player only boots when its island is
 // observed (hanime.tv after its Astro rewrite). It is kept "visible" to
 // Chromium (IntersectionObserver + compositor events keep firing) but parked
@@ -990,6 +1050,128 @@ async function waitForCloudflare(win, challengeTimeoutMs = 20000) {
     await sleep(1500);
   }
   return { ok: false, error: 'Cloudflare challenge did not clear in time' };
+}
+
+// v1.0.62 — Cloudflare challenge detection + automatic re-solve.
+// The CF front-end (Turnstile / "Just a moment") serves 403/503 + a challenge
+// shell to requests that lack a currently-valid cf_clearance cookie. When a
+// stream/API fetch is challenged we (a) detect it here, (b) re-use the
+// PERSISTENT sniff webview to drive the challenge to completion, which renews
+// cf_clearance/__cf_bm inside session.defaultSession, and (c) retry the
+// fetch with the refreshed cookie header. The sniff window is never destroyed
+// or navigated away to about:blank in the keepAlive flow, so its cleared
+// session stays warm across videos (see finish() below).
+const CF_CHALLENGE_TEXT_RE = /just a moment|cf-chl|challenge-platform|challenge-form|enable javascript and cookies|attention required|cloudflare\s*ray/i;
+
+function isCloudflareChallengeResponse(status, headers, text) {
+  const code = Number(status) || 0;
+  if (headers && String(headers.get('cf-mitigated') || '').toLowerCase() === 'challenge') return true;
+  if (code !== 403 && code !== 503 && code !== 429) return false;
+  const body = String(text || '');
+  // A real JSON/XML media response that happens to 403 (e.g. a geo-block or
+  // signed-URL expiry) is NOT a bot challenge — require the CF page fingerprint
+  // before burning time on a webview solve pass.
+  return CF_CHALLENGE_TEXT_RE.test(body)
+    || (/<html/i.test(body) && body.length < 300000 && !/^([{[\[])/.test(body.trim()));
+}
+
+let cfSolvePending = null;
+
+// Drive the persistent sniff window through Cloudflare/Turnstile until the
+// session actually holds a fresh cf_clearance (or the challenge frame clears).
+// Single-flight: concurrent callers await the same solve pass. The window is
+// left LOADED on the target origin afterwards so the cleared session stays
+// warm for the next request — never park it on about:blank.
+async function solveCloudflareChallenge(url, opts = {}) {
+  const timeoutMs = Number(opts.timeoutMs) || 20000;
+  if (cfSolvePending) {
+    try { await cfSolvePending; } catch (_e) { /* fall through */ }
+    return { ok: await cfSessionHasClearance(String(url || 'https://hanime.tv/')), reused: true };
+  }
+  cfSolvePending = (async () => {
+    const target = String(url || 'https://hanime.tv/').replace(/#.*$/, '').split('?')[0];
+    const win = ensureVisibleSniffWindow();
+    console.info('[cf-solve] using persistent sniff window to clear challenge for', target);
+    try {
+      // Navigate the SAME session window to the target; loadInStealth already
+      // waits for Turnstile to auto-clear, and we keep clicking interactive
+      // variants (trySolveCloudflare) until a viable cf_clearance lands.
+      await loadInStealth(target, {
+        win,
+        pauseAfterLoadMs: 800,
+        challengeTimeoutMs: 22000,
+        timeoutMs: 28000,
+        extraHeaders: HANIME_SNIFF_HEADERS
+      });
+    } catch (_e) { /* navigation best-effort; cookie poll below still runs */ }
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const hasClearance = await cfSessionHasClearance(target);
+      let challenged = false;
+      try {
+        const st = await win.webContents.executeJavaScript(`(function(){
+          return {
+            frame: !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, [id="challenge-form"]'),
+            title: document.title || '',
+            href: location.href
+          };
+        })()`);
+        challenged = !!(st && (st.frame || /just a moment/i.test(st.title)));
+      } catch (_e) { /* DOM read best-effort */ }
+      if (!challenged && hasClearance) {
+        console.info('[cf-solve] challenge cleared');
+        return { ok: true, elapsedMs: Date.now() };
+      }
+      if (challenged) { try { await trySolveCloudflare(win); } catch (_e) { /* click best-effort */ } }
+      await sleep(1200);
+    }
+    const ok = await cfSessionHasClearance(target);
+    console.warn(`[cf-solve] ${ok ? 'recovered in time' : 'still challenged'} after ${timeoutMs}ms`);
+    return { ok, elapsedMs: Date.now() };
+  })().finally(() => { cfSolvePending = null; });
+  return cfSolvePending;
+}
+
+async function cfSessionHasClearance(targetUrl) {
+  try {
+    const cookies = await getSessionCookies(targetUrl || 'https://hanime.tv/');
+    return cookies.some((c) => /^cf_clearance$/i.test(c.name) && !!c.value);
+  } catch (_e) {
+    return false;
+  }
+}
+
+// CORS-free master/API fetch with automatic Cloudflare recovery. On a challenged
+// response it re-solves the persistent webview, refreshes the Cookie header
+// from the session, and retries — the "retry the stream extractor after the
+// challenge clears" requirement for every adult module.
+async function fetchWithCloudflareRecovery(url, opts = {}) {
+  const {
+    headers = {},
+    method = 'GET',
+    body = undefined,
+    timeoutMs = 25000,
+    challengeUrl = null,
+    maxRecoveries = 2
+  } = opts;
+  let workingHeaders = { ...headers };
+  for (let attempt = 0; attempt <= maxRecoveries; attempt++) {
+    if (attempt > 0) {
+      await solveCloudflareChallenge(challengeUrl || url);
+      const cookie = await getSessionCookieHeader(challengeUrl || url);
+      if (cookie) workingHeaders = { ...workingHeaders, Cookie: cookie };
+    }
+    const res = await fetch(url, { method, headers: workingHeaders, body, signal: AbortSignal.timeout(timeoutMs) });
+    if (res.ok) return res;
+    const status = res.status;
+    const text = await res.text().catch(() => '');
+    if (isCloudflareChallengeResponse(status, res.headers, text)) {
+      console.warn(`[cf-recovery] challenge on ${String(url).slice(0, 120)} (HTTP ${status}); attempt ${attempt + 1}/${maxRecoveries} — re-solving webview`);
+      continue;
+    }
+    throw new Error(`HTTP ${status}${text.slice(0, 160) ? ' — ' + text.slice(0, 160) : ''}`);
+  }
+  throw new Error('Cloudflare challenge could not be cleared for ' + String(url).slice(0, 120));
 }
 
 async function loadInStealth(url, opts = {}) {
@@ -1164,19 +1346,29 @@ async function sniffWithEarlyReturn(pageUrl, { timeoutMs = 20000, pauseAfterLoad
     // (cf_clearance / __cf_bm) live in defaultSession, not the window.
     // keepAlive (hanime): destroying a window whose renderer is actively
     // decoding video.js output can deadlock the browser process, so instead
-    // park the sniff window alive — but BLANK it first (v1.0.61). A window
-    // left parked still decoding the PREVIOUS video keeps serving the old
-    // /hls/<id>/<token> master + stale resource-timing entries to the NEXT
-    // sniff that reuses this window, which resolves the 2nd video to the 1st
-    // video's manifest — the standard "only the first video plays" bug.
-    // Blanking stops the media pipeline just like destroyStealthWindow().
+    // park the sniff window alive. v1.0.61 blanked it to about:blank to stop
+    // the old page continuing to serve the previous /hls/<id>/<token> master
+    // + stale resource-timing entries into the NEXT sniff (the "2nd video
+    // resolves to the 1st video's manifest" bug). v1.0.62 stops that pipeline
+    // WITHOUT leaving the origin: pausing/blanking every media element +
+    // clearing resource timings halts the stale requests, while a keep-warm
+    // same-origin reload keeps the cleared cf_clearance / __cf_bm session
+    // alive for the next video — dumping the window on about:blank let the
+    // Cloudflare clearance go stale and re-armed a Turnstile each play.
     try {
       if (win && !win.isDestroyed() && win.webContents.debugger.isAttached()) {
         win.webContents.debugger.detach();
       }
     } catch (_e) { /* detach best-effort */ }
     if (keepAlive && win && !win.isDestroyed()) {
-      try { win.webContents.loadURL('about:blank').catch(() => {}); } catch (_e) { /* best-effort */ }
+      await stopAllMediaInWindow(win);
+      // Fire-and-forget keep-warm navigation (same origin) — never awaited, so
+      // resolution latency is unaffected. Any challenge the keep-warm page hits
+      // is solved in the background window before the next sniff reuses it.
+      try {
+        win.webContents.loadURL(keepWarmUrlFor(pageUrl$), { extraHeaders: HANIME_SNIFF_HEADERS })
+          .catch(() => { /* keep-warm nav best-effort */ });
+      } catch (_e) { /* best-effort */ }
     } else {
       destroyStealthWindow();
     }
@@ -4934,9 +5126,15 @@ function parseHlsMasterQuality(m3u8Text, baseUrl) {
 }
 
 async function fetchHlsQualities(m3u8Url, headers) {
+  // v1.0.62: route through Cloudflare recovery — a stale cf_clearance makes
+  // the tokenized master serve a challenge shell instead of playlist text;
+  // recovery re-solves the persistent webview and retries with fresh cookies.
   try {
-    const res = await fetch(m3u8Url, { headers, signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return [];
+    const res = await fetchWithCloudflareRecovery(m3u8Url, {
+      headers,
+      challengeUrl: 'https://hanime.tv/',
+      timeoutMs: 15000
+    });
     const text = await res.text();
     if (typeof text !== 'string' || text.indexOf('#EXT') === -1) return [];
     return parseHlsMasterQuality(text, m3u8Url);
@@ -4945,14 +5143,50 @@ async function fetchHlsQualities(m3u8Url, headers) {
   }
 }
 
+// v1.0.62: CORS-free quality enumeration for ANY master playlist. The renderer
+// calls this when its hls.js instance collapsed the manifest to a single
+// height-0 level (the "only Auto + Quality 1" symptom) — pornhub, hentai-site
+// embeds, pasted .m3u8 URLs, anything the extractor did not enrich. Fetched in
+// main (no renderer CORS/preflight), with per-origin stream headers + CF
+// recovery, then parsed for #EXT-X-STREAM-INF RESOLUTION tiers.
+ipcMain.handle('scrapers:parseMasterStream', async (_event, { url } = {}) => {
+  try {
+    const masterUrl = String((url && url.url) || url || '').trim();
+    if (!/^https?:\/\//i.test(masterUrl)) return { variants: [] };
+    const headers = {
+      ...(streamHeadersFor(masterUrl) || {}),
+      'User-Agent': STEALTH_UA,
+      'Accept': '*/*'
+    };
+    const challengeUrl = /hanime\.tv/i.test(masterUrl)
+      ? 'https://hanime.tv/'
+      : (() => { try { return new URL(masterUrl).origin; } catch (_e) { return null; } })();
+    const res = await fetchWithCloudflareRecovery(masterUrl, {
+      headers,
+      challengeUrl,
+      timeoutMs: 15000
+    });
+    const text = await res.text();
+    if (typeof text !== 'string' || text.indexOf('#EXT') === -1) return { variants: [] };
+    return { variants: parseHlsMasterQuality(text, masterUrl) };
+  } catch (_e) {
+    return { variants: [] };
+  }
+});
+
 async function hanimeV8Video(slug) {
   const cookieHeader = await getSessionCookieHeader('https://hanime.tv/');
-  const res = await fetch(`${HANIME_API}/video?id=${encodeURIComponent(slug)}`, {
-    method: 'GET',
-    headers: hanimeHeaders(cookieHeader, true),
-    signal: AbortSignal.timeout(20000)
-  });
-  if (!res.ok) throw new Error(`Hanime v8 video HTTP ${res.status}`);
+  // v1.0.62: if Cloudflare challenges the v8 call, re-solve the persistent
+  // sniff webview and retry with the refreshed cf_clearance automatically.
+  const res = await fetchWithCloudflareRecovery(
+    `${HANIME_API}/video?id=${encodeURIComponent(slug)}`,
+    {
+      method: 'GET',
+      headers: hanimeHeaders(cookieHeader, true),
+      challengeUrl: 'https://hanime.tv/',
+      timeoutMs: 20000
+    }
+  );
   const data = await res.json();
   const v = data && data.data ? data.data.video : (data.video || data);
   if (!v) throw new Error('Hanime video payload missing');
@@ -4996,27 +5230,22 @@ async function hanimeV8Video(slug) {
 // from a tokenized URL with NO `.m3u8` extension:
 //   https://hanime.tv/hls/<video_id>/<token>
 // (video.js fetches that, then AES-128 segments from *.htv-hydaelyn-*.com).
-// So the only reliable resolver is the offscreen stealth browser: load the
-// page, let the site's own player emit the master request, and capture it.
+// So the primary resolver is the offscreen stealth browser: load the page, let
+// the site's own player emit the master request, and capture it.
+//
+// v1.0.62: challenge-aware two-round ladder. Cloudflare can rotate its
+// challenge between videos and leave the stored cf_clearance stale; the first
+// round (v8 → sniff) then comes back empty. Round two FIRST forces the
+// persistent sniff webview (same default session — never wiped or parked on
+// about:blank) through a fresh Turnstile solve, which renews cf_clearance /
+// __cf_bm, and only then retries both engines. New solve + retry = the
+// "re-use the background webview then retry the extractor" requirement. A hard
+// global budget keeps the whole ladder inside the renderer's extraction window.
 async function resolveHanimeStream(pageUrl) {
   const m = /hanime\.tv\/videos\/hentai\/([a-zA-Z0-9_-]+)/i.exec(String(pageUrl || ''));
   const slug = m ? m[1] : '';
   if (!slug) throw new Error('Not a hanime.tv video URL');
-  // First try the old v8 API in case it comes back (cheap: 404 returns fast);
-  // the vast majority of the time it is dead and we go straight to sniffing.
-  try {
-    const info = await hanimeV8Video(slug);
-    if (info.m3u8) return { ...info, slug };
-  } catch (v8Err) {
-    console.warn(`[resolveHanimeStream] v8 video failed (trying stealth sniff): ${v8Err.message}`);
-  }
-  // Stealth sniff: render the page in the offscreen browser and wait (up to
-  // 20s) for Cloudflare/Turnstile to clear in the background, intercepting the
-  // master playlist the site's HLS player requests as soon as it appears — the
-  // resolver tears the offscreen window down the instant a valid manifest is
-  // captured instead of waiting out a fixed timer. cf_clearance / __cf_bm
-  // cookies persist in session.defaultSession, so the *next* video load on
-  // this machine skips the challenge entirely.
+
   const isMaster = (u) => /\.m3u8/i.test(u) || /hanime\.tv\/hls\//i.test(u);
   // The Astro player needs a play interaction before video.js emits its
   // /hls/<id>/<token> master request; nudge (click overlay + force muted
@@ -5039,50 +5268,93 @@ async function __nudge(){
 }
 return __nudge();
 })()`;
-  const sniff = await sniffWithEarlyReturn(pageUrl, {
-    timeoutMs: 20000,
-    visibleWindow: true,
-    keepAlive: true,
-    extraHeaders: HANIME_SNIFF_HEADERS,
-    resolveHook: async (win, matched) => {
-      const target = (matched && isMaster(matched)) ? matched : null;
-      if (!target || !win || win.isDestroyed()) return {};
-      try {
-        // Fetch the captured master from INSIDE the authed sniff window (same
-        // origin, cookies, cf_clearance) and enumerate its #EXT-X-STREAM-INF
-        // variant tiers so the player's quality dropdown lists real
-        // resolutions (v1.0.61). hls.js alone sees a degenerate single level.
-        const text = await evalInStealth(`(function(){
-          return fetch(${JSON.stringify(target)}, { method: 'GET', credentials: 'include', headers: { 'Referer': 'https://hanime.tv/' } })
-            .then(function(r){ return r.ok ? r.text() : null; })
-            .catch(function(){ return null; });
-        })()`, 9000, win);
-        if (typeof text !== 'string' || text.indexOf('#EXT') === -1) return {};
-        return { qualityLevels: parseHlsMasterQuality(text, target) };
-      } catch (_e) { return {}; }
-    },
-    probe: async (win) => {
-      if (!win || win.isDestroyed()) return null;
-      try { return await evalInStealth(HANIME_PLAY_NUDGE, 17000, win); } catch (_e) { return null; }
-    },
-    match: (e) => isMaster(String(e.url || ''))
-      || /hanime\.tv\/api\/v8\/video/i.test(String(e.url || ''))
-      || /v2\.hanime\.tv/i.test(String(e.url || ''))
-  });
-  // Prefer the captured master playlist; never a .html segment URL.
-  const m3u8 = (sniff.matchedUrl && isMaster(sniff.matchedUrl) && sniff.matchedUrl)
-    || (sniff.streams && sniff.streams.find(s => isMaster(String(s || ''))))
-    || null;
-  if (!m3u8) throw new Error('No playable manifest found for ' + slug);
-  console.info(`[resolveHanimeStream] captured manifest via sniff: ${String(m3u8).slice(0, 140)}`);
-  // v1.0.61: enrich the response with the master's real quality tiers (the
-  // capture frequently yields the tokenized master which hls.js collapses to
-  // a single height-0 level — the "only Auto + Quality 1" symptom).
-  const qualityLevels = Array.isArray(sniff.qualityLevels) ? sniff.qualityLevels : [];
-  if (qualityLevels.length > 1) {
-    console.info(`[resolveHanimeStream] quality tiers: ${qualityLevels.map(q => q.height || q.label).join('/')}`);
+
+  const tryV8 = async () => {
+    const info = await hanimeV8Video(slug); // throws on 404 / unresolved challenge
+    return info.m3u8 ? { ...info, slug } : null;
+  };
+
+  const trySniff = async () => {
+    const sniff = await sniffWithEarlyReturn(pageUrl, {
+      timeoutMs: 20000,
+      visibleWindow: true,
+      keepAlive: true,
+      extraHeaders: HANIME_SNIFF_HEADERS,
+      resolveHook: async (win, matched) => {
+        const target = (matched && isMaster(matched)) ? matched : null;
+        if (!target || !win || win.isDestroyed()) return {};
+        try {
+          // Fetch the captured master from INSIDE the authed sniff window (same
+          // origin, cookies, cf_clearance) and enumerate its #EXT-X-STREAM-INF
+          // variant tiers so the player's quality dropdown lists real
+          // resolutions. hls.js alone sees a degenerate single level.
+          const text = await evalInStealth(`(function(){
+            return fetch(${JSON.stringify(target)}, { method: 'GET', credentials: 'include', headers: { 'Referer': 'https://hanime.tv/' } })
+              .then(function(r){ return r.ok ? r.text() : null; })
+              .catch(function(){ return null; });
+          })()`, 9000, win);
+          if (typeof text !== 'string' || text.indexOf('#EXT') === -1) return {};
+          return { qualityLevels: parseHlsMasterQuality(text, target) };
+        } catch (_e) { return {}; }
+      },
+      probe: async (win) => {
+        if (!win || win.isDestroyed()) return null;
+        try { return await evalInStealth(HANIME_PLAY_NUDGE, 17000, win); } catch (_e) { return null; }
+      },
+      match: (e) => isMaster(String(e.url || ''))
+        || /hanime\.tv\/api\/v8\/video/i.test(String(e.url || ''))
+        || /v2\.hanime\.tv/i.test(String(e.url || ''))
+    });
+    // Prefer the captured master playlist; never a .html segment URL.
+    const m3u8 = (sniff.matchedUrl && isMaster(sniff.matchedUrl) && sniff.matchedUrl)
+      || (sniff.streams && sniff.streams.find(s => isMaster(String(s || ''))))
+      || null;
+    if (!m3u8) throw new Error('No playable manifest found for ' + slug);
+    console.info(`[resolveHanimeStream] captured manifest via sniff: ${String(m3u8).slice(0, 140)}`);
+    const qualityLevels = Array.isArray(sniff.qualityLevels) ? sniff.qualityLevels : [];
+    if (qualityLevels.length > 1) {
+      console.info(`[resolveHanimeStream] quality tiers: ${qualityLevels.map(q => q.height || q.label).join('/')}`);
+    }
+    return { id: `hanime-${slug}`, slug, m3u8, canPlay: true, isHls: true, title: '', thumbnailUrl: '', duration: 0, viaSniff: true, qualityLevels };
+  };
+
+  const budgetMs = 56000;
+  const started = Date.now();
+  const failures = [];
+  const withinBudget = (extraMs = 0) => (Date.now() - started < budgetMs - extraMs);
+
+  for (let round = 0; round < 2; round++) {
+    if (!withinBudget()) break;
+    if (round === 1) {
+      // Cloudflare rotated / stale clearance: force the PERSISTENT sniff
+      // webview through a fresh solve, renewing the session cookies, before
+      // retrying the extractor (v1.0.62). Never parked on about:blank, so the
+      // just-cleared session is exactly what the retried fetches reuse.
+      console.warn('[resolveHanimeStream] first pass blocked — re-solving Cloudflare challenge in the persistent webview, then retrying');
+      await solveCloudflareChallenge(pageUrl, { timeoutMs: 18000 });
+      if (!withinBudget(5000)) break;
+    }
+    try {
+      const v8 = await tryV8();
+      if (v8) return v8;
+      failures.push('v8 returned no playable stream');
+    } catch (v8Err) {
+      failures.push(`v8: ${v8Err.message}`);
+      console.warn(`[resolveHanimeStream] v8 video failed (${round === 0 ? 'trying stealth sniff' : 'after CF re-solve'}): ${v8Err.message}`);
+    }
+    if (!withinBudget(5000)) break;
+    try {
+      return await trySniff();
+    } catch (sniffErr) {
+      failures.push(`sniff: ${sniffErr.message}`);
+      console.warn(`[resolveHanimeStream] sniff round ${round + 1} failed: ${sniffErr.message}`);
+    }
   }
-  return { id: `hanime-${slug}`, slug, m3u8, canPlay: true, isHls: true, title: '', thumbnailUrl: '', duration: 0, viaSniff: true, qualityLevels };
+  throw new Error(
+    failures.length
+      ? `Hanime stream resolution failed (${failures.join(' | ')})`
+      : 'Hanime stream resolution failed'
+  );
 }
 
 // ---- Pornhub resolver ----------------------------------------------------

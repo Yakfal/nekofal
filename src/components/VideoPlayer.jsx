@@ -156,6 +156,13 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // (hanime) collapses to ONE height-0 level — the extracted variants give
   // the dropdown real resolutions and per-variant URLs to switch to.
   const [extractQualityLevels, setExtractQualityLevels] = useState([]);
+  // v1.0.62: the RAW remote master (pre-proxy) for the current playback — the
+  // local proxy path is useless as a base for absolute variant URLs. Used by
+  // the degenerate-manifest recovery parser.
+  const originStreamUrlRef = useRef(null);
+  // v1.0.62: one master-quality parse attempt per origin — prevents a loop
+  // where every degenerate manifest re-triggers the same fetch.
+  const masterParseAttemptedRef = useRef(null);
   // Dual-engine fallback: direct-URL format list ({ label, height, url })
   // from extraction when hls.js has no levels (non-HLS playback). Used to
   // hot-swap quality by re-pointing <video> without re-running yt-dlp.
@@ -1215,6 +1222,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       let streamUrl = video.pageUrl || video.webUrl || video.videoUrl;
       let httpHeaders = video.httpHeaders || null;
       let isHLS = video.isHLS || false;
+      originStreamUrlRef.current = streamUrl;
 
       // Network stream sniffer fallback: when normal extraction fails, drive
       // the source page in the stealth browser and capture the media requests
@@ -1289,6 +1297,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             isHLS = extraction.isHLS || false;
             streamHlsRef.current = !!extraction.isHLS;
             activeHttpHeadersRef.current = httpHeaders;
+            originStreamUrlRef.current = extractedUrl;
 
             // yt-dlp direct-URL format list (non-HLS quality switching)
             if (Array.isArray(extraction.formats)) {
@@ -1332,6 +1341,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 streamHlsRef.current = isHLS;
                 httpHeaders = null;
                 activeHttpHeadersRef.current = null;
+                originStreamUrlRef.current = sniffed;
                 console.log('[VideoPlayer] Sniff fallback adopted stream:', streamUrl);
               } else {
                 setStreamError(`Stream extraction failed: ${errDetail}`);
@@ -1351,6 +1361,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               streamHlsRef.current = isHLS;
               httpHeaders = null;
               activeHttpHeadersRef.current = null;
+              originStreamUrlRef.current = sniffed;
               console.log('[VideoPlayer] Sniff fallback adopted stream:', streamUrl);
             } else {
               setStreamError(`Stream extraction failed: ${extractErr.message || 'timed out'}`);
@@ -1470,11 +1481,18 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       hls.loadSource(streamUrl);
       hls.attachMedia(videoEl);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         networkRetryRef.current = 0;
         stallCountRef.current = 0;
-        const levelMenu = hls.levels && hls.levels.length
-          ? hls.levels.map((l, i) => {
+        const api = window.api || window.electronAPI;
+        // v1.0.62: bind the quality menu directly to hls.js's parsed level
+        // data (the MANIFEST_PARSED payload) so EVERY .m3u8 stream gets a real
+        // resolution dropdown, not just the extractor-enriched ones.
+        const parsedLevels = (data && Array.isArray(data.levels) && data.levels.length)
+          ? data.levels
+          : (hls.levels || []);
+        const levelMenu = parsedLevels.length
+          ? parsedLevels.map((l, i) => {
               const res = parseHlsResolution(l);
               return { index: i, height: res.height, width: res.width, bitrate: l.bitrate, label: qualityLabel(res.height) || `Quality ${i + 1}` };
             })
@@ -1486,8 +1504,31 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         const rich = extractQualityLevels.length
           ? extractQualityLevels.map((q, i) => ({ ...q, index: i }))
           : [];
-        const degenerate = !hls.levels || hls.levels.length <= 1
+        const degenerate = !parsedLevels.length || parsedLevels.length <= 1
           || levelMenu.every((l) => !l.height);
+        // v1.0.62: when hls.js collapsed the master into a single height-0
+        // level (tokenized/CDN masters, pasted playlists, non-enriched
+        // sources), ask main to parse the raw #EXT-X-STREAM-INF RESOLUTION
+        // rows (CORS-free fetch with per-origin headers + CF recovery) and
+        // rebuild the menu off real variants. Guarded to one attempt per origin.
+        if (degenerate && rich.length < 2 && api?.parseMasterStream
+            && originStreamUrlRef.current
+            && masterParseAttemptedRef.current !== originStreamUrlRef.current) {
+          masterParseAttemptedRef.current = originStreamUrlRef.current;
+          const originMaster = originStreamUrlRef.current;
+          api.parseMasterStream(originMaster)
+            .then((parsed) => {
+              const usable = (parsed && Array.isArray(parsed.variants) ? parsed.variants : [])
+                .filter((q) => q && q.url && (q.height || q.label)
+                  && (q.url.includes('m3u8') || q.url.includes('.m3u') || q.url.includes('/hls/')));
+              if (usable.length >= 2) {
+                // Re-entering via extractQualityLevels re-runs this effect (it
+                // is an init dep) → the fresh hls.js parse now sees rich rows.
+                setExtractQualityLevels(usable);
+              }
+            })
+            .catch(() => {});
+        }
         const useRich = degenerate && rich.length >= 2;
         const menu = useRich ? rich : levelMenu;
         if (menu.length) {

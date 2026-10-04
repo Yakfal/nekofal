@@ -123,6 +123,12 @@ const api = {
   sniffStreams: (url, watchMs) =>
     ipcRenderer.invoke('scraper:sniff', { url, watchMs }),
 
+  // HLS master quality parser (main-process, CORS-free): read a .m3u8 resource
+  // with the stored per-origin headers and enumerate its #EXT-X-STREAM-INF
+  // resolution tiers for the player's quality dropdown.
+  parseMasterStream: (url) =>
+    ipcRenderer.invoke('scrapers:parseMasterStream', { url }),
+
   // Live stream-sniffed events pushed while a page is being sniffed
   onStreamSniffed: (callback) => {
     const subscription = (_event, data) => callback(data);
