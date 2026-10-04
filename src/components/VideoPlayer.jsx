@@ -674,6 +674,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     closePlayer();
   }, [video, isZapping, channelList, channelIndexRef, clearIptvWatch, zap, closePlayer]);
 
+  // Latest-ref handles to the IPTV watchdog callbacks. The stream-init effect
+  // below must NOT list these in its dependency array: their identities track
+  // isPaused (via zap → resetControlsTimeout), so a pause click used to re-run
+  // the effect, tear the stream down and restart it from 0s. Reading them via
+  // refs keeps the effect keyed only on the real stream source (streamUrl).
+  const clearIptvWatchRef = useRef(clearIptvWatch);
+  clearIptvWatchRef.current = clearIptvWatch;
+  const handleIptvUnavailableRef = useRef(handleIptvUnavailable);
+  handleIptvUnavailableRef.current = handleIptvUnavailable;
+
   useEffect(() => {
     if (isZapping && channelList && channelList.length) {
       const idx = Math.min(Math.max(channelIndexRef.current, 0), channelList.length - 1);
@@ -1312,7 +1322,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     const handlePlaying = () => {
       stallCountRef.current = 0;
       networkRetryRef.current = 0;
-      clearIptvWatch();
+      clearIptvWatchRef.current();
     };
     videoEl.addEventListener('stalled', handleStalled);
     videoEl.addEventListener('playing', handlePlaying);
@@ -1323,10 +1333,10 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     // mark the channel dead + skip/close exactly like an explicit error would.
     const isIptvLike = video.sourceSite === 'IPTV' || video.type === 'Web TV';
     if (isIptvLike || isZapping) {
-      clearIptvWatch();
+      clearIptvWatchRef.current();
       iptvWatchRef.current = setTimeout(() => {
         iptvWatchRef.current = null;
-        handleIptvUnavailable(true);
+        handleIptvUnavailableRef.current(true);
       }, IPTV_WATCHTIMEOUT_MS);
     }
 
@@ -1427,7 +1437,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               // Temporary network blip: recover via startLoad with backoff.
               if (!scheduleRetry(streamUrlRef.current || streamUrl, 'hls')) {
                 if (isZapping || video.sourceSite === 'IPTV' || video.type === 'Web TV') {
-                  handleIptvUnavailable(false);
+                  handleIptvUnavailableRef.current(false);
                   return;
                 }
                 hls.destroy();
@@ -1440,7 +1450,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
               break;
             default:
               if (isZapping || video.sourceSite === 'IPTV' || video.type === 'Web TV') {
-                handleIptvUnavailable(false);
+                handleIptvUnavailableRef.current(false);
                 return;
               }
               hls.destroy();
@@ -1485,7 +1495,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
 
     return () => {
-      clearIptvWatch();
+      clearIptvWatchRef.current();
       videoEl.removeEventListener('stalled', handleStalled);
       videoEl.removeEventListener('playing', handlePlaying);
       if (hlsRef.current) {
@@ -1495,7 +1505,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       videoEl.pause();
       videoEl.src = '';
     };
-  }, [streamUrl, isDRM, shouldResume, seekToResume, scheduleRetry, hlsRetryKey, clearIptvWatch, handleIptvUnavailable]);
+  }, [streamUrl, isDRM, shouldResume, seekToResume, scheduleRetry, hlsRetryKey]);
 
   // Handle overlay click (but not on controls)
   const handleOverlayClick = useCallback((e) => {
