@@ -1330,8 +1330,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             // hand over direct variant playlists, so populate the dropdown
             // straight from this list — no dependence on hls.js parsing.
             if (Array.isArray(extraction.qualities) && extraction.qualities.length >= 2) {
+              // v1.0.65: accept both HLS variant sub-playlists (.m3u8 / /hls/)
+              // and direct progressive MP4/WebM tiers — the inline-player
+              // parsers (XVideos/XNXX/PH mediaDefinitions) hand over clean mp4
+              // ladders that the MP4 path hot-swaps via switchDirectFormat.
               const hlsQualities = extraction.qualities
-                .filter((q) => q && q.url && /(\.m3u8|\.m3u|\/hls\/)/i.test(q.url) && (q.height || q.label));
+                .filter((q) => q && q.url && /(\.m3u8|\.m3u|\/hls\/|\.mp4|\.webm)/i.test(q.url) && (q.height || q.label));
               if (hlsQualities.length >= 2) {
                 setExtractQualityLevels(hlsQualities);
                 setQualityLevels(hlsQualities);

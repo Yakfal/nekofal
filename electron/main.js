@@ -10,7 +10,7 @@ if (typeof global.File === 'undefined') {
   };
 }
 
-const { app, BrowserWindow, ipcMain, session, dialog, shell, globalShortcut, net, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, session, dialog, shell, globalShortcut, net, Menu, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
@@ -228,17 +228,18 @@ function withYtDlpArgs(args) {
   return withJsRuntimeArgs(withFFmpegArgs(args));
 }
 
-// YouTube player_client roster fallback chain. `android,web` yields the richest
-// manifest (every resolution tier up to 2160p with audio), but Google sometimes
-// flags a single client — or its IP — with a "Sign in to confirm you're not a
-// bot" wall. Walk the chain down to the bare default (the pre-1.0.1.0.47 behavior)
-// so playback survives transient bot checks instead of failing hard.
+// YouTube player_client roster fallback chain. `default` (bare) is FIRST:
+// on most networks yt-dlp's own client selection yields the full resolution
+// ladder (verified: 48 formats / 37 tiers). When Google walls the default
+// client ("Sign in to confirm you're not a bot"), fall through to
+// `android,web`, which still returns the complete ladder on residential IPs
+// and a throttled-but-playable 360p tier on flagged datacenter/VPN IPs.
 const YT_CLIENT_OVERRIDES = [
+  null, // bare default — yt-dlp's own client selection (richest when allowed)
   'youtube:player_client=android,web',
   'youtube:player_client=web',
   'youtube:player_client=web_safari',
-  'youtube:player_client=tv',
-  null // bare default — yt-dlp's own client selection
+  'youtube:player_client=tv'
 ];
 
 // yt-dlp error fingerprints that a client swap can plausibly fix.
@@ -584,6 +585,39 @@ function loadDevServerWithRetry(maxRetries = 60, retryInterval = 500) {
 // normal UA is frequently rejected on direct segment/file requests.
 const STREAM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) VLC/3.0.18';
 
+// v1.0.65: STRICT YouTube isolation. YouTube + its media/CDN/API endpoints are
+// NEVER touched by the adult-oriented request interceptors — Chromium already
+// sends exactly what YouTube needs, and stamps like the VLC live-stream UA or a
+// third-party Referer would 403 the playback/API requests.
+const YT_ISOLATED_HOSTS = /(^|\.)(?:youtube\.com|youtube-nocookie\.com|youtu\.be|googlevideo\.com|ytimg\.com|ggpht\.com|youtubei\.googleapis\.com)$/i;
+function isYouTubeIsolated(hostname) {
+  return YT_ISOLATED_HOSTS.test(String(hostname || '').toLowerCase());
+}
+
+// v1.0.65: global ad-suppression host list. Anything matching a known ad
+// network is cancelled before it loads (and before the stream sniffer can ever
+// mistake an ad for media). Popups are separately denied via
+// setWindowOpenHandler on every window/webview.
+const AD_BLOCK_HOST_RE = /(^|\.)(?:exoclick\.com|trafficjunky\.com|juicyads\.com|popads\.net|popcash\.net|adsterra\.com|adspycraft\.com|hydrox\.cz|hilltopads\.net|proftraffic\.|clickonometrics\.pl|doubleclick\.net|googlesyndication\.com|pagead2\.googlesyndication\.com|adform\.net|adnxs\.com|rubiconproject\.com|pubmatic\.com|criteo\.com|taboola\.com|outbrain\.com)$/i;
+
+function isAdBlockedRequest(url) {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) return false;
+    // Never block anything on the strictly-isolated YouTube family.
+    if (isYouTubeIsolated(host)) return false;
+    const pathname = u.pathname.toLowerCase();
+    return AD_BLOCK_HOST_RE.test(host)
+      || /^\/(?:ads?|ads?_frame|adframe|banners?|popads?)(?:\/|$)/.test(pathname)
+      || /\/(?:ads?|ads?_frame|adframe|banners?)\//.test(pathname)
+      || AD_IFRAME_PARAMS.test(pathname + u.search);
+  } catch (_e) {
+    return false;
+  }
+}
+
 // Media URL detection: files served with a media extension, requests the
 // browser flags as <video>/<audio> loads, or hosts on known stream CDNs.
 const MEDIA_URL_RE = /\.(m3u8|m3u|mpd|ism\/manifest|ts|m4s|mp4|m4v|webm|mkv|mov|mp3|aac|aacp|m4a|flac|ogg|oga|opus|wav|ac3|eac3)([?#]|$)/i;
@@ -676,13 +710,20 @@ async function streamCookieForUrl(url) {
   }
 }
 
-// A hidden BrowserWindow is used as a stealth browsing layer (see the stealth
-// engine below). Its requests must pass through untouched — real browser UA,
-// session cookies (cf_clearance, tokens) and order — or the anti-bot pages it
-// visits would never authenticate.
+// The hidden BrowserWindow(s) used as a stealth browsing layer (see the
+// stealth engine below) — the offscreen stealth window AND the on-screen
+// visible sniff window. Their requests must pass through the network stack
+// BIT-FOR-BIT UNTOUCHED — real browser UA, session cookies (cf_clearance,
+// __cf_bm, cf_chl_* challenge handshake state) and headers — or the anti-bot
+// pages they visit could never authenticate. Cookie-stripping or UA-rewriting
+// these request headers breaks the Cloudflare/Turnstile handshake mid-flight
+// and the challenge never resolves into a fresh cf_clearance.
 function isStealthRequest(details) {
-  if (!stealthWindow || stealthWindow.isDestroyed()) return false;
-  return details.webContentsId === stealthWindow.webContents.id;
+  if (stealthWindow && !stealthWindow.isDestroyed()
+      && details.webContentsId === stealthWindow.webContents.id) return true;
+  if (visibleSniffWindow && !visibleSniffWindow.isDestroyed()
+      && details.webContentsId === visibleSniffWindow.webContents.id) return true;
+  return false;
 }
 
 function setupWebRequestHeaders() {
@@ -702,6 +743,12 @@ function setupWebRequestHeaders() {
 
     const url = new URL(details.url);
     const hostname = url.hostname;
+
+    // v1.0.65: strict YouTube isolation — never rewrite YT/YT-media requests.
+    // Pass them through bit-for-bit so standard YouTube stream handling works.
+    if (isYouTubeIsolated(hostname)) {
+      return callback({ requestHeaders: details.requestHeaders });
+    }
     
     // Skip localhost and local network
     if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local')) {
@@ -786,6 +833,22 @@ function setupWebRequestHeaders() {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
 
+    // v1.0.65: stealth/sniff windows pass response headers through untouched —
+    // their pages must behave exactly like a stock browser (the CF challenge
+    // bootstrap and the site's own player rely on those ORIGINAL headers).
+    if (isStealthRequest(details)) {
+      return callback({ responseHeaders });
+    }
+
+    // v1.0.65: strict YouTube isolation — no CORS/frame/CSP rewriting on
+    // youtube.com / googlevideo.com / YT API responses either.
+    try {
+      const resHost = new URL(details.url).hostname;
+      if (isYouTubeIsolated(resHost)) {
+        return callback({ responseHeaders });
+      }
+    } catch (_e) { /* keep default handling */ }
+
     // CORS stamp: only touch responses that actually need it for the
     // renderer's hls.js/xhr fetches (master playlists, keys, segments —
     // e.g. hanime/tokyoinsider send no/odd Access-Control-Allow-Origin).
@@ -818,6 +881,21 @@ function setupWebRequestHeaders() {
     delete responseHeaders['Content-Security-Policy'];
 
     callback({ responseHeaders });
+  });
+
+  // v1.0.65: global ad-network suppression. Popups are denied separately via
+  // setWindowOpenHandler (main window, stealth/sniff windows and the DRM
+  // webview); this cancels known ad/tracking requests (ExoClick, TrafficJunky,
+  // JuicyAds, PopAds, AdSterra, DoubleClick syndication, /ads/ endpoints…)
+  // BEFORE they reach the network or get captured as "streams" by the sniffer.
+  // The strictly-isolated YouTube family and the app's own localhost proxy are
+  // never blocked.
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    try {
+      callback({ cancel: isAdBlockedRequest(details.url) });
+    } catch (_e) {
+      callback({ cancel: false });
+    }
   });
 
   // Network stream sniffer (see stealth engine below): observe every request
@@ -948,24 +1026,43 @@ function keepWarmUrlFor(pageUrl) {
 }
 
 // Hydratable sniff window for sites whose player only boots when its island is
-// observed (hanime.tv after its Astro rewrite). It is kept "visible" to
-// Chromium (IntersectionObserver + compositor events keep firing) but parked
-// OFF-SCREEN at (-10000,-10000), taskbar-hidden and muted, so it NEVER pops up
-// on the user's desktop during a resolve. Reuses the default session so
-// cf_clearance / __cf_bm cookies acquired here persist for the next video load.
+// observed (hanime.tv after its Astro rewrite). v1.0.65: it MUST be genuinely
+// on-screen — Chromium throttles/re-rasterizes windows parked at (-10000,-10000)
+// as occluded, so Cloudflare/Turnstile never completes (no cf_clearance is ever
+// issued) and the Astro client:visible island never hydrates. It is instead
+// parked in the bottom-right corner of the primary work area, frameless,
+// taskbar-hidden, muted and not focusable-first, so the user barely notices it
+// while both the challenge and the player boot normally. Reuses the default
+// session so cf_clearance / __cf_bm cookies acquired here persist for the next
+// video load.
+function sniffWindowBounds() {
+  const w = 540;
+  const h = 340;
+  try {
+    const { workArea } = screen.getPrimaryDisplay();
+    const x = Math.max(workArea.x, workArea.x + workArea.width - w - 14);
+    const y = Math.max(workArea.y, workArea.y + workArea.height - h - 14);
+    return { x, y, width: w, height: h };
+  } catch (_e) {
+    return { x: 60, y: 60, width: w, height: h };
+  }
+}
+
 function ensureVisibleSniffWindow() {
   if (visibleSniffWindow && !visibleSniffWindow.isDestroyed()) {
     console.info('[VisibleSniff] reusing existing window');
     return visibleSniffWindow;
   }
-  // Off-screen position: the window must stay "visible" to Chromium so
-  // IntersectionObserver hydration + compositor events keep firing, but the
-  // user should never see it pop up on the desktop during a resolve.
+  const parked = sniffWindowBounds();
+  // On-screen but peripheral: the window must stay genuinely "visible" to
+  // Chromium (IntersectionObserver hydration + compositor events keep firing),
+  // while the frameless, taskbar-hidden, muted, corner-parked placement keeps
+  // it as unobtrusive as possible on the user's desktop.
   visibleSniffWindow = new BrowserWindow({
-    width: 1180,
-    height: 820,
-    x: -10000,
-    y: -10000,
+    width: parked.width,
+    height: parked.height,
+    x: parked.x,
+    y: parked.y,
     show: false,
     frame: false,
     transparent: false,
@@ -1065,7 +1162,7 @@ async function trySolveCloudflare(win) {
   try {
     await win.webContents.executeJavaScript(`(function(){
       let clicked = 0;
-      const targets = document.querySelectorAll('.cf-turnstile input[type="checkbox"], iframe[src*="challenges.cloudflare.com"], [id="challenge-form"] button, #challenge-form button, .turnstile-wrapper input{type=checkbox}');
+      const targets = document.querySelectorAll('.cf-turnstile input[type="checkbox"], iframe[src*="challenges.cloudflare.com"], [id="challenge-form"] button, #challenge-form button, .turnstile-wrapper input[type="checkbox"]');
       [].forEach.call(targets, function (el) { try { el.click(); clicked++; } catch (e) {} });
       return clicked;
     })()`);
@@ -1154,19 +1251,24 @@ async function solveCloudflareChallenge(url, opts = {}) {
       });
     } catch (_e) { /* navigation best-effort; cookie poll below still runs */ }
     const deadline = Date.now() + timeoutMs;
+    let loopN = 0;
     while (Date.now() < deadline) {
       const hasClearance = await cfSessionHasClearance(target);
       let challenged = false;
+      let st = null;
       try {
-        const st = await win.webContents.executeJavaScript(`(function(){
+        st = await win.webContents.executeJavaScript(`(function(){
           return {
             frame: !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, [id="challenge-form"]'),
             title: document.title || '',
             href: location.href
           };
         })()`);
-        challenged = !!(st && (st.frame || /just a moment/i.test(st.title)));
-      } catch (_e) { /* DOM read best-effort */ }
+      } catch (_e) {
+        st = null;
+      }
+      loopN++;
+      challenged = !!(st && (st.frame || /just a moment/i.test(st.title)));
       if (!challenged && hasClearance) {
         console.info('[cf-solve] challenge cleared');
         return { ok: true, elapsedMs: Date.now() };
@@ -2199,7 +2301,30 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
     // Pornhub: yt-dlp natively supports it but the CDN challenges default
     // requests — resolve with explicit browser headers first, then a stealth
     // sniff fallback, handing the master manifest straight to hls.js.
+    // Pornhub: read the page's own flashvars.mediaDefinitions first (direct
+    // mp4/hls tiers, ad layer ignored). Falls back to yt-dlp → stealth sniff.
     if (/pornhub\.com/i.test(url)) {
+      try {
+        const md = await resolvePornhubMediaDefinitions(url);
+        console.log(`[pornhub] mediaDefinitions parsed ${url} -> ${md.streamUrl}`);
+        return {
+          success: true,
+          streamUrl: md.streamUrl,
+          isHls: md.isHls,
+          extractor: 'pornhub-media-definitions',
+          title: md.title,
+          duration: 0,
+          qualityLevels: md.qualityLevels,
+          qualities: toQualityRows(md.qualityLevels),
+          httpHeaders: {
+            'User-Agent': PAGE_UA,
+            'Referer': 'https://www.pornhub.com/',
+            'Origin': 'https://www.pornhub.com'
+          }
+        };
+      } catch (mdErr) {
+        console.warn(`[pornhub] mediaDefinitions parse failed (falling back to yt-dlp/stealth): ${mdErr.message}`);
+      }
       try {
         const ph = await resolvePornhubStream(url);
         console.log(`[pornhub] resolved ${url} -> ${ph.m3u8}`);
@@ -2239,8 +2364,53 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
         return {
           success: false,
           error: `Pornhub stream resolution failed: ${phErr.message}`,
-          details: 'pornhub is resolved via yt-dlp (browser headers) then the stealth sniffer fallback'
+          details: 'pornhub is resolved via the inline mediaDefinitions parse, then yt-dlp (browser headers), then the stealth sniffer fallback'
         };
+      }
+    }
+
+    // XVideos / XNXX: read the page's html5player.setVideoUrl* ladder directly
+    // (clean progressive MP4 tiers, ad layer ignored) before handing the URL to
+    // yt-dlp. Both letterbox ad-swamped pages are prime "sniffed the wrong
+    // stream" territory, so the inline-player parse is the primary path.
+    if (/^https?:/i.test(url) && /xvideos\.com/i.test(url) && /\/video[-.a-z0-9]+\//i.test(url)) {
+      try {
+        const xv = await resolveInlinePlayerPage(url, 'xvideos');
+        console.log(`[xvideos] inline player parsed ${url} -> ${xv.streamUrl}`);
+        return {
+          success: true,
+          streamUrl: xv.streamUrl,
+          isHls: xv.isHls,
+          extractor: 'xvideos-inline',
+          agegated: !!xv.agegated,
+          title: xv.title,
+          duration: 0,
+          qualityLevels: xv.qualityLevels,
+          qualities: toQualityRows(xv.qualityLevels),
+          httpHeaders: { 'User-Agent': PAGE_UA, 'Referer': 'https://www.xvideos.com/' }
+        };
+      } catch (xvErr) {
+        console.warn(`[xvideos] inline player parse failed (falling back to yt-dlp): ${xvErr.message}`);
+      }
+    }
+    if (/^https?:/i.test(url) && /xnxx\.com/i.test(url) && /\/video-/i.test(url)) {
+      try {
+        const xn = await resolveInlinePlayerPage(url, 'xnxx');
+        console.log(`[xnxx] inline player parsed ${url} -> ${xn.streamUrl}`);
+        return {
+          success: true,
+          streamUrl: xn.streamUrl,
+          isHls: xn.isHls,
+          extractor: 'xnxx-inline',
+          agegated: !!xn.agegated,
+          title: xn.title,
+          duration: 0,
+          qualityLevels: xn.qualityLevels,
+          qualities: toQualityRows(xn.qualityLevels),
+          httpHeaders: { 'User-Agent': PAGE_UA, 'Referer': 'https://www.xnxx.com/' }
+        };
+      } catch (xnErr) {
+        console.warn(`[xnxx] inline player parse failed (falling back to yt-dlp): ${xnErr.message}`);
       }
     }
 
@@ -2293,6 +2463,11 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
     let bestVideo = null;
     let bestAudio = null;
     let qualityLevels = [];
+    // Hoisted so the result envelope below can serialize the YouTube direct-URL
+    // roster (`formats`). Declared out here because the return object lives
+    // after the `if (isYouTube)` block — a block-scoped const would be a
+    // ReferenceError/undefined there and silently null the ladder.
+    let menuFormats = null;
     
     let ytDlpArgs;
     if (isYouTube) {
@@ -2357,7 +2532,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
       // formats are the ONLY ≥1080p sources with audio at that tier — hls.js
       // renders the manifest directly, so we treat any .m3u8 format as
       // audio-capable and use its manifest_url as the playable URL.
-      const menuFormats = [];
+      const menuFormatsBuilt = [];
       const byHeightBest = new Map();
       for (const f of formats) {
         if (!f.vcodec || f.vcodec === 'none') continue;
@@ -2383,8 +2558,9 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
         }
       }
       for (const f of [...byHeightBest.values()].sort(byResDesc)) {
-        menuFormats.push({ label: f.label, height: f.height, url: f.url, httpHeaders: f.httpHeaders, hasAudio: f.hasAudio, formatId: f.formatId, protocol: f.protocol });
+        menuFormatsBuilt.push({ label: f.label, height: f.height, url: f.url, httpHeaders: f.httpHeaders, hasAudio: f.hasAudio, formatId: f.formatId, protocol: f.protocol });
       }
+      menuFormats = menuFormatsBuilt;
 
       // A specific format was requested (manual quality switch in the player).
       if (formatId) {
@@ -5326,7 +5502,30 @@ async function ensureOnOrigin(win, origin) {
   if (!win || win.isDestroyed()) win = ensureVisibleSniffWindow();
   let cur = '';
   try { cur = new URL(win.webContents.getURL()).origin; } catch (_e) { /* no url yet */ }
-  if (cur === origin) return win;
+  if (cur === origin) {
+    // v1.0.65: the persistent window may still be parked on the Cloudflare
+    // challenge shell even AFTER a solve landed cf_clearance (the shell does
+    // not always auto-redirect). Re-navigate so the request pipeline presents
+    // the now-valid cookie and the REAL page (player/Astro islands) loads.
+    try {
+      if (!(await cfSessionHasClearance(origin))) return win;
+      const st = await win.webContents.executeJavaScript(`({ t: document.title || '', ch: !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, [id="challenge-form"], #challenge-running'), h: location.href })`);
+      if (st && (st.ch || /just a moment/i.test(st.t))) {
+        console.info('[cf-solve] sniff window still on challenge shell — re-navigating with the cleared cookie');
+        await loadInStealth(`${origin}/`, {
+          win,
+          pauseAfterLoadMs: 2500,
+          challengeTimeoutMs: 6000,
+          timeoutMs: 14000,
+          extraHeaders: HANIME_SNIFF_HEADERS
+        });
+        let t2 = '';
+        try { t2 = await win.webContents.executeJavaScript('document.title || ""'); } catch (_e) {}
+        console.info(`[cf-solve] post-re-navigate title: "${String(t2).slice(0, 40)}"`);
+      }
+    } catch (_e) { /* best-effort */ }
+    return win;
+  }
   try {
     await loadInStealth(`${origin}/`, {
       win,
@@ -5541,6 +5740,219 @@ return __nudge();
       ? `Hanime stream resolution failed (${failures.join(' | ')})`
       : 'Hanime stream resolution failed'
   );
+}
+
+// ---- Inline-player direct parsers (XVideos / XNXX / Pornhub) ---------------
+// v1.0.65: these ad-saturated sites embed their REAL video URLs in the page's
+// own inline player script — XVideos/XNXX as an `html5player.setVideoUrl*`
+// ladder, Pornhub as `flashvars.mediaDefinitions[]` JSON. Parsing those
+// variables yields clean direct media URLs (1080p/720p/480p/360p), never the
+// ad-overlay/popup/VAST streams a generic sniff or yt-dlp's "first iframe"
+// heuristic can pick up on those pages.
+const PAGE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+// Best-effort resolution from a media URL (CDN paths/filenames frequently
+// embed it: ".../1080.mp4", "-720p.mp4", "X480X", "res=360"). Returns 0 when
+// the URL carries no readable resolution token.
+function heightFromMediaUrl(u) {
+  const m = String(u || '').match(/(?:^|[^\d])(2160|1440|1080|720|480|360)(?:p|px)?(?:[^\d]|$)/i);
+  if (!m) return 0;
+  const n = parseInt(m[1], 10);
+  return n >= 360 && n <= 2160 ? n : 0;
+}
+
+// Fallback ladder for html5player rows whose URL has no resolution token.
+function html5RankToHeight(rank) {
+  return rank >= 85 ? 1080 : (rank >= 65 ? 720 : (rank >= 45 ? 480 : (rank === 0 ? 0 : 360)));
+}
+
+// Parse an XVideos/XNXX page for its `html5player.setVideoUrl*(…)` ladder and
+// (belt-and-suspenders) its "video_url_*" JSON keys. Returns [{formatId,label,
+// height,url}] sorted worst→best, plus the chosen top URL + HLS flag.
+function parseHtml5PlayerQualities(html) {
+  const rows = [];
+  const seen = new Set();
+  const clean = (s) => String(s || '')
+    .replace(/\\u0026/g, '&').replace(/&amp;/g, '&').replace(/\\\//g, '/').replace(/\\"/g, '"');
+  const push = (url, rank, name) => {
+    url = clean(url);
+    if (!url || !/^https?:/i.test(url)) return;
+    if (isAdIframeUrl(url)) return;
+    if (seen.has(url)) return;
+    seen.add(url);
+    const h = heightFromMediaUrl(url) || html5RankToHeight(rank);
+    rows.push({ formatId: `inline-${name || (rank || 'auto')}`, label: (h ? `${h}p` : name || 'auto'), height: h, url });
+  };
+  // 1) script-call ladder: html5player.setVideoUrl(High|Low|Medium)?('...')
+  const fnRe = /html5player\.\s*setVideoUrl([A-Za-z]*)\s*\(\s*(['"])(.*?)\2\s*\)/g;
+  let mm;
+  while ((mm = fnRe.exec(String(html || '')))) {
+    const name = mm[1] || '';
+    const rank = ({ VeryHigh: 90, Highest: 90, High: 70, Medium: 50, '': 45, Low: 30 })[name];
+    push(mm[3], rank === undefined ? 45 : rank, name || 'default');
+  }
+  // 2) JSON-key mirrors: "video_url_very_high" / "video_url_high" /
+  //    "video_url_low" / "video_url" (+ hls variants when the site serves HLS).
+  const keyRe = /"(video_url(?:_very_high|_high|_low|_medium)?|hls(?:_high|_medium)?|hls_url)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  while ((mm = keyRe.exec(String(html || '')))) {
+    const key = mm[1] || '';
+    const rank = key.startsWith('hls')
+      ? ({ hls_high: 70, hls_medium: 50, hls_url: 60, hls: 60 })[key] ?? 60
+      : ({ video_url_very_high: 90, video_url_high: 70, video_url_medium: 50, video_url_low: 30, video_url: 45 })[key] ?? 45;
+    push(mm[2], rank, key);
+  }
+  if (!rows.length) return { rows: [], streamUrl: null, isHls: false };
+  rows.sort((a, b) => a.height - b.height);
+  const hlsRow = rows.find((r) => /(\.m3u8|\.m3u|\/hls\/)/i.test(r.url));
+  const top = rows[rows.length - 1];
+  return {
+    rows,
+    streamUrl: (hlsRow || top).url,
+    isHls: !!hlsRow && hlsRow.url === (hlsRow || top).url
+  };
+}
+
+// Locate + parse `mediaDefinitions = [...]` / `"mediaDefinitions": [...]` —
+// escapes: \uXXXX, \/ are decoded; returns [] on malformed input.
+function parsePornhubMediaDefinitions(html) {
+  const src = String(html || '');
+  const scan = (i) => {
+    const start = src.indexOf('[', i);
+    if (start < 0) return [];
+    let depth = 0, inStr = false, esc = false;
+    for (let k = start; k < src.length; k++) {
+      const c = src[k];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '[') depth++;
+      else if (c === ']') { depth--; if (depth === 0) return src.slice(start, k + 1); }
+    }
+    return '';
+  };
+  const tryParse = (arrText) => {
+    try {
+      const clean = arrText
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\\\//g, '/');
+      const arr = JSON.parse(clean);
+      return Array.isArray(arr) ? arr : null;
+    } catch (_e) { return null; }
+  };
+  const first = src.indexOf('mediaDefinitions');
+  if (first >= 0) {
+    const arrText = scan(first + 16);
+    if (arrText) {
+      const arr = tryParse(arrText);
+      if (Array.isArray(arr)) return arr;
+    }
+  }
+  // Fallback: line-by-line regex (media definitions usually print one line).
+  const rows = [];
+  const entRe = /"defaultQuality"\s*:\s*(?:true|false)\s*,\s*"format"\s*:\s*"(mp4|hls)"\s*,\s*"quality"\s*:\s*"([^"]*)"\s*,\s*"videoUrl"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  let mm;
+  while ((mm = entRe.exec(src))) {
+    rows.push({ format: mm[1], quality: mm[2], videoUrl: mm[3].replace(/\\\//g, '/') });
+  }
+  return rows;
+}
+
+function pageTitleFromHtml(html) {
+  const og = String(html || '').match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+    || String(html || '').match(/<title[^>]*>([^<]{1,200})<\/title>/i);
+  return og ? decodeHtml(og[1]) : '';
+}
+
+function decodeHtml(s) {
+  return String(s || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&#x27;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#x[0-9a-fA-F]{2,4};/g, (m) => { try { return String.fromCharCode(parseInt(m.slice(2, -1), 16)); } catch (_e) { return m; } });
+}
+
+// JSON-LD fallback: the schema.org VideoObject in the page <head> always
+// carries a signed contentUrl — even when the site's age-gate (agego) is up
+// and the html5player ladder is withheld from unverified visitors. Single
+// progressive tier; guaranteed clean CDN, never an ad overlay.
+function parseJsonLdContentUrl(html) {
+  const m = String(html || '').match(/"contentUrl"\s*:\s*"((?:\\.|[^"\\])*)"/i);
+  if (!m) return null;
+  const url = String(m[1]).replace(/\\u0026/g, '&').replace(/&amp;/g, '&').replace(/\\\//g, '/').replace(/\\"/g, '"');
+  if (!/^https?:/i.test(url) || isAdIframeUrl(url)) return null;
+  return { formatId: 'inline-ld', label: 'SD', height: 0, url };
+}
+
+// Fetch a page and parse its inline-player variables into clean direct tiers.
+async function resolveInlinePlayerPage(pageUrl, site) {
+  const resp = await fetchWithCloudflareRecovery(pageUrl, {
+    headers: {
+      'User-Agent': PAGE_UA,
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': `https://www.${site}.com/`
+    },
+    challengeUrl: pageUrl,
+    timeoutMs: 20000
+  });
+  const html = await resp.text();
+  let parsed = parseHtml5PlayerQualities(html);
+  let agegated = false;
+  if (!parsed.rows.length) {
+    // Age-gate (agego) is up: the player ladder is withheld from anonymous
+    // visitors — fall back to the persisted JSON-LD contentUrl so playback
+    // still works with zero ad exposure.
+    const ld = parseJsonLdContentUrl(html);
+    if (ld) {
+      parsed = { rows: [ld], streamUrl: ld.url, isHls: false };
+      agegated = true;
+    }
+  }
+  if (!parsed.rows.length) throw new Error(`${site} inline player variables not found`);
+  return {
+    streamUrl: parsed.streamUrl,
+    isHls: parsed.isHls,
+    qualityLevels: parsed.rows,
+    agegated,
+    title: pageTitleFromHtml(html)
+  };
+}
+
+// Fetch a Pornhub page and read flashvars.mediaDefinitions for clean mp4/hls
+// tiers (skips the ad layer entirely).
+async function resolvePornhubMediaDefinitions(pageUrl) {
+  const resp = await fetchWithCloudflareRecovery(pageUrl, {
+    headers: {
+      'User-Agent': PAGE_UA,
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': 'https://www.pornhub.com/'
+    },
+    challengeUrl: pageUrl,
+    timeoutMs: 20000
+  });
+  const html = await resp.text();
+  const md = parsePornhubMediaDefinitions(html);
+  const rows = [];
+  const seen = new Set();
+  for (const e of Array.isArray(md) ? md : []) {
+    const url = String((e && e.videoUrl) || '').replace(/\\\//g, '/');
+    if (!/^https?:/i.test(url)) continue;
+    if (isAdIframeUrl(url)) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const q = String((e && e.quality) || '');
+    const h = parseInt(q, 10) || heightFromMediaUrl(url) || 0;
+    rows.push({
+      formatId: `ph-${(e && e.format) || 'mp4'}-${q || h || rows.length}`,
+      label: (h ? `${h}p` : (q || 'auto')),
+      height: h,
+      url
+    });
+  }
+  if (!rows.length) throw new Error('pornhub mediaDefinitions not found');
+  rows.sort((a, b) => a.height - b.height);
+  const hlsRow = rows.find((r) => /\.m3u8/i.test(r.url) || String(r.formatId || '').indexOf('ph-hls') === 0);
+  const top = rows[rows.length - 1];
+  return {
+    streamUrl: (hlsRow || top).url,
+    isHls: !!hlsRow && hlsRow.url === (hlsRow || top).url,
+    qualityLevels: rows,
+    title: pageTitleFromHtml(html)
+  };
 }
 
 // ---- Pornhub resolver ----------------------------------------------------
@@ -7070,6 +7482,15 @@ ipcMain.handle('web:addVideos', async (event, { videos, tags }) => {
     if (!mainWindow) createWindow();
     await startVideoServer();
     setupWebRequestHeaders();
+    // v1.0.65: DRM webview carries `allowpopups` — deny every popup window it
+    // would open (ad-click windows), and forbid data:/about: navigations.
+    app.on('web-contents-created', (_ev, contents) => {
+      if (!contents || contents.getType() !== 'webview') return;
+      contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      contents.on('will-navigate', (ev, targetUrl) => {
+        if (/^(about:blank|data:)/i.test(String(targetUrl || ''))) ev.preventDefault();
+      });
+    });
     ensureDirectories();
     registerMediaShortcuts();
     credentialVault.init(app.getPath('userData'));
