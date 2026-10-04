@@ -163,6 +163,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // v1.0.62: one master-quality parse attempt per origin — prevents a loop
   // where every degenerate manifest re-triggers the same fetch.
   const masterParseAttemptedRef = useRef(null);
+  // v1.0.63: preserve play/pause state across quality-switch source reloads.
+  // null = normal autoplay; false = keep the player paused after the swap.
+  const pendingPlayRef = useRef(null);
   // Dual-engine fallback: direct-URL format list ({ label, height, url })
   // from extraction when hls.js has no levels (non-HLS playback). Used to
   // hot-swap quality by re-pointing <video> without re-running yt-dlp.
@@ -905,6 +908,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     if (!item || !item.url) return;
     const videoEl = videoRef.current;
     const pos = videoEl ? videoEl.currentTime || 0 : 0;
+    // v1.0.63: remember the user's play/pause state across the source swap
+    // (consumed + reset by the next init effect run).
+    pendingPlayRef.current = videoEl ? videoEl.paused : false;
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
@@ -1317,6 +1323,20 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 .filter((q) => q && q.url && /(\.m3u8|\.m3u|\/hls\/)/i.test(q.url) && (q.height || q.label));
               if (variants.length > 0) setExtractQualityLevels(variants);
             }
+
+            // v1.0.63: extractor-provided structured per-quality URLs
+            // ({ qualities: [{ label: '1080p', url: '...' }] }). Adult sources
+            // hand over direct variant playlists, so populate the dropdown
+            // straight from this list — no dependence on hls.js parsing.
+            if (Array.isArray(extraction.qualities) && extraction.qualities.length >= 2) {
+              const hlsQualities = extraction.qualities
+                .filter((q) => q && q.url && /(\.m3u8|\.m3u|\/hls\/)/i.test(q.url) && (q.height || q.label));
+              if (hlsQualities.length >= 2) {
+                setExtractQualityLevels(hlsQualities);
+                setQualityLevels(hlsQualities);
+                setSelectedQuality(extraction.selectedQuality || hlsQualities[hlsQualities.length - 1].label);
+              }
+            }
           } else if (result && result.error === 'DRM_PROTECTED') {
             console.log('[VideoPlayer] DRM protected content detected, using webview fallback');
             setIsDRM(true);
@@ -1407,6 +1427,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     // the manifest turns out to be invalid.
     const forceHls = video.sourceSite === 'IPTV' || video.type === 'Web TV';
 
+    // v1.0.63: quality-switch reloads flag a paused user via pendingPlayRef
+    // (applyVariantLevel). On re-inits of an already-loaded <video> (the
+    // quality-enrichment reload, retries, etc.) derive it from the CURRENT
+    // paused state so mid-session reloads never yank the user back to play.
+    if (pendingPlayRef.current === null && videoEl.currentSrc) {
+      pendingPlayRef.current = videoEl.paused;
+    }
+    const autoPlayOnReady = pendingPlayRef.current !== false;
+    pendingPlayRef.current = null;
+
     // Apply persisted volume / playback rate defaults once the stream is ready
     const prefs = readPrefs();
     if (typeof prefs.defaultVolume === 'number') {
@@ -1464,17 +1494,29 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             try { videoEl.currentTime = pos; } catch (e) {}
           }
         }
-        videoEl.play().catch(() => {});
+        if (autoPlayOnReady) videoEl.play().catch(() => {});
       }, { once: true });
     };
 
     if ((looksHls || forceHls) && Hls.isSupported()) {
-      // Use HLS.js for HLS streams
+      // Use HLS.js for HLS streams. v1.0.63: xhrSetup stamps the origin
+      // Referer on every manifest/segment request from hls.js (the UA/Origin/
+      // Cookie side is applied globally in main via webRequest.onBeforeSendHeaders,
+      // and Chromium forbids scripts from setting those headers).
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
         bufferLength: 30,
-        maxBufferLength: 60
+        maxBufferLength: 60,
+        xhrSetup: (xhr, _url) => {
+          const headers = activeHttpHeadersRef.current || httpHeaders;
+          if (headers) {
+            const ref = headers.Referer || headers.referer;
+            if (ref) {
+              try { xhr.setRequestHeader('Referer', String(ref)); } catch (_e) {}
+            }
+          }
+        }
       });
       
       hlsRef.current = hls;
@@ -1529,7 +1571,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             })
             .catch(() => {});
         }
-        const useRich = degenerate && rich.length >= 2;
+        // v1.0.63: whenever the extractor handed us real per-quality URLs
+        // (explicit `qualities`, or enriched variant tiers), the dropdown uses
+        // those rows directly — no dependence on hls.js manifest parsing.
+        // Selecting one points the pipeline at that variant sub-playlist and
+        // preserves position + play/pause state (applyVariantLevel).
+        const useRich = rich.length >= 2;
         const menu = useRich ? rich : levelMenu;
         if (menu.length) {
           setQualityLevels(menu);
@@ -1578,7 +1625,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             try { videoEl.currentTime = pos; } catch (e) {}
           }
         }
-        videoEl.play().catch(() => {});
+        if (autoPlayOnReady) videoEl.play().catch(() => {});
       });
 
       hls.on(Hls.Events.ERROR, (event, data) => {

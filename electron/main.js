@@ -647,6 +647,35 @@ function streamHeadersFor(url) {
   }
 }
 
+// v1.0.63: session-cookie string for an outgoing stream/CDN request. Chromium
+// only auto-attaches cookies belonging to the requested host, but hanime's
+// segment CDN (*.htv-*.com) needs the clearance issued under the PARENT site
+// origin, and pornhub's CDN wants the phncdn.com session. Short-TTL per-host
+// cache — re-reading the cookie store for every TS segment (many per minute)
+// would be wasteful; the clearance/cfb cookies comfortably outlive this.
+const streamCookieCache = new Map();
+const STREAM_COOKIE_TTL_MS = 5000;
+async function streamCookieForUrl(url) {
+  try {
+    const u = new URL(String(url));
+    const hostname = u.hostname;
+    const parent = /\.htv-[a-z0-9-]*\.(?:com|net|org|io)$/i.test(hostname)
+      ? 'https://hanime.tv/'
+      : (/\.phncdn\.com$/i.test(hostname) ? 'https://www.pornhub.com/' : null);
+    const cacheKey = parent || u.origin;
+    const hit = streamCookieCache.get(cacheKey);
+    if (hit && Date.now() - hit.ts < STREAM_COOKIE_TTL_MS) return hit.header || null;
+    const header = await getSessionCookieHeader(parent || url);
+    streamCookieCache.set(cacheKey, { header, ts: Date.now() });
+    if (streamCookieCache.size > 128) {
+      streamCookieCache.delete(streamCookieCache.keys().next().value);
+    }
+    return header || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
 // A hidden BrowserWindow is used as a stealth browsing layer (see the stealth
 // engine below). Its requests must pass through untouched — real browser UA,
 // session cookies (cf_clearance, tokens) and order — or the anti-bot pages it
@@ -660,6 +689,11 @@ function setupWebRequestHeaders() {
   // Intercept all outgoing requests to inject headers for 403 / hotlink bypass
 
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    // Cookie-lookup for stream/CDN media requests is async (session store);
+    // the whole handler runs inside one promise so every path still calls
+    // callback() exactly once with the final request headers.
+    void (async () => {
+      try {
     // Stealth browsing layer: forward the request exactly as the embedded real
     // browser issued it (its cookies are already in defaultSession).
     if (isStealthRequest(details)) {
@@ -697,13 +731,22 @@ function setupWebRequestHeaders() {
       headers['Accept-Charset'] = 'utf-8';
     }
     
-    // Remove headers that might trigger blocking, unless the renderer explicitly
-    // registered stream cookies for this origin (e.g. yt-dlp http_headers).
-    if (!(hint && hint.cookie)) {
+    // Cookies on stream/CDN requests (v1.0.63): Chromium only auto-attaches
+    // cookies for the requested host, but CDN segment hosts (hanime's
+    // *.htv-*.com, pornhub's *.phncdn.com) authenticate with the clearance
+    // issued under the PARENT site origin — attach the active session cookie
+    // string (renderer-registered hint cookies still win). Non-stream requests
+    // keep the cookie header stripped (existing anti-blocking behavior).
+    if (isStream) {
+      if (hint && hint.cookie) {
+        headers['Cookie'] = hint.cookie;
+      } else {
+        const sessionCookie = await streamCookieForUrl(url);
+        if (sessionCookie) headers['Cookie'] = sessionCookie;
+      }
+    } else {
       delete headers['Cookie'];
       delete headers['Cookie2'];
-    } else {
-      headers['Cookie'] = hint.cookie;
     }
 
     // Pornhub CDN fix: phncdn.com media hosts and pornhub.com pages reject
@@ -731,6 +774,12 @@ function setupWebRequestHeaders() {
     }
     
     callback({ requestHeaders: headers });
+      } catch (_e) {
+        // Never hang a request on a handler error — fall back to the original
+        // headers exactly as the pre-v1.0.63 sync path would.
+        callback({ requestHeaders: details.requestHeaders });
+      }
+    })();
   });
   
   // Handle redirects to preserve headers
@@ -2129,6 +2178,8 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           title: info.title,
           duration: info.duration,
           qualityLevels: Array.isArray(info.qualityLevels) ? info.qualityLevels : [],
+          // v1.0.63: structured per-quality variant URLs for the dropdown.
+          qualities: toQualityRows(info.qualityLevels),
           httpHeaders: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Referer': 'https://hanime.tv/',
@@ -2152,6 +2203,22 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
       try {
         const ph = await resolvePornhubStream(url);
         console.log(`[pornhub] resolved ${url} -> ${ph.m3u8}`);
+        // v1.0.63: best-effort per-quality parse of the PH master so the
+        // dropdown lists real resolutions without relying on hls.js.
+        let phQualities = [];
+        try {
+          if (/\.m3u8/i.test(ph.m3u8)) {
+            const phPres = await fetchWithCloudflareRecovery(ph.m3u8, {
+              headers: { 'User-Agent': PH_UA, 'Referer': 'https://www.pornhub.com/', 'Origin': 'https://www.pornhub.com' },
+              challengeUrl: 'https://www.pornhub.com/',
+              timeoutMs: 12000
+            });
+            const phText = await phPres.text();
+            if (typeof phText === 'string' && phText.indexOf('#EXT') !== -1) {
+              phQualities = parseHlsMasterQuality(phText, ph.m3u8);
+            }
+          }
+        } catch (_e) { /* best-effort */ }
         return {
           success: true,
           streamUrl: ph.m3u8,
@@ -2159,6 +2226,8 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           extractor: ph.fromYT ? 'yt-dlp-pornhub' : 'pornhub-stealth-sniff',
           title: ph.title,
           duration: ph.duration,
+          qualityLevels: phQualities,
+          qualities: toQualityRows(phQualities),
           httpHeaders: {
             'User-Agent': PH_UA,
             'Referer': 'https://www.pornhub.com/',
@@ -5173,6 +5242,28 @@ ipcMain.handle('scrapers:parseMasterStream', async (_event, { url } = {}) => {
     return { variants: [] };
   }
 });
+
+// v1.0.63: normalize extractor-enumerated quality tiers into the structured
+// `qualities: [{ label, url, height, bitrate }]` shape the player consumes
+// directly (per-quality variant URLs for the dropdown — no hls.js parsing).
+function toQualityRows(levels) {
+  if (!Array.isArray(levels)) return [];
+  const seen = new Set();
+  const rows = [];
+  for (const q of levels) {
+    if (!q || !q.url) continue;
+    const u = String(q.url);
+    if (seen.has(u)) continue;
+    seen.add(u);
+    rows.push({
+      label: q.label || qualityLabelForHeight(q.height) || `Quality ${rows.length + 1}`,
+      url: u,
+      height: q.height || 0,
+      bitrate: q.bitrate || 0
+    });
+  }
+  return rows;
+}
 
 async function hanimeV8Video(slug) {
   const cookieHeader = await getSessionCookieHeader('https://hanime.tv/');
