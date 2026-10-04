@@ -949,6 +949,11 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
     const videoEl = videoRef.current;
     const pos = videoEl ? videoEl.currentTime || 0 : 0;
+    // v1.0.67: pin play/pause intent explicitly (same contract as
+    // applyVariantLevel). The re-init effect then restores the position AND
+    // resumes/stays-paused deterministically — quality buttons never yank a
+    // paused user into playback mid-source-swap.
+    pendingPlayRef.current = videoEl ? videoEl.paused : false;
     // Convert off the HLS engine for this stream so playback re-enters via the
     // native path with the raw URL (the re-init effect reads this ref).
     if (hlsRef.current) {

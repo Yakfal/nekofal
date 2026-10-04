@@ -817,7 +817,9 @@ function setupWebRequestHeaders() {
     if (/\.htv-[a-z0-9-]*\.(?:com|net|org|io)$/i.test(hostname)) {
       headers['Referer'] = 'https://hanime.tv/';
       headers['Origin'] = 'https://hanime.tv';
-      headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+      // v1.0.67: pin the UA that actually cleared the Cloudflare challenge —
+      // cf_clearance is UA-bound, so a mismatched string 403s on segments.
+      headers['User-Agent'] = browserUA();
     }
     
     callback({ requestHeaders: headers });
@@ -840,11 +842,16 @@ function setupWebRequestHeaders() {
       return callback({ responseHeaders });
     }
 
-    // v1.0.65: strict YouTube isolation — no CORS/frame/CSP rewriting on
-    // youtube.com / googlevideo.com / YT API responses either.
+    // v1.0.65: strict YouTube isolation wants a hand-off for PAGE + API hosts
+    // (youtube.com, youtube-nocookie.com, youtubei.googleapis.com, ytimg.com,
+    // ggpht.com) so their original headers pass through untouched. v1.0.67:
+    // *.googlevideo.com MEDIA endpoints are the exception — some variants omit
+    // Access-Control-Allow-Origin (or send a restrictive CORP), which makes the
+    // renderer's hls.js/fetch load fail with a CORS error the native-test
+    // pipeline never sees. They fall through to the CORS stamp below instead.
     try {
       const resHost = new URL(details.url).hostname;
-      if (isYouTubeIsolated(resHost)) {
+      if (isYouTubeIsolated(resHost) && !/\.googlevideo\.com$/i.test(resHost)) {
         return callback({ responseHeaders });
       }
     } catch (_e) { /* keep default handling */ }
@@ -866,7 +873,12 @@ function setupWebRequestHeaders() {
         if (lower === 'access-control-allow-origin' ||
             lower === 'access-control-allow-credentials' ||
             lower === 'access-control-allow-methods' ||
-            lower === 'access-control-allow-headers') {
+            lower === 'access-control-allow-headers' ||
+            // v1.0.67: a googlevideo/phncdn response with CORP: same-origin
+            // blocks cross-origin no-cors <video> loads; drop it so the
+            // renderer's media pipeline can consume the streams.
+            lower === 'cross-origin-resource-policy' ||
+            lower === 'cross-origin-opener-policy') {
           delete responseHeaders[key];
         }
       }
@@ -918,6 +930,50 @@ function setupWebRequestHeaders() {
 const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms) || 0)));
 
 const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+// v1.0.67: the User-Agent that actually cleared tonight's Cloudflare challenge.
+// cf_clearance / __cf_bm are BOUND to the requesting UA — a manual Turnstile
+// solve inside the sniff window may run under a UA different from STEALTH_UA
+// (an OS/Electron upgrade, a fingerprint-honed default), and any later
+// hanime.tv API / stream-segment request presenting a DIFFERENT string gets
+// rejected 403 despite holding a "valid" cookie. So we record the live
+// webview's real UA the moment a challenge clears and reuse it everywhere
+// (v8 fetch, parseMasterStream, htv CDN stamping, sniff re-navigations).
+let clearedBrowserUA = null;
+function browserUA() {
+  return clearedBrowserUA || STEALTH_UA;
+}
+
+// Called whenever the sniff webview is observed leaving its challenge shell
+// (auto-solve, manual solve, re-navigation). Same-session architecture means
+// the cf_clearance cookies already landed in session.defaultSession — there is
+// no partition to copy between — but the UA has to be pinned and the short-TTL
+// stream-cookie cache dropped so a JUST-solved clearance is used by the very
+// next segment/API request instead of a stale pre-solve '' for up to 5s.
+function trackCaptchaSession(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const ua = String(win.webContents.getUserAgent() || '').trim();
+    if (ua) clearedBrowserUA = ua;
+  } catch (_e) { /* best-effort */ }
+  try { streamCookieCache.clear(); } catch (_e) { /* no-op */ }
+}
+
+// Sniff-window UA + session tracker is also a keep-warm hook: a user who
+// manually solves the Turnstile in the corner window re-arms all downstream
+// hanime token/session consumers the moment the challenge clears.
+function watchCaptchaClearance(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.on('page-title-updated', (_event, title) => {
+      if (!title || /just a moment|checking your browser/i.test(String(title))) return;
+      trackCaptchaSession(win);
+    });
+    win.on('closed', () => {
+      try { streamCookieCache.clear(); } catch (_e) { /* no-op */ }
+    });
+  } catch (_e) { /* best-effort */ }
+}
 
 let stealthWindow = null;
 // Hanime (Astro SPA) uses client:visible islands — a window positioned off
@@ -1090,6 +1146,9 @@ function ensureVisibleSniffWindow() {
   try { visibleSniffWindow.webContents.setAudioMuted(true); } catch (_e) { /* mute unsupported */ }
   visibleSniffWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   visibleSniffWindow.on('closed', () => { visibleSniffWindow = null; });
+  // v1.0.67: a manual/auto challenge solve in this window re-arms the cookie
+  // cache + pins the cleared UA for every downstream hanime request.
+  watchCaptchaClearance(visibleSniffWindow);
   return visibleSniffWindow;
 }
 
@@ -1355,6 +1414,10 @@ async function loadInStealth(url, opts = {}) {
       // wait for the challenge to clear before declaring success.
       await sleep(opts.pauseAfterLoadMs || 1000);
       await waitForCloudflare(win, opts.challengeTimeoutMs || 20000);
+      // v1.0.67: as soon as the load has cleared (or the corner window's
+      // challenge was solved manually), pin the real UA + flush stale cookie
+      // cache so subsequent hanime API/segment requests use the fresh session.
+      trackCaptchaSession(win);
       const cookies = await getSessionCookies(url);
       let title = '';
       let href = url;
@@ -1371,7 +1434,10 @@ async function loadInStealth(url, opts = {}) {
     const hardTimer = setTimeout(() => done({ error: 'load timeout' }), timeoutMs);
 
     win.loadURL(url, {
-      userAgent: STEALTH_UA,
+      // v1.0.67: navigate with the UA that CLEARED the captcha (falling back
+      // to the standard stealth UA) — re-loading under a different string
+      // would invalidate the stored cf_clearance for the next request set.
+      userAgent: browserUA(),
       ...(opts.extraHeaders ? { extraHeaders: opts.extraHeaders } : {})
     }).catch(err => done({ error: err.message }));
   });
@@ -2286,7 +2352,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           // v1.0.63: structured per-quality variant URLs for the dropdown.
           qualities: toQualityRows(info.qualityLevels),
           httpHeaders: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'User-Agent': browserUA(),
             'Referer': 'https://hanime.tv/',
             'Origin': 'https://hanime.tv'
           }
@@ -2348,6 +2414,13 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
             }
           }
         } catch (_e) { /* best-effort */ }
+        // v1.0.67: a direct mp4 fallback (no hls variant ladder) still gets a
+        // single-tier dropdown row via its URL height, so quality switching
+        // and the "only Auto" state never collapse to an empty ladder.
+        if (!phQualities.length && !ph.isHls) {
+          const phH = heightFromMediaUrl(ph.m3u8);
+          phQualities = [{ label: (phH ? `${phH}p` : 'HD'), height: phH, url: ph.m3u8 }];
+        }
         return {
           success: true,
           streamUrl: ph.m3u8,
@@ -4640,7 +4713,10 @@ function hanimeHeaders(cookieHeader, browser = false) {
   // __cf_bm cookies from session.defaultSession ride along as Cookie when the
   // stealth browser has unlocked them.
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    // v1.0.67: UA that actually cleared the Cloudflare challenge (manual solve
+    // included) — cf_clearance is bound to it; presenting a different string
+    // makes the v8/htv API reject 403 despite the cookie being present.
+    'User-Agent': browserUA(),
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
     'Origin': 'https://hanime.tv',
@@ -5407,7 +5483,8 @@ ipcMain.handle('scrapers:parseMasterStream', async (_event, { url } = {}) => {
     if (!/^https?:\/\//i.test(masterUrl)) return { variants: [] };
     const headers = {
       ...(streamHeadersFor(masterUrl) || {}),
-      'User-Agent': STEALTH_UA,
+      // v1.0.67: UA that cleared the challenge (cf_clearance-bound).
+      'User-Agent': browserUA(),
       'Accept': '*/*'
     };
     const challengeUrl = /hanime\.tv/i.test(masterUrl)
@@ -5863,12 +5940,48 @@ function parsePornhubMediaDefinitions(html) {
       return Array.isArray(arr) ? arr : null;
     } catch (_e) { return null; }
   };
+  const out = [];
+  const seen = new Set();
+  const pushRow = (format, quality, videoUrl) => {
+    const u = String(videoUrl || '').replace(/\\\//g, '/');
+    if (!u || seen.has(u)) return;
+    // v1.0.67: mediaDefinitions on newer PH pages points at the get_media
+    // AGGREGATE endpoint (/video/get_media?s=...) or the html5player
+    // ladder-overlay pages — those return JSON, never playable media. Keep
+    // only genuine mp4/m3u8 files so the dropdown never presents a dead row.
+    if (!/\.(mp4|m3u8)(\/|$|\?)/i.test(u) || /\/video\/get_media/i.test(u)) return;
+    seen.add(u);
+    out.push({ format: format || 'mp4', quality: String(quality || ''), videoUrl: u });
+  };
+  // Per-tier HLS sub-masters / original mp4s from mediaDefinitions.
   const first = src.indexOf('mediaDefinitions');
   if (first >= 0) {
     const arrText = scan(first + 16);
     if (arrText) {
       const arr = tryParse(arrText);
-      if (Array.isArray(arr)) return arr;
+      if (Array.isArray(arr)) {
+        for (const e of arr) {
+          if (e && typeof e === 'object') pushRow(e.format, e.quality, e.videoUrl);
+        }
+        if (out.length) return out;
+      }
+    }
+  }
+  // v1.0.67: the STABLE progressive mp4 ladder lives in flashvars.qualityItems
+  // (long-lived phncdn media URLs). Older uploads' per-tier HLS sub-masters are
+  // frequently purged server-side (HTTP 410 Gone), so these MP4s are preferred:
+  // they stay native-playable and survive the CDN culling.
+  const qi = src.indexOf('qualityItems');
+  if (qi >= 0) {
+    const arrText = scan(qi + 12);
+    if (arrText) {
+      const arr = tryParse(arrText);
+      if (Array.isArray(arr)) {
+        for (const e of arr) {
+          if (e && typeof e === 'object' && e.url) pushRow('mp4', e.quality, e.url);
+        }
+        if (out.length) return out;
+      }
     }
   }
   // Fallback: line-by-line regex (media definitions usually print one line).
@@ -5970,12 +6083,29 @@ async function resolvePornhubMediaDefinitions(pageUrl) {
   }
   if (!rows.length) throw new Error('pornhub mediaDefinitions not found');
   rows.sort((a, b) => a.height - b.height);
-  const hlsRow = rows.find((r) => /\.m3u8/i.test(r.url) || String(r.formatId || '').indexOf('ph-hls') === 0);
-  const top = rows[rows.length - 1];
+  const isM3u8 = (r) => /\.m3u8/i.test(r.url) || String(r.formatId || '').indexOf('ph-hls') === 0;
+  // v1.0.67: prefer the STABLE progressive mp4 ladder (qualityItems). Many older
+  // uploads' per-tier HLS sub-masters are purged on the CDN (HTTP 410 Gone):
+  // presentation-wise the row loads, then the player 403/410s on the variant and
+  // the user sees a failed/black block. mp4 URLs are long-lived, native-playable
+  // (no hls.js), and the CDN interceptor stamps the pornhub Referer/Origin, so
+  // quality switching is bulletproof. HLS remains the fallback for mp4-less videos.
+  const mp4Rows = rows.filter((r) => !isM3u8(r));
+  const hlsRows = rows.filter(isM3u8);
+  const preferred = mp4Rows.length > 0 ? mp4Rows : hlsRows;
+  const top = preferred[preferred.length - 1];
+  // v1.0.67: even the "best" row can be a CDN-purged variant (the page's ladder
+  // is stale while the mp4 original or a fresh recording still exists). Probe the
+  // top tier cheaply (first chunk, aborted) — a 410/403/empty response throws so
+  // the caller falls back to yt-dlp / stealth-sniff for a live copy instead of
+  // handing the player a dead URL.
+  if (!(await isLiveMediaUrl(top.url))) {
+    throw new Error('pornhub top tier unreachable (CDN purge): ' + top.url.slice(0, 120));
+  }
   return {
-    streamUrl: (hlsRow || top).url,
-    isHls: !!hlsRow && hlsRow.url === (hlsRow || top).url,
-    qualityLevels: rows,
+    streamUrl: top.url,
+    isHls: mp4Rows.length === 0,
+    qualityLevels: mp4Rows.length > 0 ? mp4Rows : hlsRows,
     title: pageTitleFromHtml(html)
   };
 }
@@ -5988,6 +6118,41 @@ async function resolvePornhubMediaDefinitions(pageUrl) {
 // (intercepted by the stream sniffer), and read the master .m3u8 out of
 // window.flashvars.mediaDefinitions as a belt-and-suspenders source.
 const PH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+// v1.0.67: cheap "does this media URL actually serve bytes" probe — reads ONE
+// stream chunk then aborts, so a 410/403/empty (CDN purge) is caught in
+// milliseconds instead of the player staring at a black block for the whole
+// seek/load cycle. Used before committing the top Pornhub tier to playback.
+async function isLiveMediaUrl(url, timeoutMs = 10000) {
+  const u = String(url || '');
+  // Cheap shape gate FIRST: only real media files count, and PH's own ad-batch
+  // endpoint (/_xa/ads_batch) serves a 200 JSON body — that must never be
+  // treated as a playable tier.
+  if (!/\.(m3u8|mp4|webm)(\/|$|\?)/i.test(u) || /_xa\/|ads_batch/i.test(u)) return false;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: ctrl.signal,
+      headers: {
+        'User-Agent': PH_UA,
+        'Referer': 'https://www.pornhub.com/',
+        'Origin': 'https://www.pornhub.com'
+      }
+    });
+    if (!res || !res.body) { clearTimeout(timer); return false; }
+    const ok = res.status >= 200 && res.status < 400;
+    const reader = res.body.getReader();
+    const first = await reader.read().catch(() => ({ done: true, value: null }));
+    reader.cancel().catch(() => {});
+    clearTimeout(timer);
+    return ok && first && !first.done && first.value && first.value.byteLength > 1;
+  } catch (_e) {
+    return false;
+  }
+}
 
 async function resolvePornhubStream(pageUrl) {
   let ytError = null;
@@ -6003,10 +6168,15 @@ async function resolvePornhubStream(pageUrl) {
     ]));
     const info = JSON.parse(rawJson);
     const formats = info.formats || [];
-    const m3u8 = formats.find(f => /\.m3u8/i.test(String(f.url || '')) && f.vcodec && f.vcodec !== 'none')
-      ?.url || info.url || '';
-    if (m3u8) {
-      return { m3u8, title: info.title || '', duration: info.duration || 0, fromYT: true, isHls: /\.m3u8/i.test(m3u8) };
+    // v1.0.67: prefer a COMBINED progressive mp4 when yt-dlp lists one — the
+    // per-tier HLS variants for older PH uploads are frequently 410'd server-
+    // side while the mp4 copy keeps working. HLS is only selected as a
+    // last-resort (some videos expose no usable progressive format).
+    const mp4 = formats.find(f => /\.mp4/i.test(String(f.url || '')) && f.vcodec && f.vcodec !== 'none' && f.acodec && f.acodec !== 'none');
+    const hls = !mp4 && formats.find(f => /\.m3u8/i.test(String(f.url || '')) && f.vcodec && f.vcodec !== 'none');
+    const src = (mp4 || hls || {}).url || info.url || '';
+    if (src) {
+      return { m3u8: src, title: info.title || '', duration: info.duration || 0, fromYT: true, isHls: !mp4 && /\.m3u8/i.test(src) };
     }
     ytError = new Error('no playable format returned by yt-dlp');
   } catch (err) {
@@ -6031,10 +6201,15 @@ async function resolvePornhubStream(pageUrl) {
       return typeof val === 'string' && val ? val : null;
     }
   });
-  const m3u8 = sniff.matchedUrl
-    || (sniff.streams && sniff.streams.find(s => /\.m3u8/i.test(String(s || ''))))
-    || (sniff.streams && sniff.streams.find(s => /\.mp4/i.test(String(s || '')) && /phncdn\.com/i.test(String(s || ''))))
-    || (sniff.streams && sniff.streams[0])
+  const sniffCands = [sniff.matchedUrl].concat(sniff.streams || []).filter(Boolean);
+  const mediaish = (s) => String(s || '') && /^https?:\/\//i.test(s)
+    && /\.(m3u8|mp4|webm)(\/|$|\?)/i.test(String(s))
+    && !isAdIframeUrl(s) && !/_xa\/|ads_batch/.test(String(s));
+  // v1.0.67: screen EVERY sniffed candidate — media-shaped, https, and not one
+  // of PH's own ad/tracking hosts (/_xa/ads_batch returns 200 JSON and happily
+  // masquerades as a "stream" when the ad layer fires first).
+  const m3u8 = sniffCands.find(s => mediaish(s) && /\.m3u8|\/hls\//i.test(s))
+    || sniffCands.find(s => mediaish(s) && /\.mp4|\.webm/i.test(s))
     || null;
   if (!m3u8) {
     throw new Error('No playable stream for ' + pageUrl + (ytError ? ' (yt-dlp: ' + ytError.message + ')' : ' (nothing found)'));

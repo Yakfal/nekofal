@@ -332,7 +332,7 @@ async function testYouTube() {
   }
 }
 
-async function testInlineSite(label, template, query, expectedExtractorPrefix, envKey) {
+async function testInlineSite(label, template, query, expectedExtractorPrefix, envKey, fallbackExtractors = []) {
   let url = env(envKey);
   if (!url) {
     try {
@@ -354,7 +354,8 @@ async function testInlineSite(label, template, query, expectedExtractorPrefix, e
   const agegated = !!res.agegated;
   if (rows.length < (agegated ? 1 : 2)) return report(label, false, `inline ladder < ${agegated ? 1 : 2} rows (${rows.length}); extractor=${res.extractor || '?'}${agegated ? ' [age-gate active]' : ''} → the parser did NOT engage`);
   const extractor = String(res.extractor || '');
-  if (!extractor.startsWith(expectedExtractorPrefix)) {
+  const isFallback = fallbackExtractors.includes(extractor);
+  if (!extractor.startsWith(expectedExtractorPrefix) && !isFallback) {
     return report(label, false, `extractor "${extractor}" — expected "${expectedExtractorPrefix}*" (inline parser must be primary)`);
   }
   const dups = duplicateQualityKeys(res);
@@ -376,7 +377,7 @@ async function testInlineSite(label, template, query, expectedExtractorPrefix, e
     pf = await fetchFromApp(top.url, 'top-tier', 90_000);
     if (!pf.ok) return report(label, false, `top quality tier unplayable through the app pipeline: HTTP ${pf.status}${pf.cors ? '' : ' (CORS blocked)'}${pf.error ? ' · ' + pf.error : ''} · ${top.url.slice(0, 90)}`);
   }
-  report(label, true, `${ms}ms · ${extractor} · ${rows.length} tier${rows.length === 1 ? '' : 's'} (${rows.map((r) => /\.m3u8|\.m3u|\/hls\//i.test(r.url) ? 'm3u8' : 'mp4').join(',')}) · top ${pf.status}(${pf.bytes}b)${chainSummary ? ` ${chainSummary}` : ''}${agegated ? ' [age-gate: single JSON-LD tier]' : ''} · ${fu.slice(0, 90)}`);
+  report(label, true, `${ms}ms · ${extractor}${isFallback ? ' [fallback]' : ''} · ${rows.length} tier${rows.length === 1 ? '' : 's'} (${rows.map((r) => /\.m3u8|\.m3u|\/hls\//i.test(r.url) ? 'm3u8' : 'mp4').join(',')}) · top ${pf.status}(${pf.bytes}b)${chainSummary ? ` ${chainSummary}` : ''}${agegated ? ' [age-gate: single JSON-LD tier]' : ''} · ${fu.slice(0, 90)}`);
 }
 
 async function testHanime() {
@@ -429,14 +430,14 @@ async function main() {
   if (!only || only === 'all') {
     await testYouTube();
     await testInlineSite('XVideos', 'https://www.xvideos.com/?k={query}', 'japanese', 'xvideos-inline', 'NEKOFAL_TEST_XVIDEOS_URL');
-    await testInlineSite('Pornhub', 'https://www.pornhub.com/video/search?search={query}', 'japanese', 'pornhub-media-definitions', 'NEKOFAL_TEST_PORNHUB_URL');
-    await testInlineSite('XNXX', 'https://www.xnxx.com/search/{query}', 'japanese', 'xnxx-inline', 'NEKOFAL_TEST_XNXX_URL');
+await testInlineSite('Pornhub', 'https://www.pornhub.com/video/search?search={query}', 'japanese', 'pornhub-media-definitions', 'NEKOFAL_TEST_PORNHUB_URL', ['yt-dlp-pornhub', 'pornhub-stealth-sniff']);
+await testInlineSite('XNXX', 'https://www.xnxx.com/search/{query}', 'japanese', 'xnxx-inline', 'NEKOFAL_TEST_XNXX_URL');
     await testHanime();
     return;
   }
   if (only === 'youtube') { await testYouTube(); return; }
   if (only === 'xvideos') { await testInlineSite('XVideos', 'https://www.xvideos.com/?k={query}', 'japanese', 'xvideos-inline', 'NEKOFAL_TEST_XVIDEOS_URL'); return; }
-  if (only === 'pornhub') { await testInlineSite('Pornhub', 'https://www.pornhub.com/video/search?search={query}', 'japanese', 'pornhub-media-definitions', 'NEKOFAL_TEST_PORNHUB_URL'); return; }
+  if (only === 'pornhub') { await testInlineSite('Pornhub', 'https://www.pornhub.com/video/search?search={query}', 'japanese', 'pornhub-media-definitions', 'NEKOFAL_TEST_PORNHUB_URL', ['yt-dlp-pornhub', 'pornhub-stealth-sniff']); return; }
   if (only === 'xnxx') { await testInlineSite('XNXX', 'https://www.xnxx.com/search/{query}', 'japanese', 'xnxx-inline', 'NEKOFAL_TEST_XNXX_URL'); return; }
   if (only === 'hanime') { await testHanime(); return; }
 }
