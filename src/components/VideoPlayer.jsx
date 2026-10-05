@@ -2338,11 +2338,12 @@ if (pendingSeekRef.current) {
             crossOrigin="anonymous"
             referrerPolicy="no-referrer"
             onClick={togglePlayPause}
-            onPlay={handlePlay}
-            onPause={handlePause}
-            onEnded={handleEnded}
-            onTimeUpdate={handleTimeUpdate}
-            onDurationChange={handleDurationChange}
+            onLoadedMetadata={(e) => {
+              setDuration(e.target.duration);
+              try { syncPlayerWithAppState(); } catch (_e) {}
+            }}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
             onError={handleError}
             volume={isMuted ? 0 : volume}
             muted={isMuted}
@@ -2460,17 +2461,7 @@ if (pendingSeekRef.current) {
               </div>
             )}
 
-            {/* Quality quick presets (dynamic from available HLS levels) */}
-            {hasQualityLevels && (
-              <div className="quality-presets">
-                <button className={`quality-chip ${selectedQuality === 'auto' ? 'active' : ''}`} onClick={() => handlePresetChange('auto')}>Auto</button>
-                {availableQualityHeights.map(h => (
-                  <button key={h} className={`quality-chip ${currentQualityHeight() === h ? 'active' : ''}`} onClick={() => handlePresetChange(h)}>
-                    {qualityLabel(h)}
-                  </button>
-                ))}
-              </div>
-            )}
+
 
             {/* Main control row */}
             <div className="controls-row">
