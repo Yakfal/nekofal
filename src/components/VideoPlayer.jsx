@@ -688,8 +688,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   }, []);
 
   // Toggle play/pause
-  // v1.0.68: when the YT hls pipeline drives a fresh mirror <video> instead of
-  // the React node, keep the transport controls in sync with the live element.
+  // v1.0.69: when YT drives a mirror element, also apply UI actions to it
   const mirrorYt = useCallback((fn) => {
     try {
       if (ytLiveElRef.current && typeof fn === 'function') fn(ytLiveElRef.current);
@@ -698,15 +697,15 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
   const togglePlayPause = useCallback(() => {
     const videoEl = videoRef.current;
-    if (videoEl) {
-      if (videoEl.paused) {
-        videoEl.play().catch(() => {});
-        mirrorYt((v) => v.play().catch(() => {}));
-      } else {
-        videoEl.pause();
-        mirrorYt((v) => v.pause());
-      }
+    if (!videoEl) return;
+    if (videoEl.paused) {
+      videoEl.play().catch(() => {});
+      mirrorYt((v) => { try { v.play().catch(() => {}); } catch (_e) {} });
+    } else {
+      videoEl.pause();
+      mirrorYt((v) => { try { v.pause(); } catch (_e) {} });
     }
+    setIsPlaying(!videoEl.paused);
   }, [mirrorYt]);
 
   // Pause guard: while paused, controls must stay visible regardless of mouse
@@ -873,13 +872,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     if (videoEl) {
       videoEl.volume = newVol;
       videoEl.muted = newVol === 0;
-      setVolume(newVol);
-      setIsMuted(newVol === 0);
+      mirrorYt((v) => { try { v.volume = newVol; v.muted = (newVol === 0); } catch (_e) {} });
     }
-    // Persist the level globally so every future video (and the mini player)
-    // opens at the same volume across sessions.
+    setVolume(newVol);
+    setIsMuted(newVol === 0);
     if (!isNaN(newVol)) writePref('defaultVolume', newVol);
-  }, []);
+  }, [mirrorYt]);
 
   // Volume overlay: keep open while moving into the slider, then close 300ms
   // after the cursor leaves both the button and the slider.
@@ -903,9 +901,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     if (videoEl && videoEl.duration && progressRef.current) {
       const rect = progressRef.current.getBoundingClientRect();
       const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      videoEl.currentTime = percent * videoEl.duration;
+      const t = percent * videoEl.duration;
+      videoEl.currentTime = t;
+      mirrorYt((v) => { try { v.currentTime = t; } catch (_e) {} });
+      setCurrentTime(t);
     }
-  }, []);
+  }, [mirrorYt]);
 
   // Switch the active yt-dlp stream to a specific format (non-HLS videos) by
   // re-extracting that exact format from the source page. Accepts a format_id
@@ -1057,8 +1058,14 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     setPlaybackRate(rate);
     writePref('defaultRate', rate);
     const videoEl = videoRef.current;
-    if (videoEl) videoEl.playbackRate = rate;
-  }, []);
+    if (videoEl) {
+      videoEl.playbackRate = rate;
+      mirrorYt((v) => { try { v.playbackRate = rate; } catch (_e) {} });
+    }
+    if (hlsRef.current && hlsRef.current.media) {
+      try { hlsRef.current.media.playbackRate = rate; } catch (_e) {}
+    }
+  }, [mirrorYt]);
 
   // Start a native yt-dlp download (progress shows in the Downloads drawer)
   const handleDownload = useCallback(async (e) => {
