@@ -2495,9 +2495,9 @@ if (pendingSeekRef.current) {
                 <button 
                   className="control-btn" 
                   onClick={togglePlayPause}
-                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                  aria-label={!isPlaying ? 'Play' : 'Pause'}
                 >
-                  {isPlaying ? '⏸' : '▶'}
+                  {!isPlaying ? '▶' : '⏸'}
                 </button>
 
                 {/* Time Display */}
