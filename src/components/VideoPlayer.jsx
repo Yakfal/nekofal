@@ -2300,7 +2300,7 @@ if (pendingSeekRef.current) {
         }
       }}
     >
-      <div className="video-player-container">
+      <div className="video-player-container" onClick={handleVideoClick}>
         {/* Stream-unavailable toast (IPTV dead channel feedback) */}
         {streamUnavailable && <div className="vp-toast">Stream unavailable</div>}
 
