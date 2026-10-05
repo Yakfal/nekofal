@@ -1,0 +1,1939 @@
+
+
+==================== src/App.jsx ====================
+
+import React, { Suspense, lazy } from 'react';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import AppLayout from './components/AppLayout.jsx';
+import MediaLibrary from './pages/MediaLibrary.jsx';
+import PlaybackOverlay from './components/PlaybackOverlay.jsx';
+import Favorites from './pages/Favorites.jsx';
+import Settings from './pages/Settings.jsx';
+import Discover from './pages/Discover.jsx';
+import Adult from './pages/Adult.jsx';
+import AdultGate from './components/AdultGate.jsx';
+import IPTV from './pages/IPTV.jsx';
+import Playlists from './pages/Playlists.jsx';
+import LiveRadio from './pages/LiveRadio.jsx';
+import Cinema from './pages/Cinema.jsx';
+import MiniPlayer from './pages/MiniPlayer.jsx';
+import { SearchProvider } from './contexts/SearchContext.jsx';
+import { AppSettingsProvider } from './contexts/AppSettingsContext.jsx';
+import { PlaylistsProvider } from './contexts/PlaylistsContext.jsx';
+import { PlaybackProvider } from './contexts/PlaybackContext.jsx';
+import { LanguageProvider } from './i18n/LanguageContext.jsx';
+import OnboardingModal from './components/OnboardingModal.jsx';
+
+const VideoPlayer = lazy(() => import('./components/VideoPlayer.jsx'));
+
+export default function App() {
+  return (
+    <LanguageProvider>
+      <OnboardingModal />
+      <AppSettingsProvider>
+      <HashRouter>
+        <SearchProvider>
+          <PlaylistsProvider>
+            <PlaybackProvider>
+              <PlaybackOverlay />
+              <Suspense fallback={null}>
+                <Routes>
+                <Route path="/miniplayer" element={<MiniPlayer />} />
+                <Route path="/" element={<AppLayout />}>
+                  <Route index element={<Navigate to="/discover" replace />} />
+                  <Route path="discover" element={<Discover />} />
+                  <Route path="adult" element={<AdultGate />} />
+                  <Route path="iptv" element={<IPTV />} />
+                  <Route path="library" element={<MediaLibrary />} />
+                  <Route path="favorites" element={<Favorites />} />
+                  <Route path="playlists" element={<Playlists />} />
+                  <Route path="radio" element={<LiveRadio />} />
+                  <Route path="cinema" element={<Cinema />} />
+                  <Route path="settings" element={<Settings />} />
+                  <Route path="video/:videoUrl" element={<VideoPlayer />} />
+                  <Route path="*" element={<Navigate to="/discover" replace />} />
+                </Route>
+              </Routes>
+              </Suspense>
+            </PlaybackProvider>
+          </PlaylistsProvider>
+        </SearchProvider>
+      </HashRouter>
+    </AppSettingsProvider>
+    </LanguageProvider>
+  );
+}
+
+==================== src/main.jsx ====================
+
+// Install the mobile IPC polyfill BEFORE App mounts: under Capacitor/Android
+// there is no Electron main process, so window.api / window.electronAPI are
+// bridged to IndexedDB + native fetch instead of crashing the renderer.
+import './utils/ipcPolyfill.js';
+// D-Pad / spatial navigation for Android TV remotes. Registers its own global
+// keydown listeners; safe (inert) on desktop where __NEKOFAL_MOBILE__ is unset.
+import './utils/spatialNav.js';
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
+import './styles/index.css';
+import './styles/themes.css';
+
+const root = document.getElementById('root');
+
+if (!root) {
+  throw new Error('Root element not found!');
+}
+
+ReactDOM.createRoot(root).render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </React.StrictMode>
+);
+
+==================== src/contexts/PlaybackContext.jsx ====================
+
+import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePlaylists } from './PlaylistsContext.jsx';
+import { installMediaKeyBridge } from '../utils/mediaKeys.js';
+import { isPageUrl, isDirectMediaUrl } from '../services/dbAdapter.js';
+import { isYouTubeUrl, getYouTubeVideoId, recoveredYouTubeWatchUrl } from '../services/customScraper.js';
+import './Playback.css';
+
+const SUPPORTED_EXT = ['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v', '.mp3', '.m4a', '.flac', '.wav', '.ogg', '.aac', '.m3u8'];
+
+// ---- Canonical media normalization ------------------------------------------
+// YouTube watch URLs rotate between /watch?v=, youtu.be/ID and googlevideo CDN
+// streams. Favorites/history persist a canonical watch?v=<11-char-id> page URL
+// (no query tokens/params) so the item stays re-extractable forever. Every
+// video that reaches the player guarantees { title, thumbnail, provider,
+// pageUrl }.
+
+function isYouTubeMedia(media) {
+  if (!media) return false;
+  return isYouTubeUrl(
+    String(media.pageUrl || media.webUrl || media.videoUrl || media.url || media.streamUrl || '')
+  );
+}
+
+// ---- Global media-playback coordinator -----------------------------------
+// Every surface that owns a media handle (the IPTV pane preview, the Cinema
+// modal, and the global overlay player opened through `open`/`playVideo`)
+// reports the tab it is playing via notifyMediaPlaying(). The notification is
+// broadcast as a 'nek-media-source-active' window event; keep-alive views that
+// run independent <video>/hls.js handles listen for it and release their own
+// stream the instant anything else starts, so two sources can never play at
+// once (double-audio collisions).
+const ADULT_SITE_HINTS = ['xvideos', 'xnxx', 'pornhub', 'xhamster', 'hentai', 'hanime', 'onlyfans'];
+
+// Map a normalized media payload to the coarse view tab that owns it. This is
+// advisory only — the coordinator never mutates the payload itself.
+function sourceTabOf(media) {
+  if (!media) return null;
+  const s = String(media.sourceSite || '').toLowerCase();
+  const cat = String(media.category || '').toLowerCase();
+  const type = String(media.type || '').toLowerCase();
+  const url = String(media.videoUrl || media.pageUrl || media.webUrl || '');
+  if (!s && !cat && !type && !url) return null;
+  if (type === 'web tv' || s === 'iptv' || cat === 'iptv') return 'iptv';
+  if (media.isAdult || cat === 'adult' || ADULT_SITE_HINTS.some(h => s.includes(h))) return 'adult';
+  if (/classic cinema|archive\.org/.test(s) || /classic|free movie/.test(cat)) return 'free';
+  if (isYouTubeUrl(url)) return 'youtube';
+  return (s.split('.')[0] || cat.split(' ')[0] || 'video').trim() || 'video';
+}
+
+function normalizePlaybackMedia(media) {
+  if (!media) return null;
+  const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
+  let pageUrl = String(media.pageUrl || media.webUrl || '').trim();
+  // Legacy CDN recovery + strict 11-char canonicalization: any YouTube media
+  // yields the exact https://www.youtube.com/watch?v=<11_char_id> form — CDN
+  // hashes recover via docid/id, and appended query tokens/params (&t=, &list=,
+  // youtu.be redirects…) are stripped — so the stored page survives stream
+  // rotation and re-extracts cleanly forever.
+  const recovered = recoveredYouTubeWatchUrl(pageUrl) || recoveredYouTubeWatchUrl(raw);
+  if (recovered) pageUrl = recovered;
+  const isYT = isYouTubeMedia(media) || !!recovered;
+  if (isYT) {
+    const id = getYouTubeVideoId(pageUrl) || getYouTubeVideoId(raw);
+    if (id) pageUrl = `https://www.youtube.com/watch?v=${id}`;
+    else if (!recovered && !pageUrl) pageUrl = raw;
+  }
+  const title = media.videoTitle || media.title || 'Unknown Video';
+  const thumbnail = media.thumbnailUrl || media.poster || media.thumbnail || '';
+  const provider = isYT
+    ? 'youtube'
+    : (media.provider
+        ? String(media.provider)
+        : (media.sourceSite ? String(media.sourceSite).split('.')[0].toLowerCase() : ''));
+  return {
+    ...media,
+    title,
+    videoTitle: media.videoTitle || media.title || 'Unknown Video',
+    thumbnail,
+    thumbnailUrl: thumbnail || media.thumbnailUrl || '',
+    provider,
+    pageUrl
+  };
+}
+
+const PlaybackContext = createContext({
+  activeVideo: null,
+  activeChannels: null,
+  activeChannelIndex: null,
+  open: () => {},
+  playVideo: () => {},
+  close: () => {},
+  zapTo: () => {},
+  resolving: null,
+  setMediaSession: () => {},
+  notifyMediaPlaying: () => {}
+});
+
+export function PlaybackProvider({ children }) {
+  const [activeVideo, setActiveVideo] = useState(null);
+  const [activeChannels, setActiveChannels] = useState(null);
+  const [activeChannelIndex, setActiveChannelIndex] = useState(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [saveMenuVideo, setSaveMenuVideo] = useState(null);
+  const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [resolving, setResolving] = useState(null);
+  const dragDepthRef = useRef(0);
+  const mediaPayloadRef = useRef(null);
+  const { playlists, addItem, create } = usePlaylists();
+
+  // ---- Native OS media controls (Web MediaSession) + auto-mini state -------
+  // Windows 10/11 surfaces Chromium's MediaSession as system media flyouts when
+  // the window is backgrounded/minimized. This context owns the session: the
+  // mounted player just reports the current metadata/playback state through
+  // setMediaSession(). Window minimize is handled in the main process, which
+  // forwards the latest payload to float to the MiniPlayer.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return undefined;
+    const ms = navigator.mediaSession;
+    const cmd = (detail, seekTime) => {
+      window.dispatchEvent(new CustomEvent('nek-media-command', {
+        detail: seekTime != null ? { command: detail, seekTime } : { command: detail }
+      }));
+    };
+    const trySet = (name, handler) => {
+      try { ms.setActionHandler(name, handler); } catch (err) { /* unsupported action */ }
+    };
+    trySet('play', () => cmd('play'));
+    trySet('pause', () => cmd('pause'));
+    trySet('seekto', (d) => cmd('seekto', d && typeof d.seekTime === 'number' ? d.seekTime : null));
+    trySet('previoustrack', () => cmd('previous'));
+    trySet('nexttrack', () => cmd('next'));
+    trySet('seekbackward', () => cmd('previous'));
+    trySet('seekforward', () => cmd('next'));
+    return () => {
+      trySet('play', null);
+      trySet('pause', null);
+      trySet('seekto', null);
+      trySet('previoustrack', null);
+      trySet('nexttrack', null);
+      trySet('seekbackward', null);
+      trySet('seekforward', null);
+    };
+  }, []);
+
+  // Publish playback state to navigator.mediaSession (OS media flyout) AND keep
+  // the main process topped-up with the latest mini-player payload so it can
+  // auto-float on window minimize. info === null clears everything.
+  const setMediaSession = useCallback((info) => {
+    const api = window.api || window.electronAPI;
+    const active = !!(info && info.active);
+    if (active) {
+      const payload = {
+        mode: info.mode === 'audio' ? 'audio' : 'video',
+        title: String(info.title || 'Nekofal'),
+        streamUrl: String(info.streamUrl || ''),
+        streamHls: !!info.streamHls,
+        poster: String(info.poster || ''),
+        currentTime: Math.max(0, Number(info.position) || 0),
+        volume: Number.isFinite(Number(info.volume)) ? Number(info.volume) : 1,
+        muted: !!info.muted,
+        videoId: info.videoId != null ? info.videoId : null,
+        isLocal: !!info.isLocal
+      };
+      const fingerprint = JSON.stringify(payload);
+      if (fingerprint !== mediaPayloadRef.current) {
+        mediaPayloadRef.current = fingerprint;
+        api?.mediaActive?.({ active: true, payload });
+      }
+    } else {
+      if (mediaPayloadRef.current) {
+        mediaPayloadRef.current = null;
+        api?.mediaActive?.({ active: false });
+      }
+    }
+
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    const ms = navigator.mediaSession;
+    try {
+      if (!active) {
+        ms.metadata = null;
+        ms.playbackState = 'none';
+        try { ms.setPositionState && ms.setPositionState({ duration: 0, playbackRate: 1, position: 0 }); } catch (err) {}
+        return;
+      }
+      const artwork = Array.isArray(info.artwork)
+        ? info.artwork.filter((a) => a && a.src)
+        : ([{ src: '', sizes: '512x512', type: 'image/jpeg' }].filter((a) => a.src));
+      try {
+        ms.metadata = new MediaMetadata({
+          title: String(info.title || 'Nekofal'),
+          artist: String(info.artist || ''),
+          album: String(info.album || 'Nekofal'),
+          artwork
+        });
+      } catch (err) { /* some metadata fields unsupported */ }
+      ms.playbackState = info.playing ? 'playing' : 'paused';
+      const dur = Number(info.duration) || 0;
+      if (dur > 0 && typeof ms.setPositionState === 'function') {
+        try {
+          ms.setPositionState({
+            duration: dur,
+            playbackRate: Number(info.rate) || 1,
+            position: Math.min(Math.max(Number(info.position) || 0, 0), dur)
+          });
+        } catch (err) { /* position out of range */ }
+      }
+    } catch (err) {
+      console.warn('[Playback] MediaSession update failed:', err.message);
+    }
+  }, []);
+
+  // Forward global media keys to whichever player is currently mounted
+  useEffect(() => {
+    const unsub = installMediaKeyBridge();
+    return () => { if (unsub) unsub(); };
+  }, []);
+
+  // ---- Global media-playback coordinator ----------------------------------
+  // Records which view tab just claimed the media slot and broadcasts a
+  // 'nek-media-source-active' event (with the owning playerId when the caller
+  // is its own embedded player) so every other keep-alive surface can release
+  // its <video>/hls.js handle and never double-play audio.
+  const activeMediaSourceRef = useRef(null);
+  const notifyMediaPlaying = useCallback((sourceTab, opts = {}) => {
+    activeMediaSourceRef.current = sourceTab || null;
+    window.dispatchEvent(new CustomEvent('nek-media-source-active', {
+      detail: { source: sourceTab || null, playerId: opts && opts.playerId ? opts.playerId : null }
+    }));
+  }, []);
+
+  const close = useCallback(() => {
+    setActiveVideo(null);
+    setActiveChannels(null);
+    setActiveChannelIndex(null);
+    setSaveMenuVideo(null);
+    setNewPlaylistName('');
+  }, []);
+
+  // Zap to an adjacent channel: swap the active video (VideoPlayer reloads on
+  // the prop change) while keeping the zapping list/index in sync.
+  const zapTo = useCallback((video, index) => {
+    if (!video) return;
+    notifyMediaPlaying(sourceTabOf(video));
+    setActiveVideo(video);
+    if (Number.isInteger(index)) setActiveChannelIndex(index);
+  }, [notifyMediaPlaying]);
+
+  // Feed the recommendation engine (v1.0.36): every overlay playback start
+  // nudges the genre/artist/tag media weights that power Home's
+  // "Recommended For You" shelf. Fire-and-forget — a slow DB write must never
+  // delay playback. YouTube-only items only bump the genre (their programmer
+  // "artist" is noise), and generic booleans/types are never recorded.
+  const recordWeights = useCallback((media) => {
+    const api = window.api || window.electronAPI;
+    if (!api?.addMediaWeight) return;
+    const payload = {};
+    const genre = String(media.category || media.type || '').trim();
+    if (genre) payload.genre = genre;
+    const artist = String(media.artist || '').trim();
+    if (artist) payload.artist = artist;
+    const tags = Array.isArray(media.tags) ? media.tags.map((x) => String(x).trim()).filter(Boolean) : [];
+    const type = String(media.type || '').trim();
+    if (!tags.length && type && !/web tv|history|local media|favorite/i.test(type) && type.length >= 2 && type.length <= 40) {
+      tags.push(type);
+    }
+    const tag = tags[0] || '';
+    if (tag) payload.tag = tag;
+    if (!payload.genre && !payload.artist && !payload.tag) return;
+    api.addMediaWeight(payload).catch(() => {});
+  }, []);
+
+  const open = useCallback((video, opts = {}) => {
+    const normed = normalizePlaybackMedia(video);
+    if (!normed) return;
+    // Every overlay playback start claims the global media slot, so background
+    // keep-alive panes (IPTV/Cinema) pause & detach their own streams.
+    notifyMediaPlaying(sourceTabOf(normed));
+    recordWeights(normed);
+    setActiveVideo(normed);
+    if (Array.isArray(opts.channels) && opts.channels.length > 0) {
+      setActiveChannels(opts.channels);
+      const fromIndex = Number.isInteger(opts.channelIndex)
+        ? opts.channelIndex
+        : opts.channels.findIndex(
+            (c) => c && (c.id === normed.id || (c.videoUrl && c.videoUrl === normed.videoUrl))
+          );
+      setActiveChannelIndex(fromIndex >= 0 ? fromIndex : 0);
+    } else {
+      setActiveChannels(null);
+      setActiveChannelIndex(null);
+    }
+    if (opts.viaDrop) {
+      setSaveMenuVideo(normed);
+      setNewPlaylistName('');
+    } else {
+      setSaveMenuVideo(null);
+    }
+  }, [notifyMediaPlaying, recordWeights]);
+
+  // ----- Dynamic stream re-extraction pipeline ------------------------------
+  // Favorites/history now persist canonical metadata (id/title/pageUrl) — NOT
+  // ephemeral CDN stream URLs. When a saved item is missing its stream or its
+  // stored stream is just a page to re-extract, resolve a fresh stream BEFORE
+  // mounting the player and surface a "Fetching stream…" indicator. Direct
+  // media (files, IPTV, radio) and page-URL items play exactly as before —
+  // VideoPlayer does its own extraction for plain web pages.
+  const playVideo = useCallback(async (video, opts = {}) => {
+    const media = normalizePlaybackMedia(video);
+    if (!media) return;
+    const api = window.api || window.electronAPI;
+    const raw = String(media.videoUrl || media.url || media.streamUrl || '').trim();
+    const explicitPage = String(media.pageUrl || media.webUrl || '').trim();
+    const pageUrl = explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
+    // Re-extract only when a page is known AND the stream is absent, when an
+    // explicit page is paired with a (possibly stale) direct stream URL, or
+    // when the stored stream is a legacy googlevideo CDN link that was just
+    // rebuilt into a canonical watch page (stale signed URLs must never be
+    // played as-is — they reject with a media format error).
+    const legacyCdnStream = /googlevideo\.com/i.test(raw);
+    const needsReextract = !!pageUrl && (legacyCdnStream || !raw || (isDirectMediaUrl(raw) && explicitPage));
+
+    if (!needsReextract) {
+      setResolving(null);
+      open(media, opts);
+      return;
+    }
+
+    setResolving({ title: media.videoTitle || media.title || 'video' });
+    try {
+      const result = await api.extractStream(String(pageUrl));
+      const extraction = result && result.success && (result.data?.videoUrl || result.streamUrl)
+        ? (result.data?.videoUrl ? result.data : { videoUrl: result.streamUrl, isHLS: !!result.isHls, httpHeaders: null })
+        : null;
+      if (extraction && extraction.videoUrl) {
+        open({
+          ...media,
+          videoUrl: extraction.videoUrl,
+          isHLS: extraction.isHLS || media.isHLS || false,
+          httpHeaders: extraction.httpHeaders || media.httpHeaders || null,
+          formats: (Array.isArray(extraction.formats) && extraction.formats.length) ? extraction.formats : media.formats,
+          qualityLevels: (Array.isArray(extraction.qualityLevels) && extraction.qualityLevels.length) ? extraction.qualityLevels : media.qualityLevels
+        }, opts);
+        return;
+      }
+      // Extraction yielded nothing usable — open anyway so VideoPlayer can
+      // surface the precise error (or sniff) instead of a silent dead-end.
+    } catch (err) {
+      console.warn('[Playback] Fresh-stream extraction failed:', err);
+    } finally {
+      setResolving(null);
+    }
+    open(media, opts);
+  }, [open]);
+
+  // Restore from the floating mini player: resume full playback in the main
+  // window with the exact state (position, volume, mute) the mini window had.
+  useEffect(() => {
+    const api = window.api || window.electronAPI;
+    if (!api?.onMainOpenFromMini) return undefined;
+    const unsub = api.onMainOpenFromMini((data) => {
+      if (!data || !data.streamUrl) return;
+      const restored = {
+        id: data.videoId != null ? data.videoId : `mini-restore-${Date.now()}`,
+        videoTitle: data.title || 'Video',
+        title: data.title || 'Video',
+        videoUrl: data.streamUrl,
+        thumbnailUrl: data.poster || '',
+        isHLS: !!data.streamHls,
+        isLocal: !!data.isLocal,
+        sourceSite: data.isLocal ? 'Local File' : 'Mini Player',
+        lastPosition: Number(data.currentTime) || 0,
+        startVolume: Number.isFinite(Number(data.volume)) ? Number(data.volume) : 1,
+        startMuted: !!data.muted
+      };
+      open(restored, {});
+    });
+    return () => { if (unsub) unsub(); };
+  }, [open]);
+
+  // Main process requested an auto-Float (window minimized during playback):
+  // forward to the mounted player, which reports its live stream payload,
+  // opens the MiniPlayer and closes itself (no double audio).
+  useEffect(() => {
+    const api = window.api || window.electronAPI;
+    if (!api?.onRequestMini) return undefined;
+    const unsub = api.onRequestMini(() => {
+      window.dispatchEvent(new CustomEvent('nek-float-to-mini'));
+    });
+    return () => { if (unsub) unsub(); };
+  }, []);
+
+  const isSupportedFile = useCallback((file) => {
+    const name = (file && file.name) || '';
+    const lower = name.toLowerCase();
+    return SUPPORTED_EXT.some(ext => lower.endsWith(ext));
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    const media = files.filter(isSupportedFile);
+    if (!media.length) return;
+
+    // Take the first supported file as the primary item
+    const file = media[0];
+    const path = file.path || '';
+    const name = file.name || 'Local file';
+    const key = `local-${Date.now()}-${encodeURIComponent(name)}`;
+
+    const videoPayload = {
+      id: key,
+      videoTitle: name.replace(/\.[^.]+$/, ''),
+      title: name.replace(/\.[^.]+$/, ''),
+      videoUrl: path,
+      thumbnailUrl: '',
+      duration: 0,
+      isHLS: name.toLowerCase().endsWith('.m3u8'),
+      sourceSite: 'Local File',
+      category: 'Local Media',
+      type: 'Local File',
+      isAdult: 0,
+      isLocal: true
+    };
+
+    open(videoPayload, { viaDrop: true });
+  }, [isSupportedFile, open]);
+
+  useEffect(() => {
+    const onDragOver = (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      setDragActive(true);
+    };
+    const onDragEnter = (e) => {
+      e.preventDefault();
+      dragDepthRef.current += 1;
+      setDragActive(true);
+    };
+    const onDragLeave = (e) => {
+      e.preventDefault();
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setDragActive(false);
+    };
+    const onDrop = (e) => { e.preventDefault(); handleDrop(e); };
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [handleDrop]);
+
+  const handleSaveToPlaylist = async (playlistId) => {
+    if (!saveMenuVideo) return;
+    const v = {
+      id: saveMenuVideo.id,
+      title: saveMenuVideo.videoTitle || saveMenuVideo.title,
+      videoUrl: saveMenuVideo.videoUrl,
+      thumbnailUrl: saveMenuVideo.thumbnailUrl || '',
+      duration: saveMenuVideo.duration || 0,
+      sourceSite: saveMenuVideo.sourceSite || 'Local File',
+      category: saveMenuVideo.category || 'Local Media'
+    };
+    await addItem(playlistId, v);
+    setSaveMenuVideo(null);
+  };
+
+  const handleCreateAndSave = async () => {
+    const name = newPlaylistName.trim();
+    if (!name || !saveMenuVideo) return;
+    const res = await create(name, '');
+    if (res?.success && res.playlist?.id) {
+      await handleSaveToPlaylist(res.playlist.id);
+    }
+  };
+
+  const value = useMemo(
+    () => ({ activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession, notifyMediaPlaying }),
+    [activeVideo, activeChannels, activeChannelIndex, open, playVideo, close, zapTo, resolving, setMediaSession, notifyMediaPlaying]
+  );
+
+  return (
+    <PlaybackContext.Provider value={value}>
+      {children}
+
+      {dragActive && (
+        <div className="drop-overlay">
+          <div className="drop-overlay-box">
+            <div className="drop-overlay-icon">↧</div>
+            <div className="drop-overlay-title">Drop to play</div>
+            <div className="drop-overlay-hint">mp4 · mkv · webm · mov · avi · mp3 · flac · m3u8</div>
+          </div>
+        </div>
+      )}
+
+      {saveMenuVideo && (
+        <div className="save-panel">
+          <div className="save-panel-title">Save to playlist? “{saveMenuVideo.videoTitle || saveMenuVideo.title}”</div>
+          {playlists.length === 0 && <div className="playlist-menu-empty">No playlists yet.</div>}
+          {playlists.map(p => (
+            <button key={p.id} className="playlist-menu-item" onClick={() => handleSaveToPlaylist(p.id)}>
+              {p.name}
+              <span className="playlist-menu-count">{p.itemCount}</span>
+            </button>
+          ))}
+          <div className="playlist-menu-new">
+            <input
+              className="playlist-menu-input"
+              placeholder="New playlist…"
+              value={newPlaylistName}
+              onChange={(e) => setNewPlaylistName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateAndSave(); }}
+            />
+            <button className="playlist-menu-create" onClick={handleCreateAndSave}>+</button>
+          </div>
+          <button className="save-panel-dismiss" onClick={() => setSaveMenuVideo(null)}>Dismiss</button>
+        </div>
+      )}
+    </PlaybackContext.Provider>
+  );
+}
+
+export function usePlayback() { return useContext(PlaybackContext); }
+
+// ---- Tab-switch auto-pause (v1.0.36) ---------------------------------------
+// Keep-alive views stay mounted (display:none) when the user switches tabs, so
+// their <video>/hls.js/<audio> handles keep decoding in the background. This
+// hook bridges AppLayout's 'nek-view-changed' broadcast to any surface that
+// owns a media handle:
+//   - leaving the tab  -> pause() once (the handle is KEPT so position and
+//     quality survive; nothing is destroyed — that is what the other-source
+//     coordinator does, and it must not run here);
+//   - returning to it  -> resume() once, and only if pause() was actually
+//     applied while the tab was hidden.
+// Both callbacks are try/caught so a moving DOM (channel switch, modal teardown)
+// can never break the tab switch.
+export function usePersistentPauseOnLeave(viewPath, pause, resume) {
+  const hiddenRef = useRef(false);
+  useEffect(() => {
+    const onViewChanged = (e) => {
+      const detail = (e && e.detail) || {};
+      const active = String(detail.view || '');
+      if (!active) return;
+      const mine = String(viewPath) === active;
+      if (!mine && !hiddenRef.current) {
+        hiddenRef.current = true;
+        if (pause) { try { pause(); } catch (err) {} }
+      } else if (mine && hiddenRef.current) {
+        hiddenRef.current = false;
+        if (resume) { try { resume(); } catch (err) {} }
+      }
+    };
+    window.addEventListener('nek-view-changed', onViewChanged);
+    return () => window.removeEventListener('nek-view-changed', onViewChanged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewPath]);
+}
+
+export default PlaybackContext;
+
+==================== src/contexts/PlaylistsContext.jsx ====================
+
+import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
+import { autoSync } from '../services/dbAdapter.js';
+
+const getApi = () => window.api || window.electronAPI;
+
+const PlaylistsContext = createContext({
+  playlists: [],
+  loading: false,
+  refresh: () => {},
+  create: async () => ({}),
+  remove: async () => {},
+  addItem: async () => ({}),
+  removeItem: async () => {},
+});
+
+export const PlaylistsProvider = ({ children }) => {
+  const [playlists, setPlaylists] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const api = getApi();
+    if (!api || !api.getPlaylists) return;
+    try {
+      setLoading(true);
+      const res = await api.getPlaylists();
+      if (res?.success) setPlaylists(res.data || []);
+    } catch (err) {
+      console.error('[Playlists] refresh failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const create = useCallback(async (name, description) => {
+    const api = getApi();
+    if (!api || !api.createPlaylist) return { success: false, error: 'Not available' };
+    const res = await api.createPlaylist(name, description);
+    if (res?.success) {
+      await refresh();
+      autoSync();
+    }
+    return res;
+  }, [refresh]);
+
+  const remove = useCallback(async (playlistId) => {
+    const api = getApi();
+    if (!api || !api.deletePlaylist) return;
+    await api.deletePlaylist(playlistId);
+    await refresh();
+    autoSync();
+  }, [refresh]);
+
+  const addItem = useCallback(async (playlistId, video) => {
+    const api = getApi();
+    if (!api || !api.addToPlaylist) return { success: false, error: 'Not available' };
+    const res = await api.addToPlaylist(playlistId, video);
+    if (res?.success) {
+      await refresh();
+      autoSync();
+    }
+    return res;
+  }, [refresh]);
+
+  const removeItem = useCallback(async (itemId) => {
+    const api = getApi();
+    if (!api || !api.removeFromPlaylist) return;
+    await api.removeFromPlaylist(itemId);
+    autoSync();
+  }, []);
+
+  const value = useMemo(() => ({
+    playlists,
+    loading,
+    refresh,
+    create,
+    remove,
+    addItem,
+    removeItem,
+  }), [playlists, loading, refresh, create, remove, addItem, removeItem]);
+
+  return (
+    <PlaylistsContext.Provider value={value}>
+      {children}
+    </PlaylistsContext.Provider>
+  );
+};
+
+export const usePlaylists = () => useContext(PlaylistsContext);
+
+export default PlaylistsContext;
+
+==================== src/contexts/AppSettingsContext.jsx ====================
+
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { getStoredPrefs, applyStoredPrefs, syncNow, onCloudChange, isCloudConnected, getCloudState } from '../services/dbAdapter.js';
+
+const STORAGE_KEY = 'yakfal-hub-preferences';
+
+const DEFAULT_SETTINGS = {
+  theme: 'dark-cyber',
+  familyMode: true,
+  familyPasscodeHash: '',
+};
+
+const passcodeHash = async (code) => {
+  try {
+    const data = new TextEncoder().encode('yakfal-hub::' + code);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return '';
+  }
+};
+
+const loadSettings = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Never trust/keep a plaintext passcode from older versions.
+      delete parsed.familyPasscode;
+      return { ...DEFAULT_SETTINGS, ...parsed };
+    }
+  } catch (err) {
+    console.error('[AppSettings] Failed to load preferences:', err);
+  }
+  return { ...DEFAULT_SETTINGS };
+};
+
+const AppSettingsContext = createContext({
+  settings: DEFAULT_SETTINGS,
+  unlocked: false,
+  setTheme: () => {},
+  setFamilyMode: () => {},
+  setFamilyPasscode: async () => {},
+  verifyFamilyPasscode: async () => false,
+  unlock: async () => false,
+  lock: () => {},
+  hasFamilyPasscode: () => false,
+});
+
+export const AppSettingsProvider = ({ children }) => {
+  const [settings, setSettings] = useState(loadSettings);
+  // Session-only: true once the correct passcode was entered while Family Mode
+  // is on. Never persisted.
+  const [unlocked, setUnlocked] = useState(false);
+  // Guards against sync feedback loops: a pull applies prefs directly to React
+  // state (bypassing the debounced push) and a push never overwrites state.
+  const lastPushed = useRef(JSON.stringify(settings));
+  const applyingRemote = useRef(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    } catch (err) {
+      console.error('[AppSettings] Failed to save preferences:', err);
+    }
+    // Debounced mirror of prefs to the connected account (no-op when offline).
+    const timer = setTimeout(async () => {
+      try {
+        if (!applyingRemote.current && isCloudConnected()) {
+          const prev = lastPushed.current;
+          const next = JSON.stringify(settings);
+          if (next !== prev) {
+            lastPushed.current = next;
+            await syncNow();
+          }
+        }
+      } catch (err) {
+        console.error('[AppSettings] Failed to sync preferences:', err);
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [settings]);
+
+  // On (re)connect: pull the account's stored preferences into the local shell.
+  useEffect(() => {
+    const unsub = onCloudChange(async (cloud) => {
+      if (!cloud || !cloud.enabled || !cloud.user || !cloud.token) return;
+      try {
+        applyingRemote.current = true;
+        await syncNow();
+        const remote = getStoredPrefs();
+        const next = { ...DEFAULT_SETTINGS, ...remote };
+        lastPushed.current = JSON.stringify(next);
+        setSettings(next);
+        applyStoredPrefs(next);
+      } catch (err) {
+        console.error('[AppSettings] Failed to pull remote prefs:', err);
+      } finally {
+        applyingRemote.current = false;
+      }
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', settings.theme);
+    document.documentElement.setAttribute('data-family-mode', settings.familyMode ? 'on' : 'off');
+  }, [settings.theme, settings.familyMode]);
+
+  const value = useMemo(() => ({
+    settings,
+    unlocked,
+    setTheme: (theme) => {
+      setSettings(prev => ({ ...prev, theme }));
+    },
+    setFamilyMode: (familyMode) => {
+      // Always allowed to turn ON; turning OFF is gated in the UI by passcode.
+      setSettings(prev => ({ ...prev, familyMode: Boolean(familyMode) }));
+      if (familyMode) setUnlocked(false);
+    },
+    setFamilyPasscode: async (passcode) => {
+      const hash = passcode ? await passcodeHash(passcode) : '';
+      setSettings(prev => ({ ...prev, familyPasscodeHash: hash }));
+      return hash;
+    },
+    verifyFamilyPasscode: async (passcode) => {
+      if (!settings.familyPasscodeHash) return true;
+      const hash = await passcodeHash(passcode);
+      return Boolean(hash) && hash === settings.familyPasscodeHash;
+    },
+    unlock: async (passcode) => {
+      const ok = !settings.familyPasscodeHash ? true : (await passcodeHash(passcode)) === settings.familyPasscodeHash;
+      if (ok) setUnlocked(true);
+      return ok;
+    },
+    lock: () => setUnlocked(false),
+    hasFamilyPasscode: () => Boolean(settings.familyPasscodeHash),
+  }), [settings, unlocked]);
+
+  return (
+    <AppSettingsContext.Provider value={value}>
+      {children}
+    </AppSettingsContext.Provider>
+  );
+};
+
+export const useAppSettings = () => useContext(AppSettingsContext);
+
+export default AppSettingsContext;
+
+==================== src/services/customScraper.js ====================
+
+export function pickBestStream(streams) {
+  const list = Array.isArray(streams) ? streams : [];
+  if (!list.length) return null;
+  const master = list.find((s) => /master|(^|\/)[^/]*\.m3u8/i.test(String(s || '').toLowerCase())) || list[0];
+  return master;
+}
+
+// ---- YouTube canonical metadata helpers ---------------------------------------
+// YouTube URLs arrive in several shapes (youtube.com/watch?v=, youtu.be/ID,
+// /shorts|embed|live/ID, and raw googlevideo CDN streams). Favorites/history
+// persist a canonical watch page URL so a saved item stays re-extractable long
+// after its CDN stream URL rotates. These helpers mirror the canonicalization
+// used at playback time (PlaybackContext) so every search surface agrees.
+const YT_URL_RE = /(youtube\.com|youtu\.be|googlevideo\.com)/i;
+// Strict 11-character YouTube video ID. /watch?v= (with any preceding query),
+// shorts/, embed/, live/, v/ and youtu.be/ all embed it; the (?![\w-]) guard
+// refuses to capture the first 11 chars of a longer token (query params, CDN
+// hashes), so the extracted ID is always the exact video ID.
+const YT_VIDEO_ID_RE = /(?:youtube\.com\/(?:watch\?(?:[^#]*&)?v=|shorts\/|embed\/|live\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})(?![\w-])/i;
+
+export function isYouTubeUrl(input) {
+  return YT_URL_RE.test(String(input || ''));
+}
+
+export function getYouTubeVideoId(input) {
+  const m = String(input || '').match(YT_VIDEO_ID_RE);
+  return m ? m[1] : '';
+}
+
+// Legacy CDN recovery: old app versions persisted googlevideo CDN stream URLs
+// (or pages) as an item's pageUrl/videoUrl. Those links die (rotating signed
+// URLs) and yt-dlp refuses them with MEDIA_ELEMENT_ERROR_FORMAT_ERROR-style
+// failures. When such a URL carries an exact 11-character docid (preferred,
+// YouTube's own video-id field) or an id that is neither the o- CDN-hash
+// prefix nor a longer hash we rebuild the canonical youtube.com/watch?v= page
+// so the item re-extracts cleanly forever. Long CDN hash ids (base64 / o-…)
+// are deliberately ignored — they are not video IDs.
+export function recoveredYouTubeWatchUrl(input) {
+  const s = String(input || '');
+  if (!/googlevideo\.com/i.test(s) && !/redirector\.googlevideo\.com/i.test(s)) return '';
+  const vid = s.match(/[?&]docid=([a-zA-Z0-9_-]{11})(?![\w-])/)
+    || s.match(/[?&]id=(?!o-)([a-zA-Z0-9_-]{11})(?![\w-])/);
+  return vid ? `https://www.youtube.com/watch?v=${vid[1]}` : '';
+}
+
+==================== src/services/dbAdapter.js ====================
+
+/**
+ * Nekofal - Dual-Mode Database Adapter.
+ *
+ *  Offline mode : every read/write goes through the local SQLite IPC (window.api).
+ *  Cloud mode   : while enabled + logged in, this adapter mirrors the four
+ *                 PocketBase collections (favorites, playlists, playlist_items,
+ *                 iptv_sources) between the local database and the remote server.
+ *
+ * Local records stay the source of truth; online mutations are pushed to
+ * PocketBase and remote records are pulled back in (merge by content key).
+ */
+import { recoveredYouTubeWatchUrl, getYouTubeVideoId } from './customScraper.js';
+
+const STORAGE_KEY = 'yakfal-cloud';
+const DEFAULT_STATE = { version: 1, enabled: false, url: '', token: '', user: null };
+const MAX_PAGES = 10;
+const TIMEOUT_MS = 25000;
+
+let state = loadState();
+let syncing = false;
+const listeners = new Set();
+
+const getApi = () => window.api || window.electronAPI;
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_STATE };
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_STATE, ...parsed, user: parsed.user || null, token: parsed.token || '' };
+  } catch (err) {
+    console.error('[Cloud] failed to load state:', err);
+    return { ...DEFAULT_STATE };
+  }
+}
+
+function persist() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (err) {
+    console.error('[Cloud] failed to persist state:', err);
+  }
+}
+
+function emit() {
+  listeners.forEach((fn) => {
+    try { fn(getCloudState()); } catch { /* ignore listener errors */ }
+  });
+}
+
+function normUrl(url) {
+  const u = String(url || '').trim().replace(/\/+$/, '');
+  if (!u) return '';
+  return /^https?:\/\//i.test(u) ? u : `http://${u}`;
+}
+
+function base() {
+  return normUrl(state.url);
+}
+
+/** Raw PocketBase REST call against an explicit base (used pre-login too). */
+async function rawFetch(baseUrl, pathname, { method = 'GET', body, token } = {}) {
+  const res = await fetch(baseUrl.replace(/\/+$/, '') + pathname, {
+    method,
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON */ }
+  if (!res.ok) {
+    const first = json && json.data ? Object.values(json.data)[0] : null;
+    const detail = first && first.message ? first.message : json && json.message ? json.message : `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+  return json;
+}
+
+function pb(pathname, opts = {}) {
+  return rawFetch(base(), pathname, { token: state.token, ...opts });
+}
+
+async function pbList(collection, filter) {
+  const all = [];
+  const filterParam = filter ? `&filter=${encodeURIComponent(filter)}` : '';
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const json = await pb(`/api/collections/${collection}/records?page=${page}&perPage=200${filterParam}`);
+    all.push(...(json.items || []));
+    if (all.length >= (json.totalItems || 0) || !json.page || json.page === json.totalPages) break;
+  }
+  return all;
+}
+
+function pbCreate(collection, data) {
+  return pb(`/api/collections/${collection}/records`, { method: 'POST', body: data });
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API                                                         */
+/* ------------------------------------------------------------------ */
+
+/** Unified favorite key across every card type (DB row, IPTV, radio
+ *  station, archive.org item, search result). Prefers a stable id and
+ *  falls back to the playable URL so nothing is ever keyed by undefined. */
+export function getMediaId(item) {
+  if (!item) return '';
+  return String(
+    item.id || item.media_id || item.url || item.videoUrl || item.streamUrl || ''
+  ).trim();
+}
+
+// Media-request heuristic: a native-playable URL is a media file extension
+// (before any query string), a local path, a localhost video-proxy route, or a
+// known rotation-CDN host. Everything else over http(s) is a "page" that must
+// be re-extracted on play.
+const MEDIA_REQUEST_RE = /\.(mp4|webm|mkv|m4v|mov|avi|mp3|m4a|flac|wav|ogg|aac|ts|mpd|m3u8)([?#].*)?$/i;
+
+/** True for anything <video> can grab directly without scraping. */
+export function isDirectMediaUrl(url) {
+  const u = String(url || '').trim();
+  if (!u) return false;
+  if (/^file:\/\//i.test(u) || /^[a-zA-Z]:[\\\/]/.test(u)) return true;
+  if (/^(srt|rtmp|rtsp):\/\//i.test(u)) return true;
+  if (/^https?:\/\//i.test(u)) {
+    const hostAndPath = u.replace(/^https?:\/\//i, '').toLowerCase();
+    if (hostAndPath.startsWith('localhost:') && hostAndPath.includes('/video/proxy/stream')) return true;
+    if (hostAndPath.includes('googlevideo.com') || hostAndPath.includes('videoplayback')) return true;
+    return MEDIA_REQUEST_RE.test(String(u.split('#')[0] || u).split('?')[0] || u);
+  }
+  return false;
+}
+
+/** A URL that points at a web page rather than an already-playable stream. */
+export function isPageUrl(url) {
+  const u = String(url || '');
+  if (!/^https?:\/\//i.test(u)) return false;
+  return !isDirectMediaUrl(u);
+}
+
+/** Canonical favorite payload shared by every surface (MediaCard, Discover
+ *  search results, IPTV, Classic Cinema, Live Radio) so all of them hit the
+ *  same db:toggleFavorite path and cloud sync sees identical fields.
+ *  A re-extractable page URL is authoritative over an ephemeral CDN stream:
+ *  streams rotate, pages live long. Direct media files (no page) are kept
+ *  verbatim as the play source. */
+export function favoritePayloadFor(item) {
+  const raw = String(item.videoUrl || item.url || item.streamUrl || '').trim();
+  const explicitPage = String(item.pageUrl || item.webUrl || '').trim();
+  // Legacy CDN recovery + strict 11-char canonicalization: rebuild the watch
+  // page from a googlevideo docid/id, otherwise strip any query tokens/params
+  // (&t=, &list=, youtu.be redirects) so saved items keep one clean page URL
+  // and never pin a dead signed stream.
+  const recovered = recoveredYouTubeWatchUrl(explicitPage) || recoveredYouTubeWatchUrl(raw);
+  let pageUrl = recovered || explicitPage || ((raw && isPageUrl(raw)) ? raw : '');
+  if (!recovered && /youtube\.com|youtu\.be/i.test(pageUrl)) {
+    const vid = getYouTubeVideoId(pageUrl);
+    if (vid) pageUrl = `https://www.youtube.com/watch?v=${vid}`;
+  }
+  const url = pageUrl ? '' : raw;
+  return {
+    id: getMediaId(item),
+    media_id: item.media_id || item.mediaId || '',
+    title: item.videoTitle || item.title || item.name || item.streamName || 'Untitled Video',
+    url,
+    pageUrl,
+    type: item.type || item.sourceSite || (item.streamUrl ? 'Radio' : 'video'),
+    provider: item.provider || '',
+    thumbnail: item.thumbnailUrl || item.favicon || item.poster || '',
+    isAdult: !!item.isAdult,
+    duration: item.duration || 0,
+    category: item.category || ''
+  };
+}
+
+export function getCloudState() {
+  return { ...state, user: state.user ? { ...state.user } : null };
+}
+
+export function isCloudConnected() {
+  return state.enabled && !!base() && !!state.token && !!state.user;
+}
+
+export function onCloudChange(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+export async function testConnection(url) {
+  const u = normUrl(url);
+  if (!u) return { success: false, error: 'Server URL is required' };
+  try {
+    const json = await rawFetch(u, '/api/health');
+    const data = json && json.data ? json.data : {};
+    return { success: true, version: data.app && data.app.version ? data.app.version : 'unknown' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function cloudLogin(url, email, password) {
+  const u = normUrl(url) || base();
+  if (!u) return { success: false, error: 'Server URL is required' };
+  if (!email || !password) return { success: false, error: 'Email and password are required' };
+  try {
+    const json = await rawFetch(u, '/api/collections/users/auth-with-password', {
+      method: 'POST',
+      body: { identity: String(email).trim(), password: String(password) },
+    });
+    const rec = json.record || {};
+    state = {
+      ...state,
+      url: u,
+      enabled: true,
+      token: json.token || '',
+      user: { id: rec.id || '', username: rec.username || '', email: rec.email || '', name: rec.name || '' },
+    };
+    persist();
+    emit();
+    const sync = await syncNow();
+    return { success: true, user: state.user, sync };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function cloudRegister(url, email, username, password) {
+  const u = normUrl(url) || base();
+  if (!u) return { success: false, error: 'Server URL is required' };
+  if (!email || !password) return { success: false, error: 'Email and password are required' };
+  const body = { email: String(email).trim(), password: String(password), passwordConfirm: String(password) };
+  const name = String(username || '').trim();
+  if (name) body.username = name;
+  try {
+    await rawFetch(u, '/api/collections/users/records', { method: 'POST', body });
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+  return cloudLogin(u, email, password);
+}
+
+export async function cloudLogout() {
+  state = { ...DEFAULT_STATE, url: base() };
+  persist();
+  emit();
+  return { success: true };
+}
+
+export async function setCloudEnabled(enabled) {
+  if (enabled && !state.token) return { success: false, error: 'Connect an account first' };
+  state = { ...state, enabled: !!enabled, url: base() };
+  persist();
+  emit();
+  if (enabled) {
+    const sync = await syncNow();
+    return { success: true, sync };
+  }
+  return { success: true };
+}
+
+export async function syncNow() {
+  if (!isCloudConnected()) return { success: false, error: 'Not connected to a cloud server' };
+  if (syncing) return { success: false, alreadyRunning: true };
+  const api = getApi();
+  if (!api) return { success: false, error: 'Local database unavailable' };
+
+  syncing = true;
+  const report = { pushed: 0, pulled: 0, skipped: 0, errors: [] };
+  try {
+    await syncFavorites(api, report);
+    await syncPlaylists(api, report);
+    await syncIptv(api, report);
+    await syncWatchHistory(api, report);
+    await syncPreferences(api, report);
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('scrapers-synced'));
+    return { success: true, ...report, at: new Date().toISOString() };
+  } catch (err) {
+    report.errors.push(err.message);
+    return { success: false, error: err.message, ...report };
+  } finally {
+    syncing = false;
+  }
+}
+
+/** Fire-and-forget sync when a local record changed (no-op unless connected). */
+export function autoSync() {
+  if (!isCloudConnected() || syncing) return;
+  syncNow().catch(() => { /* background sync */ });
+}
+
+/* ------------------------------------------------------------------ */
+/* Sync engine                                                         */
+/* ------------------------------------------------------------------ */
+
+function favKey(x) {
+  return String(x && (x.videoUrl || x.url || x.media_id || x.id) || '').trim();
+}
+
+function plKey(p) {
+  return `${String(p.name || p.title || '').trim()}|${String(p.description || '').trim()}`;
+}
+
+function localList(res) {
+  if (res && res.success && Array.isArray(res.data)) return res.data;
+  if (res && Array.isArray(res)) return res;
+  return Array.isArray(res) ? res : [];
+}
+
+async function syncFavorites(api, report) {
+  // Strictly best-effort/best-effort-safety: PocketBase cloud network state can
+  // never block or clobber local favorite saving. Every failure (dead server,
+  // auth expiry, row conflict) is recorded in the report and skipped; a fully
+  // unreachable server aborts early after listing instead of cascading.
+  try {
+    const myId = state.user && state.user.id;
+    if (!myId) return;
+
+    let remote = [];
+    try {
+      remote = await pbList('favorites', `(user="${myId}")`);
+    } catch (err) {
+      report.errors.push(`favorites.listen: ${err.message}`);
+      return;
+    }
+
+    const local = localList(await api.getFavorites());
+    const remoteByKey = new Map(remote.map((r) => [favKey(r), r]));
+    const localByKey = new Map(local.map((v) => [favKey(v), v]));
+
+    for (const v of local) {
+      const key = favKey(v);
+      if (!key || remoteByKey.has(key)) continue;
+      const mediaId = String(v.id || v.media_id || v.externalId || '').trim();
+      // Canonical play source: a page URL outlives rotating CDN streams, so
+      // page-only favorites (videoUrl empty) still push their page to the cloud.
+      const url = String(v.videoUrl || v.pageUrl || '').trim();
+      // A cloud row needs the site+own id and a playable url. Rows without them
+      // are invalid and must not silently disappear — count them as skipped so
+      // the sync report surfaces it.
+      if (!mediaId || !url) {
+        report.skipped++;
+        continue;
+      }
+      try {
+        // Standardized cloud payload fields.
+        await pbCreate('favorites', {
+          user: myId,
+          media_id: mediaId,
+          title: String(v.title || 'Untitled').trim(),
+          url,
+          type: String(v.sourceSite || v.type || 'video').trim(),
+          thumbnail: String(v.thumbnailUrl || '').trim(),
+          is_adult: !!v.isAdult,
+        });
+        remoteByKey.set(key, {});
+        report.pushed++;
+      } catch (err) {
+        report.errors.push(`favorites.pushed: ${err.message}`);
+      }
+    }
+
+    for (const r of remote) {
+      const key = favKey(r);
+      if (!key || localByKey.has(key)) continue;
+      // Skip genuinely empty cloud rows (no media_id and no url) instead of
+      // importing garbage into the local library.
+      if (!String(r.media_id || '').trim() && !String(r.url || '').trim()) {
+        report.skipped++;
+        continue;
+      }
+      try {
+        // Canonical cloud payload: { id, title, url, type, thumbnail, isAdult }
+        // normalized here to the local columns (the IPC maps media_id -> id,
+        // url -> videoUrl, type -> sourceSite, thumbnail -> thumbnailUrl).
+        const payload = {
+          id: String(r.media_id || `fav-cloud-${r.id}`),
+          media_id: String(r.media_id || ''),
+          title: String(r.title || 'Untitled'),
+          url: key,
+          type: r.type && r.type !== 'video' ? r.type : '',
+          thumbnail: String(r.thumbnail || ''),
+          isAdult: !!r.is_adult,
+          duration: 0,
+        };
+        const res = await api.toggleFavorite(payload);
+        if (res && res.success) report.pulled++;
+      } catch (err) {
+        report.errors.push(`favorites.pulled: ${err.message}`);
+      }
+    }
+  } catch (unexpectedErr) {
+    report.errors.push(`favorites.sync: ${unexpectedErr.message}`);
+  }
+}
+
+async function syncPlaylists(api, report) {
+  const myId = state.user.id;
+  const remotePl = await pbList('playlists');
+  const localPl = localList(await api.getPlaylists());
+
+  const remoteByKey = new Map(remotePl.map((p) => [plKey(p), p]));
+  const localByKey = new Map(localPl.map((p) => [plKey(p), p]));
+
+  // Pull remote -> local
+  const remoteToLocal = new Map(); // remote id -> local id
+  for (const rp of remotePl) {
+    let lp = localByKey.get(plKey(rp));
+    if (!lp) {
+      try {
+        const created = await api.createPlaylist(rp.title || 'Untitled', rp.description || '');
+        if (created && created.success && created.playlist) {
+          lp = created.playlist;
+          report.pulled++;
+        }
+      } catch (err) {
+        report.errors.push(`playlists.pulled: ${err.message}`);
+        continue;
+      }
+    }
+    if (lp && lp.id) {
+      remoteToLocal.set(String(rp.id), String(lp.id));
+      localByKey.set(plKey(rp), lp);
+    }
+  }
+
+  // Push local -> remote
+  const localToRemote = new Map(); // local id -> remote id
+  for (const lp of localPl) {
+    let rp = remoteByKey.get(plKey(lp));
+    if (!rp) {
+      try {
+        rp = await pbCreate('playlists', {
+          user: myId,
+          title: String(lp.name || 'Untitled'),
+          description: String(lp.description || ''),
+          is_public: !!lp.is_public,
+        });
+        report.pushed++;
+      } catch (err) {
+        report.errors.push(`playlists.pushed: ${err.message}`);
+        continue;
+      }
+    }
+    if (rp && rp.id) localToRemote.set(String(lp.id), String(rp.id));
+  }
+
+  if (localToRemote.size === 0 && remoteToLocal.size === 0) return;
+
+  // Items: fetch once
+  let remoteItemsAll = [];
+  try {
+    remoteItemsAll = await pbList('playlist_items');
+  } catch (err) {
+    report.errors.push(`playlist_items.list: ${err.message}`);
+  }
+
+  // Push items for local playlists
+  for (const [localPlId, remotePlId] of localToRemote) {
+    const remoteItems = remoteItemsAll.filter((i) => String(i.playlist) === remotePlId);
+    const remoteByUrl = new Map(remoteItems.map((i) => [String(i.url || '').trim(), i]));
+    const localItems = (await api.getPlaylistItems(localPlId)) || [];
+    let pos = 0;
+    for (const li of localItems) {
+      const key = String(li.videoUrl || '').trim();
+      if (!key) continue;
+      if (remoteByUrl.has(key)) { pos++; continue; }
+      try {
+        await pbCreate('playlist_items', {
+          playlist: remotePlId,
+          title: String(li.videoTitle || 'Untitled'),
+          url: key,
+          thumbnail: String(li.thumbnailUrl || ''),
+          position: pos,
+        });
+        report.pushed++;
+      } catch (err) {
+        report.errors.push(`playlist_items.pushed: ${err.message}`);
+      }
+      pos++;
+    }
+  }
+
+  // Pull items for remote playlists
+  for (const [remotePlId, localPlId] of remoteToLocal) {
+    const rpItems = remoteItemsAll.filter((i) => String(i.playlist) === remotePlId);
+    const localItems = (await api.getPlaylistItems(localPlId)) || [];
+    const localByUrl = new Map(localItems.map((i) => [String(i.videoUrl || '').trim(), i]));
+    for (const ri of rpItems) {
+      const u = String(ri.url || '').trim();
+      if (!u || localByUrl.has(u)) continue;
+      try {
+        await api.addToPlaylist(localPlId, {
+          id: ri.media_id || ri.id,
+          title: ri.title || 'Untitled',
+          videoUrl: u,
+          thumbnailUrl: ri.thumbnail || '',
+          sourceSite: '',
+          duration: 0,
+        });
+        report.pulled++;
+      } catch (err) {
+        report.errors.push(`playlist_items.pulled: ${err.message}`);
+      }
+    }
+  }
+}
+
+async function syncIptv(api, report) {
+  const myId = state.user.id;
+  const remoteSrc = await pbList('iptv_sources');
+  const localSrc = localList(await api.getIptvSources());
+  const remoteByUrl = new Map(remoteSrc.map((s) => [String(s.url || '').trim(), s]));
+  const localByUrl = new Map(localSrc.map((s) => [String(s.url || '').trim(), s]));
+
+  for (const s of localSrc) {
+    const u = String(s.url || '').trim();
+    if (!u || remoteByUrl.has(u)) continue;
+    try {
+      await pbCreate('iptv_sources', {
+        user: myId,
+        name: String(s.name || 'IPTV Playlist'),
+        url: u,
+        channel_count: Number(s.channelCount || s.channel_count || 0),
+      });
+      report.pushed++;
+    } catch (err) {
+      report.errors.push(`iptv.pushed: ${err.message}`);
+    }
+  }
+
+  for (const r of remoteSrc) {
+    const u = String(r.url || '').trim();
+    if (!u || localByUrl.has(u)) continue;
+    try {
+      const res = await api.addIptvSource(String(r.name || 'IPTV Playlist'), u);
+      if (res && res.success) report.pulled++;
+    } catch (err) {
+      report.errors.push(`iptv.pulled: ${err.message}`);
+    }
+  }
+}
+
+/** Core user preferences mirrored into the account (theme/family-mode etc.).
+ *  The remote row is a single user_preferences record holding a JSON blob.
+ *  Push (local newer) wins when the row exists but its `prefs` are empty,
+ *  which covers the first-login case where the shell has local defaults. */
+async function syncPreferences(api, report) {
+  const myId = state.user && state.user.id;
+  if (!myId) return;
+  let rows = [];
+  try {
+    rows = await pbList('user_preferences', `(user="${myId}")`);
+  } catch (err) {
+    report.errors.push(`preferences.listen: ${err.message}`);
+    return;
+  }
+  if (rows.length === 0) return; // nothing remote; local-only prefs stay untouched
+  const row = rows[0];
+  let remotePrefs = {};
+  try { remotePrefs = typeof row.prefs === 'string' ? JSON.parse(row.prefs || '{}') : (row.prefs || {}); }
+  catch { /* malformed blob -> treated as empty */ }
+  try {
+    const localPrefs = getStoredPrefs();
+    if (remotePrefs && typeof remotePrefs === 'object' && Object.keys(remotePrefs).length > 0) {
+      // Remote wins so an account carries its settings across devices.
+      applyStoredPrefs(remotePrefs);
+      report.pulled++;
+    } else if (localPrefs && Object.keys(localPrefs).length > 0) {
+      await pb(`/api/collections/user_preferences/records/${row.id}`, {
+        method: 'PATCH',
+        body: { prefs: localPrefs },
+      });
+      report.pushed++;
+    }
+  } catch (err) {
+    report.errors.push(`preferences.sync: ${err.message}`);
+  }
+}
+
+const PREFS_STORAGE_KEY = 'yakfal-hub-preferences';
+
+/** Normalize a watch-history/position savedAt value (ISO string or epoch-ms)
+ *  to epoch-ms so LWW comparisons are apples-to-apples across platforms. */
+function toEpochMs(v) {
+  if (v == null || v === '') return 0;
+  const n = Number(v);
+  if (!Number.isNaN(n) && String(v).trim() !== '') return n;
+  const t = Date.parse(String(v));
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/** Stable sync key shared by a history row and its resume position: both are
+ *  keyed off the same playback id, so they merge into one cloud record. */
+function histKey(x) {
+  return String(x && (x.media_id || x.id || x.externalId || x.videoUrl || x.pageUrl || x.url) || '').trim();
+}
+
+/**
+ * Watch history + resume positions mirror (v1.0.60). New collection; both
+ * watch_history rows and resume positions are merged per-media on updated_at
+ * (LWW) so progress follows the account across devices.
+ *
+ * The latest write wins per media_id: a remote row whose `updated_at` is newer
+ * than the local effective timestamp (max of history watchedAt and position
+ * positionUpdatedAt) replaces local state, and vice-versa.
+ */
+async function syncWatchHistory(api, report) {
+  const myId = state.user && state.user.id;
+  if (!myId) return;
+
+  // Local picture: merge watch_history + resume positions under the same key,
+  // keeping each side's own timestamp so the union has a true updated_at.
+  const localByKey = new Map();
+  let localHist = [];
+  let localPos = [];
+  try {
+    localHist = localList(await api.getWatchHistory());
+  } catch (err) {
+    report.errors.push(`history.local: ${err.message}`);
+  }
+  try {
+    localPos = localList(await api.getVideoPositions());
+  } catch (err) {
+    report.errors.push(`history.positions: ${err.message}`);
+  }
+
+  for (const h of localHist) {
+    const key = histKey(h);
+    if (!key) continue;
+    // v1.0.61: a watch_history row may carry its own resume position (for
+    // videos with no `videos` row — e.g. hanime search results).
+    const histPos = Number(h.position) || 0;
+    localByKey.set(key, {
+      hist: h,
+      position: histPos > 0 ? { id: h.id, lastPosition: histPos, positionUpdatedAt: Number(h.positionUpdatedAt) || 0 } : null,
+      updatedAt: Math.max(toEpochMs(h.watchedAt || h.addedAt), Number(h.positionUpdatedAt) || 0),
+    });
+  }
+  for (const p of localPos) {
+    const key = histKey(p);
+    if (!key) continue;
+    const entry = localByKey.get(key) || { hist: null, position: null, updatedAt: 0 };
+    entry.position = p;
+    entry.updatedAt = Math.max(entry.updatedAt, toEpochMs(p.positionUpdatedAt || p.updatedAt));
+    localByKey.set(key, entry);
+  }
+
+  // Remote picture
+  let remote = [];
+  try {
+    remote = await pbList('watch_history', `(user="${myId}")`);
+  } catch (err) {
+    report.errors.push(`history.listen: ${err.message}`);
+    return;
+  }
+  const remoteByKey = new Map(remote.map((r) => [histKey(r), r]));
+
+  // Pull remote -> local (LWW: replace only when remote is strictly newer, or
+  // the media is entirely missing locally).
+  for (const r of remote) {
+    const key = histKey(r);
+    if (!key) continue;
+    const local = localByKey.get(key);
+    const remoteT = toEpochMs(r.updated_at || r.updated || r.watched_at);
+    const localT = local ? (local.updatedAt || toEpochMs(local.hist && local.hist.watchedAt)) : 0;
+    // LWW: only apply remote when it carries a real timestamp that is strictly
+    // newer than local. Untimestamped rows are imported only if entirely new.
+    if (remoteT > 0 && local && localT >= remoteT) continue;
+    if (!remoteT && local) continue;
+    try {
+      // History row (page URL outlives rotating CDN streams, keep it preferred)
+      if (r.media_id || r.title) {
+        await api.setWatchHistory({
+          id: String(r.media_id || key),
+          media_id: String(r.media_id || ''),
+          title: String(r.title || 'Untitled'),
+          videoUrl: String(r.url || ''),
+          pageUrl: String(r.url || ''),
+          thumbnailUrl: String(r.thumbnail || ''),
+          duration: Number(r.duration_seconds) || 0,
+          position: Number(r.position_seconds) || 0,
+          positionUpdatedAt: remoteT,
+          watchedAt: remoteT ? new Date(remoteT).toISOString() : new Date().toISOString(),
+        });
+      }
+      // Resume position
+      const pos = Number(r.position_seconds) || 0;
+      if (pos > 0 && api.saveVideoPosition) {
+        await api.saveVideoPosition(String(r.media_id || key), pos);
+      }
+      localByKey.set(key, { hist: { id: r.media_id, watchedAt: remoteT }, position: pos > 0 ? { id: r.media_id, lastPosition: pos, positionUpdatedAt: remoteT } : null, updatedAt: remoteT });
+      report.pulled++;
+    } catch (err) {
+      report.errors.push(`history.pulled: ${err.message}`);
+    }
+  }
+
+  // Push local -> remote (LWW: create missing, patch stale)
+  const myRemoteIds = new Map(remote.map((r) => [histKey(r), r]));
+  for (const [key, entry] of localByKey) {
+    if (!key) continue;
+    const h = entry.hist || {};
+    const p = entry.position;
+    const updatedAt = entry.updatedAt || toEpochMs(h.watchedAt);
+    if (!updatedAt) continue;
+    const payload = {
+      media_id: String(p && p.id ? p.id : h.id || key),
+      title: String((h.title || h.videoTitle || (p && p.title) || 'Untitled') || '').trim(),
+      url: String(h.pageUrl || h.videoUrl || '').trim(),
+      type: String(h.sourceSite || h.type || 'video').trim(),
+      thumbnail: String(h.thumbnailUrl || '').trim(),
+      position_seconds: Number((p && p.lastPosition) || h.position) || 0,
+      duration_seconds: Number(h.duration || h.duration_seconds || 0),
+      updated_at: new Date(updatedAt).toISOString(),
+    };
+    const existing = myRemoteIds.get(key);
+    if (!existing) {
+      try {
+        await pbCreate('watch_history', { user: myId, ...payload });
+        report.pushed++;
+      } catch (err) {
+        report.errors.push(`history.pushed: ${err.message}`);
+      }
+    } else if (toEpochMs(existing.updated_at || existing.updated) < updatedAt) {
+      try {
+        await pb(`/api/collections/watch_history/records/${existing.id}`, {
+          method: 'PATCH',
+          body: payload,
+        });
+        report.pushed++;
+      } catch (err) {
+        report.errors.push(`history.updated: ${err.message}`);
+      }
+    }
+  }
+}
+
+/** Raw preference object persisted by AppSettingsContext (localStorage). */
+export function getStoredPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Overwrite the local preference blob (used when a remote account row wins). */
+export function applyStoredPrefs(prefs) {
+  try {
+    localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs || {}));
+  } catch (err) {
+    console.error('[Cloud] failed to write prefs:', err);
+  }
+}
+
+
+
+==================== src/services/iptvService.js ====================
+
+// iptvService.js — multi-language Live TV feed catalog + import helper.
+//
+// This is the public renderer-side of the Live Channels page. It owns the
+// curated catalog of iptv-org language playlists (the "quick-start" feeds shown
+// as chips on the page), a tiny M3U preview parser, and the typed import path
+// that reuses the existing, proven `iptv:addSource` engine.
+
+export const IPTV_LANGUAGE_FEEDS = [
+  { key: 'eng', label: 'English', url: 'https://iptv-org.github.io/iptv/languages/eng.m3u', flag: '🇬🇧' },
+  { key: 'spa', label: 'Español', url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', flag: '🇪🇸' },
+  { key: 'fra', label: 'Français', url: 'https://iptv-org.github.io/iptv/languages/fra.m3u', flag: '🇫🇷' },
+  { key: 'deu', label: 'Deutsch', url: 'https://iptv-org.github.io/iptv/languages/deu.m3u', flag: '🇩🇪' },
+  { key: 'jpn', label: '日本語', url: 'https://iptv-org.github.io/iptv/languages/jpn.m3u', flag: '🇯🇵' },
+  { key: 'news', label: 'News', url: 'https://iptv-org.github.io/iptv/categories/news.m3u', flag: '🗞️' }
+];
+
+// All iptv-org i18n playlists: `#EXTINF:-1,<name>` line, then the raw URL
+// (tvg-id / tvg-logo / tvg-country live in the preceding EXTINF, group-title in
+// a `group-title=` attr). We parse only what this page shows: name + logo + url.
+
+export function getApi() {
+  return window?.api || window?.electronAPI || window?.electron;
+}
+
+// Import any iptv-org fragment through the same M3U engine the user's own
+// playlists flow through. The engine fetches+parses+dedupes+saves, then the
+// page just refreshes its grid — same single proven path, zero divergence.
+export async function importLanguageFeed(feed, onProgress) {
+  const api = getApi();
+  if (!api?.addIptvSource) return { success: false, error: 'IPTV engine not available' };
+  try {
+    const res = await api.addIptvSource(feed.label + ' · ' + feed.key, feed.url, onProgress);
+    return res || { success: false, error: 'No response from engine' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+
+==================== vite.config.js ====================
+
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [react()],
+  base: './',
+  esbuild: {
+    keepNames: true,
+    // NEVER let esbuild mangle identifiers: renamed bindings that get captured
+    // in earlier closures/deps (e.g. useCallback chains) can collide and throw
+    // "Cannot access 'X' before initialization" at runtime in the minified
+    // bundle. Keeping real names makes a mangled-TDZ class impossible.
+    minifyIdentifiers: false,
+    tsconfigRaw: {
+      compilerOptions: {
+        useDefineForClassFields: true,
+      },
+    },
+  },
+  build: {
+    target: 'es2015',
+    cssTarget: 'chrome61',
+    minify: 'esbuild',
+    outDir: 'build',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        preload: path.resolve(__dirname, 'electron/preload.js')
+      },
+      output: {
+        entryFileNames: (chunkInfo) => {
+          return chunkInfo.name === 'preload' ? 'preload.js' : 'assets/[name]-[hash].js';
+        },
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash].[ext]',
+        manualChunks(id) {
+          // hls.js is loaded on demand but weighs ~700kB unminified; keep it in
+          // its own chunk so the app shell + vendor stay small and hls.js is
+          // cached across player sessions. Preload hinting keeps the shell lean.
+          if (id.includes('node_modules')) {
+            if (id.includes('hls.js') || id.includes('m3u8')) {
+              return 'hls';
+            }
+            return 'vendor';
+          }
+        }
+      }
+    }
+  },
+  server: {
+    port: 3000,
+    strictPort: true
+  }
+})
+
+==================== package.json ====================
+
+{
+  "name": "nekofal",
+  "version": "1.0.80",
+  "description": "Nekofal - Desktop media streaming hub",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "node scripts/dist.js",
+    "dist:publish": "node scripts/dist.js --publish && node scripts/publish-release.js",
+    "dist:local": "npm run build && electron-builder --win",
+    "cap:sync": "npm run build && npx cap sync android",
+    "cap:open": "npx cap open android",
+    "cap:build": "npm run cap:sync && cd android && gradlew assembleDebug"
+  },
+  "keywords": [
+    "media",
+    "streaming",
+    "scraper"
+  ],
+  "author": "Nekofal Open Source Team",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "cors": "^2.8.5",
+    "electron-updater": "^6.8.9",
+    "express": "^4.22.2",
+    "hls.js": "^1.7.2",
+    "react-router-dom": "^7.18.3",
+    "sql.js": "^1.10.3",
+    "uuid": "^11.1.1",
+    "yt-dlp-wrap": "^2.3.12"
+  },
+  "overrides": {
+    "qs": "6.16.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.14",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^44.4.4",
+    "electron-builder": "^26.15.3",
+    "postcss": "^8.4.31",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^3.3.5",
+    "vite": "^5.0.0",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.yakfal.nekofal",
+    "productName": "Nekofal",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "db/**/*",
+      "backends/**/*",
+      "lib/**/*",
+      "utils/**/*",
+      "config/**/*",
+      "public/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/",
+        "to": "./",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "legalTrademarks": "Nekofal",
+      "requestedExecutionLevel": "asInvoker",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "differentialPackage": true,
+      "artifactName": "Nekofal-Setup-${version}.${ext}",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nekofal",
+      "uninstallDisplayName": "Nekofal Media Suite"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Yakfal",
+        "repo": "nekofal",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

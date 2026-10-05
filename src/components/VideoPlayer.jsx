@@ -12,13 +12,8 @@ import './VideoPlayer.css';
 // with a status-0 refusal. Boot the live class once and route the isYt
 // pipeline through it — the single untested delta vs the always-working probe.
 let LIVE_HLS_CLS = null;
-const LIVE_HLS_URL = 'file:///H:/MyownX/node_modules/hls.js/dist/hls.mjs';
-const LIVE_HLS_BOOT = import(/* @vite-ignore */ LIVE_HLS_URL)
-  .then((m) => {
-    const C = (m && (m.default || m.Hls)) || null;
-    if (C) { if (!C.Events) C.Events = Hls.Events; LIVE_HLS_CLS = C; }
-  })
-  .catch(() => { LIVE_HLS_CLS = null; });
+const LIVE_HLS_URL = 'hls.js';
+const LIVE_HLS_BOOT = import('hls.js').then((m)=>{const C=(m&&(m.default||m.Hls))||null;if(C){if(!C.Events) C.Events=Hls.Events; LIVE_HLS_CLS=C;}}).catch(()=>{LIVE_HLS_CLS=null;});
 
 // ---- Static configuration (hoisted above the component to avoid TDZ) ----
 // Declared with `var` so the output has no block-scoped bindings at module

@@ -1,0 +1,421 @@
+[
+  {
+    "name": "App.jsx",
+    "type": "file",
+    "size": 2737
+  },
+  {
+    "name": "assets",
+    "type": "dir",
+    "children": [
+      {
+        "name": "logo.svg",
+        "type": "file",
+        "size": 3795
+      }
+    ]
+  },
+  {
+    "name": "components",
+    "type": "dir",
+    "children": [
+      {
+        "name": "AdultGate.css",
+        "type": "file",
+        "size": 1459
+      },
+      {
+        "name": "AdultGate.jsx",
+        "type": "file",
+        "size": 1894
+      },
+      {
+        "name": "AppLayout.css",
+        "type": "file",
+        "size": 1602
+      },
+      {
+        "name": "AppLayout.jsx",
+        "type": "file",
+        "size": 9940
+      },
+      {
+        "name": "DownloadManager.css",
+        "type": "file",
+        "size": 4826
+      },
+      {
+        "name": "DownloadManager.jsx",
+        "type": "file",
+        "size": 7077
+      },
+      {
+        "name": "ErrorBoundary.jsx",
+        "type": "file",
+        "size": 3479
+      },
+      {
+        "name": "MediaCard.css",
+        "type": "file",
+        "size": 6053
+      },
+      {
+        "name": "MediaCard.jsx",
+        "type": "file",
+        "size": 9302
+      },
+      {
+        "name": "MediaGrid.css",
+        "type": "file",
+        "size": 1785
+      },
+      {
+        "name": "MediaGrid.jsx",
+        "type": "file",
+        "size": 4269
+      },
+      {
+        "name": "MediaShelf.css",
+        "type": "file",
+        "size": 1822
+      },
+      {
+        "name": "MediaShelf.jsx",
+        "type": "file",
+        "size": 2446
+      },
+      {
+        "name": "Navbar.css",
+        "type": "file",
+        "size": 5970
+      },
+      {
+        "name": "Navbar.jsx",
+        "type": "file",
+        "size": 10289
+      },
+      {
+        "name": "OnboardingModal.css",
+        "type": "file",
+        "size": 2476
+      },
+      {
+        "name": "OnboardingModal.jsx",
+        "type": "file",
+        "size": 1803
+      },
+      {
+        "name": "PlaybackOverlay.jsx",
+        "type": "file",
+        "size": 1057
+      },
+      {
+        "name": "PlaylistMenu.css",
+        "type": "file",
+        "size": 2119
+      },
+      {
+        "name": "PlaylistMenu.jsx",
+        "type": "file",
+        "size": 5105
+      },
+      {
+        "name": "ScrollFab.css",
+        "type": "file",
+        "size": 886
+      },
+      {
+        "name": "Sidebar.css",
+        "type": "file",
+        "size": 2177
+      },
+      {
+        "name": "Sidebar.jsx",
+        "type": "file",
+        "size": 6539
+      },
+      {
+        "name": "VideoPlayer.css",
+        "type": "file",
+        "size": 17239
+      },
+      {
+        "name": "VideoPlayer.jsx",
+        "type": "file",
+        "size": 117445
+      },
+      {
+        "name": "VideoSearchSection.css",
+        "type": "file",
+        "size": 5788
+      },
+      {
+        "name": "VideoSearchSection.jsx",
+        "type": "file",
+        "size": 22233
+      }
+    ]
+  },
+  {
+    "name": "contexts",
+    "type": "dir",
+    "children": [
+      {
+        "name": "AppSettingsContext.jsx",
+        "type": "file",
+        "size": 5055
+      },
+      {
+        "name": "Playback.css",
+        "type": "file",
+        "size": 3620
+      },
+      {
+        "name": "PlaybackContext.jsx",
+        "type": "file",
+        "size": 24262
+      },
+      {
+        "name": "PlaylistsContext.jsx",
+        "type": "file",
+        "size": 2525
+      },
+      {
+        "name": "SearchContext.jsx",
+        "type": "file",
+        "size": 533
+      }
+    ]
+  },
+  {
+    "name": "i18n",
+    "type": "dir",
+    "children": [
+      {
+        "name": "LanguageContext.jsx",
+        "type": "file",
+        "size": 3612
+      },
+      {
+        "name": "locales",
+        "type": "dir",
+        "children": [
+          {
+            "name": "de.js",
+            "type": "file",
+            "size": 18398
+          },
+          {
+            "name": "en.js",
+            "type": "file",
+            "size": 16525
+          },
+          {
+            "name": "es.js",
+            "type": "file",
+            "size": 18586
+          },
+          {
+            "name": "fr.js",
+            "type": "file",
+            "size": 18988
+          },
+          {
+            "name": "it.js",
+            "type": "file",
+            "size": 18050
+          },
+          {
+            "name": "ja.js",
+            "type": "file",
+            "size": 21026
+          },
+          {
+            "name": "ko.js",
+            "type": "file",
+            "size": 19415
+          },
+          {
+            "name": "pt.js",
+            "type": "file",
+            "size": 18140
+          },
+          {
+            "name": "ru.js",
+            "type": "file",
+            "size": 24687
+          },
+          {
+            "name": "zh.js",
+            "type": "file",
+            "size": 16459
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "main.jsx",
+    "type": "file",
+    "size": 913
+  },
+  {
+    "name": "pages",
+    "type": "dir",
+    "children": [
+      {
+        "name": "Adult.css",
+        "type": "file",
+        "size": 2269
+      },
+      {
+        "name": "Adult.jsx",
+        "type": "file",
+        "size": 9715
+      },
+      {
+        "name": "Cinema.css",
+        "type": "file",
+        "size": 4782
+      },
+      {
+        "name": "Cinema.jsx",
+        "type": "file",
+        "size": 17538
+      },
+      {
+        "name": "Discover.css",
+        "type": "file",
+        "size": 6751
+      },
+      {
+        "name": "Discover.jsx",
+        "type": "file",
+        "size": 24292
+      },
+      {
+        "name": "Favorites.jsx",
+        "type": "file",
+        "size": 6007
+      },
+      {
+        "name": "IPTV.css",
+        "type": "file",
+        "size": 11199
+      },
+      {
+        "name": "IPTV.jsx",
+        "type": "file",
+        "size": 30268
+      },
+      {
+        "name": "LiveRadio.css",
+        "type": "file",
+        "size": 4871
+      },
+      {
+        "name": "LiveRadio.jsx",
+        "type": "file",
+        "size": 13658
+      },
+      {
+        "name": "MediaLibrary.jsx",
+        "type": "file",
+        "size": 21849
+      },
+      {
+        "name": "MiniPlayer.css",
+        "type": "file",
+        "size": 2267
+      },
+      {
+        "name": "MiniPlayer.jsx",
+        "type": "file",
+        "size": 7546
+      },
+      {
+        "name": "Playlists.css",
+        "type": "file",
+        "size": 4811
+      },
+      {
+        "name": "Playlists.jsx",
+        "type": "file",
+        "size": 12741
+      },
+      {
+        "name": "Settings.css",
+        "type": "file",
+        "size": 5701
+      },
+      {
+        "name": "Settings.jsx",
+        "type": "file",
+        "size": 37448
+      }
+    ]
+  },
+  {
+    "name": "services",
+    "type": "dir",
+    "children": [
+      {
+        "name": "customScraper.js",
+        "type": "file",
+        "size": 2408
+      },
+      {
+        "name": "dbAdapter.js",
+        "type": "file",
+        "size": 28083
+      },
+      {
+        "name": "iptvService.js",
+        "type": "file",
+        "size": 2080
+      }
+    ]
+  },
+  {
+    "name": "styles",
+    "type": "dir",
+    "children": [
+      {
+        "name": "index.css",
+        "type": "file",
+        "size": 5825
+      },
+      {
+        "name": "themes.css",
+        "type": "file",
+        "size": 2865
+      }
+    ]
+  },
+  {
+    "name": "utils",
+    "type": "dir",
+    "children": [
+      {
+        "name": "contentSafety.js",
+        "type": "file",
+        "size": 1729
+      },
+      {
+        "name": "ipcPolyfill.js",
+        "type": "file",
+        "size": 20557
+      },
+      {
+        "name": "mediaKeys.js",
+        "type": "file",
+        "size": 1012
+      },
+      {
+        "name": "spatialNav.js",
+        "type": "file",
+        "size": 10692
+      }
+    ]
+  }
+]
