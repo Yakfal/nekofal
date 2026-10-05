@@ -962,17 +962,47 @@ function trackCaptchaSession(win) {
 // Sniff-window UA + session tracker is also a keep-warm hook: a user who
 // manually solves the Turnstile in the corner window re-arms all downstream
 // hanime token/session consumers the moment the challenge clears.
-function watchCaptchaClearance(win) {
+function watchCaptchaClearance(win, opts = {}) {
   try {
     if (!win || win.isDestroyed()) return;
+    let cleared = false;
+    const hideOnClear = opts.hideOnClear !== false;
+    const autoHide = opts.autoHideAfterClear !== false;
     win.webContents.on('page-title-updated', (_event, title) => {
-      if (!title || /just a moment|checking your browser/i.test(String(title))) return;
+      if (!title) return;
+      const t = String(title);
+      if (/just a moment|checking your browser|cloudflare|challenge/i.test(t)) {
+        if (!win.isVisible() && !win.isDestroyed()) {
+          try { win.showInactive(); win.setAlwaysOnTop(true); } catch (_e) {}
+        }
+        return;
+      }
+      // likely cleared
       trackCaptchaSession(win);
+      if (!cleared && autoHide) {
+        cleared = true;
+        if (hideOnClear && win.isVisible() && !win.isDestroyed()) {
+          try { win.hide(); } catch (_e) {}
+        }
+      }
+    });
+    win.webContents.on('did-navigate', async () => {
+      if (cleared) return;
+      try {
+        const cookies = await session.defaultSession.cookies.get({ url: win.webContents.getURL() || 'https://hanime.tv' });
+        if (cookies.some(c => /^cf_clearance$/i.test(c.name) && c.value)) {
+          cleared = true;
+          trackCaptchaSession(win);
+          if (hideOnClear && win.isVisible() && !win.isDestroyed()) {
+            try { win.hide(); } catch (_e) {}
+          }
+        }
+      } catch (_e) {}
     });
     win.on('closed', () => {
-      try { streamCookieCache.clear(); } catch (_e) { /* no-op */ }
+      try { streamCookieCache.clear(); } catch (_e) {}
     });
-  } catch (_e) { /* best-effort */ }
+  } catch (_e) {}
 }
 
 let stealthWindow = null;
@@ -1123,8 +1153,8 @@ function ensureVisibleSniffWindow() {
     frame: false,
     transparent: false,
     skipTaskbar: true,
-    focusable: true,
-    alwaysOnTop: false,
+    focusable: false,
+    alwaysOnTop: true,
     fullscreenable: false,
     minimizable: false,
     maximizable: false,
@@ -1137,18 +1167,15 @@ function ensureVisibleSniffWindow() {
       sandbox: true
     }
   });
-  // showInactive() maps the window onto the desktop WITHOUT stealing focus —
-  // crucial: focusable:false or opacity-0 windows can be skipped by Chromium's
-  // compositor, so IntersectionObserver (Astro client:visible) never fires and
-  // the player never hydrates. A real on-screen window is required.
-  visibleSniffWindow.showInactive();
+  visibleSniffWindow.show();
   console.info(`[VisibleSniff] created at ${JSON.stringify(visibleSniffWindow.getBounds())} shown=${visibleSniffWindow.isVisible()}`);
   try { visibleSniffWindow.webContents.setAudioMuted(true); } catch (_e) { /* mute unsupported */ }
   visibleSniffWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   visibleSniffWindow.on('closed', () => { visibleSniffWindow = null; });
-  // v1.0.67: a manual/auto challenge solve in this window re-arms the cookie
-  // cache + pins the cleared UA for every downstream hanime request.
-  watchCaptchaClearance(visibleSniffWindow);
+  // v1.0.70: keep the HAnime sniff window hidden by default. Show it only if
+  // an interactive Turnstile requires manual action, and auto-hide once
+  // cf_clearance is detected.
+  watchCaptchaClearance(visibleSniffWindow, { autoHideAfterClear: true, hideOnClear: true });
   return visibleSniffWindow;
 }
 

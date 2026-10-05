@@ -2080,13 +2080,14 @@ if (pendingSeekRef.current) {
     if (e.target.closest('.progress-track')) return;
     if (e.target.closest('.volume-slider')) return;
     if (e.target.closest('.popup-menu')) return;
+    togglePlayPause();
     if (isControlsVisible) {
       setIsControlsVisible(false);
     } else {
       resetControlsTimeout();
     }
     setMenuOpen(null);
-  }, [isControlsVisible, resetControlsTimeout]);
+  }, [isControlsVisible, resetControlsTimeout, togglePlayPause]);
 
   // Video event handlers
   const handlePlay = useCallback(() => setIsPlaying(true), []);
