@@ -688,12 +688,26 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   }, []);
 
   // Toggle play/pause
-  // v1.0.69: when YT drives a mirror element, also apply UI actions to it
-  const mirrorYt = useCallback((fn) => {
+  // v1.0.71: ensure UI <-> media are in sync at attach time
+  const syncPlayerWithAppState = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
     try {
-      if (ytLiveElRef.current && typeof fn === 'function') fn(ytLiveElRef.current);
+      video.volume = isMuted ? 0 : (typeof volume === 'number' && !isNaN(volume) ? volume : 1);
+      video.muted = !!isMuted;
+      video.playbackRate = typeof playbackSpeed === 'number' ? playbackSpeed : 1;
+      setDuration(video.duration || 0);
+      setCurrentTime(video.currentTime || 0);
+      setIsPlaying(!video.paused);
+      setVolume(video.muted ? 0 : video.volume);
+      setPlaybackSpeed(video.playbackRate || 1);
+      mirrorYt((mv) => {
+        try {
+          mv.volume = video.volume; mv.muted = video.muted; mv.playbackRate = video.playbackRate;
+        } catch (_e) {}
+      });
     } catch (_e) {}
-  }, []);
+  }, [isMuted, volume, playbackSpeed, mirrorYt]);
 
   const togglePlayPause = useCallback(() => {
     const videoEl = videoRef.current;
@@ -1621,17 +1635,18 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         hlsRef.current = null;
       }
       videoEl.src = streamUrl;
-      videoEl.addEventListener('loadedmetadata', () => {
-        if (includeFallbackSeek) seekToResume(videoEl);
-        else if (pendingSeekRef.current) {
-          const pos = pendingSeekRef.current;
-          pendingSeekRef.current = null;
-          if (shouldResume(pos)) {
-            try { videoEl.currentTime = pos; } catch (e) {}
+        videoEl.addEventListener('loadedmetadata', () => {
+          if (includeFallbackSeek) seekToResume(videoEl);
+          else if (pendingSeekRef.current) {
+            const pos = pendingSeekRef.current;
+            pendingSeekRef.current = null;
+            if (shouldResume(pos)) {
+              try { videoEl.currentTime = pos; mirrorYt((v)=>{try{v.currentTime=pos;}catch(_e){}}); } catch (e) {}
+            }
           }
-        }
-        if (autoPlayOnReady) videoEl.play().catch(() => {});
-      }, { once: true });
+          if (autoPlayOnReady) { videoEl.play().catch(() => {}); mirrorYt((v)=>v.play().catch(()=>{})); }
+          try { syncPlayerWithAppState(); } catch (_e) {}
+        }, { once: true });
     };
 
     if ((looksHls || forceHls) && Hls.isSupported()) {
@@ -2033,6 +2048,8 @@ if (pendingSeekRef.current) {
       videoEl.addEventListener('loadedmetadata', () => {
         seekToResume(videoEl);
         videoEl.play().catch(() => {});
+        mirrorYt((v)=>v.play().catch(()=>{}));
+        syncPlayerWithAppState();
       }, { once: true });
     }
 
