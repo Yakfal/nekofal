@@ -693,21 +693,22 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     const video = videoRef.current;
     if (!video) return;
     try {
+      const activeSpeed = typeof playbackSpeed === 'number' && !isNaN(playbackSpeed) ? playbackSpeed : (typeof speed === 'number' ? speed : 1);
       video.volume = isMuted ? 0 : (typeof volume === 'number' && !isNaN(volume) ? volume : 1);
       video.muted = !!isMuted;
-      video.playbackRate = typeof playbackSpeed === 'number' ? playbackSpeed : 1;
+      video.playbackRate = activeSpeed;
       setDuration(video.duration || 0);
       setCurrentTime(video.currentTime || 0);
       setIsPlaying(!video.paused);
       setVolume(video.muted ? 0 : video.volume);
-      setPlaybackSpeed(video.playbackRate || 1);
+      setPlaybackSpeed(activeSpeed);
       mirrorYt((mv) => {
         try {
           mv.volume = video.volume; mv.muted = video.muted; mv.playbackRate = video.playbackRate;
         } catch (_e) {}
       });
     } catch (_e) {}
-  }, [isMuted, volume, playbackSpeed, mirrorYt]);
+  }, [isMuted, volume, playbackSpeed, speed, mirrorYt]);
 
   const togglePlayPause = useCallback(() => {
     const videoEl = videoRef.current;
