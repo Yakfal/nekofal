@@ -2100,13 +2100,12 @@ if (pendingSeekRef.current) {
     if (e.target.closest('.volume-slider')) return;
     if (e.target.closest('.popup-menu')) return;
     togglePlayPause();
-    if (isControlsVisible) {
-      setIsControlsVisible(false);
-    } else {
-      resetControlsTimeout();
-    }
-    setMenuOpen(null);
-  }, [isControlsVisible, resetControlsTimeout, togglePlayPause]);
+  }, [togglePlayPause]);
+
+  const handleContainerClick = useCallback((e) => {
+    if (e.target.closest('.control-bar, .player-controls-overlay, button, .popup-menu, .progress-track')) return;
+    togglePlayPause();
+  }, [togglePlayPause]);
 
   // Video event handlers
   const handlePlay = useCallback(() => setIsPlaying(true), []);
