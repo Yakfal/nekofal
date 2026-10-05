@@ -230,6 +230,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // watching crosses devices while the video is still on screen).
   const syncTimerRef = useRef(null);
   const ytLiveElRef = useRef(null); // reserved: legacy YT fresh-element probe, unused in v1.0.68
+  const mirrorYt = useCallback((fn) => { try { if (ytLiveElRef.current && typeof fn === "function") fn(ytLiveElRef.current); } catch (_e) {} }, []);
   const ytReExtractRef = useRef(0);
   const ytReloadRef = useRef(0); // v1.0.68: bounded fresh-hls-instance retries for YT master refusals
   const ytParsedRef = useRef(false); // v1.0.68: true once the current stream's hls parsed its master (restart guard)
