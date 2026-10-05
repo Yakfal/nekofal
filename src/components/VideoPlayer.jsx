@@ -6,6 +6,20 @@ import { favoritePayloadFor, getMediaId, autoSync } from '../services/dbAdapter.
 import { usePlayback } from '../contexts/PlaybackContext.jsx';
 import './VideoPlayer.css';
 
+// v1.0.68 YouTube freeze: the diagnostic hlsPlay/controlHls import hls.js LIVE
+// from node_modules (file:// URL) and play every time inside this renderer,
+// while the vite-BUNDLED class persistently fails its very first manifest XHR
+// with a status-0 refusal. Boot the live class once and route the isYt
+// pipeline through it — the single untested delta vs the always-working probe.
+let LIVE_HLS_CLS = null;
+const LIVE_HLS_URL = 'file:///H:/MyownX/node_modules/hls.js/dist/hls.mjs';
+const LIVE_HLS_BOOT = import(/* @vite-ignore */ LIVE_HLS_URL)
+  .then((m) => {
+    const C = (m && (m.default || m.Hls)) || null;
+    if (C) { if (!C.Events) C.Events = Hls.Events; LIVE_HLS_CLS = C; }
+  })
+  .catch(() => { LIVE_HLS_CLS = null; });
+
 // ---- Static configuration (hoisted above the component to avoid TDZ) ----
 // Declared with `var` so the output has no block-scoped bindings at module
 // level, which is what makes Temporal Dead Zone errors impossible at runtime.
@@ -215,6 +229,10 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // v1.0.61: debounce watch-history progress pushes to the cloud (continue
   // watching crosses devices while the video is still on screen).
   const syncTimerRef = useRef(null);
+  const ytLiveElRef = useRef(null); // reserved: legacy YT fresh-element probe, unused in v1.0.68
+  const ytReExtractRef = useRef(0);
+  const ytReloadRef = useRef(0); // v1.0.68: bounded fresh-hls-instance retries for YT master refusals
+  const ytParsedRef = useRef(false); // v1.0.68: true once the current stream's hls parsed its master (restart guard)
   const [hlsRetryKey, setHlsRetryKey] = useState(0);
   const hlsFallbackUsedRef = useRef(false);
   const hlsSelfHealUsedRef = useRef(false);
@@ -320,6 +338,15 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         }
         const isLocalFile = url.startsWith('file://') || /^[a-zA-Z]:[\\\/]/.test(url);
         if (isLocalFile) {
+          return `http://localhost:${videoProxyPort}/video/proxy/stream?t=${videoProxyToken}&src=${encodeURIComponent(url)}`;
+        }
+        // v1.0.68 YouTube: googlevideo master/child/segment URIs get REFUSED
+        // (status 0 xhr errors) when fetched repeatedly from the renderer on a
+        // fast-working IP — YT's burst filter + short-lived signed URLs. Route
+        // every googlevideo fetch through our local video proxy instead: main
+        // fetches from Node (stable) and rewrites the m3u8 child URIs so hls.js
+        // never talks to googlevideo directly.
+        if (/googlevideo\.com/i.test(u.hostname) && videoProxyToken) {
           return `http://localhost:${videoProxyPort}/video/proxy/stream?t=${videoProxyToken}&src=${encodeURIComponent(url)}`;
         }
         if (httpHeaders && Object.keys(httpHeaders).length) {
@@ -661,16 +688,26 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   }, []);
 
   // Toggle play/pause
+  // v1.0.68: when the YT hls pipeline drives a fresh mirror <video> instead of
+  // the React node, keep the transport controls in sync with the live element.
+  const mirrorYt = useCallback((fn) => {
+    try {
+      if (ytLiveElRef.current && typeof fn === 'function') fn(ytLiveElRef.current);
+    } catch (_e) {}
+  }, []);
+
   const togglePlayPause = useCallback(() => {
     const videoEl = videoRef.current;
     if (videoEl) {
       if (videoEl.paused) {
         videoEl.play().catch(() => {});
+        mirrorYt((v) => v.play().catch(() => {}));
       } else {
         videoEl.pause();
+        mirrorYt((v) => v.pause());
       }
     }
-  }, []);
+  }, [mirrorYt]);
 
   // Pause guard: while paused, controls must stay visible regardless of mouse
   // activity — clear any pending hide timer and force them on.
@@ -825,8 +862,9 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         setVolume(1);
         writePref('defaultVolume', 1);
       }
+      mirrorYt((v) => { v.muted = videoEl.muted; v.volume = videoEl.volume; });
     }
-  }, []);
+  }, [mirrorYt]);
 
   // Volume change from slider
   const handleVolumeChange = useCallback((e) => {
@@ -1199,6 +1237,14 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     };
   });
 
+  // v1.0.68: the init effect must NOT re-run (and destroy the in-flight hls
+  // instance) when quality enrichment or the variant callback identity changes.
+  // The handlers read these through refs; the effect deps stay stable-once.
+  const extractQualityLevelsRef = useRef(extractQualityLevels);
+  const applyVariantLevelRef = useRef(applyVariantLevel);
+  useEffect(() => { extractQualityLevelsRef.current = extractQualityLevels; }, [extractQualityLevels]);
+  useEffect(() => { applyVariantLevelRef.current = applyVariantLevel; });
+
   // Retry extraction
   const handleRetry = useCallback(() => {
     setHasError(false);
@@ -1469,6 +1515,34 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // Initialize HLS.js or native video (only for non-DRM content)
   useEffect(() => {
     if (isDRM || !streamUrl) return;
+
+    // v1.0.68: a re-run of this effect (quality-enrichment, level-menu rebuild)
+    // with the SAME streamUrl MUST NOT tear down an already-working hls.js
+    // instance. Every restart destroys the in-flight manifest XHR and burns
+    // YT's burst budget — the exact mechanism behind the freeze-at-0:00.
+    streamUrlRef.current = streamUrl;
+    const isYtEarly = video.sourceSite === 'YouTube' || /googlevideo\.com|youtube\.com|youtu\.be/i.test(String(streamUrl));
+    // v1.0.68: room-scoped timers must live at effect scope — the cleanup below
+    // (and only it) touches them, and block-scoped lets throw ReferenceError on
+    // unmount, blowing up the ErrorBoundary for the whole app.
+    let ytPlayKickTimer = null;
+    let hlsKickTimer = null;
+    console.warn('[yteffect] run @' + performance.now().toFixed(0) + ' hls?=' + !!hlsRef.current + ' parsed?=' + (ytParsedRef.current ? 1 : 0) + ' kick?=' + !!window.__lastKick + ' src=' + String(streamUrl).slice(0, 42));
+    if (isYtEarly && hlsRef.current && ytParsedRef.current && (streamUrlRef.current || '') === streamUrl) {
+      return;
+    }
+    // v1.0.68: an effect re-run within ~2s of the pilot kick is what ABORTS the
+    // in-flight manifest XHR (status-0) and freezes the playhead. Once a pilot
+    // is running for this URL, leave it alone until it proves dead.
+    if (isYtEarly && hlsRef.current && !ytParsedRef.current && window.__lastKick
+        && (Number(window.__lastKick) + 2000) > performance.now()
+        && (streamUrlRef.current || '') === streamUrl) {
+      return;
+    }
+    if (isYtEarly && hlsRef.current && !ytParsedRef.current) {
+      try { hlsRef.current.destroy(); } catch (_e) {}
+      hlsRef.current = null;
+    }
     
     const videoEl = videoRef.current;
     if (!videoEl) return;
@@ -1558,29 +1632,144 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       // Referer on every manifest/segment request from hls.js (the UA/Origin/
       // Cookie side is applied globally in main via webRequest.onBeforeSendHeaders,
       // and Chromium forbids scripts from setting those headers).
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
+      // v1.0.68 YT freeze: the ONLY code path proven to PLAY in-window is the
+      // harness hlsPlay (hls.js dist import, worker:false, ll:false,
+      // bufferLength:30, maxBufferLength:60, capLevelToPlayerSize:false,
+      // attachMedia FIRST, then loadSource, then play() in MANIFEST_PARSED,
+      // on a FRESH element). Replicate it byte-for-byte.
+      const hlsIsYt = video.sourceSite === 'YouTube' || /googlevideo\.com|youtube\.com|youtu\.be/i.test(String(streamUrl));
+      // v1.0.68: use the LIVE hls.mjs class for the YT pipeline (see boot above).
+      const HlsC = (hlsIsYt && LIVE_HLS_CLS) ? LIVE_HLS_CLS : Hls;
+      const hlsEvents = HlsC.Events || Hls.Events;
+      const hls = new HlsC({
+        debug: true,
+        enableWorker: hlsIsYt,
+        lowLatencyMode: hlsIsYt,
         bufferLength: 30,
         maxBufferLength: 60,
         xhrSetup: (xhr, _url) => {
-          const headers = activeHttpHeadersRef.current || httpHeaders;
-          if (headers) {
-            const ref = headers.Referer || headers.referer;
-            if (ref) {
-              try { xhr.setRequestHeader('Referer', String(ref)); } catch (_e) {}
+          try {
+            const headers = activeHttpHeadersRef.current;
+            if (headers) {
+              const ref = headers.Referer || headers.referer;
+              if (ref) {
+                try { xhr.setRequestHeader('Referer', String(ref)); }
+                catch (_e) { console.warn('[xhsetup] setRequestHeader threw: ' + String(_e)); }
+              }
             }
-          }
+          } catch (_e) { console.warn('[xhsetup] headers read threw: ' + String(_e)); }
         }
       });
       
       hlsRef.current = hls;
-      hls.loadSource(streamUrl);
-      hls.attachMedia(videoEl);
+      // v1.0.68 YT freeze fix: YT HLS masters are separate demuxed audio/video
+      // playlists. The v1.0.66 attach-then-play can swallow the first play()
+      // before fragment data is buffered and leave the element paused forever
+      // (freeze at 0:00). We keep a stall watchdog that re-issues play() only
+      // after real no-progress time (slow software decoders must never be
+      // pause/play-toggled), plus capLevel so the ABR does not strand a sw-decode
+      // 4K/1440p level on small windows.
+      const isYt = hlsIsYt;
+      let liveEl = videoEl;
+      const hlsSrc = isYt ? getProxiedUrl(streamUrl) : streamUrl;
+      if (isYt) {
+        // v1.0.68: drive a FRESH mirror <video> (this is the one constant that
+        // separates every successful run — control hls, overlayReplay, the
+        // isolated 4K probe — from every failed one: they all used a brand-new
+        // element. The React node's MediaSource stack wedges on first attach.
+        let holder = document.querySelector('.video-player-container')
+          || (videoEl && videoEl.closest('.video-player-container'))
+          || (videoEl && videoEl.parentNode);
+        const freshVid = document.createElement('video');
+        freshVid.className = 'video-player';
+        freshVid.setAttribute('playsinline', '');
+        freshVid.setAttribute('webkit-playsinline', '');
+        if (holder) holder.appendChild(freshVid);
+        ytLiveElRef.current = freshVid;
+        liveEl = freshVid;
+        if (videoEl && videoEl.style) videoEl.style.display = 'none';
+        // v1.0.68: converge on the controlHls recipe (the diagnostic that parses
+        // EVERY time, incl. at t=2.5s): loadSource() FIRST, attachMedia()
+        // second, RAW proxied URL, worker:true/ll:true config above.
+        const kickHls = () => {
+          window.__lastKick = performance.now().toFixed(0);
+          hls.loadSource(hlsSrc);
+          hls.attachMedia(liveEl);
+        };
+        if (isYt && !LIVE_HLS_CLS) {
+          hlsKickTimer = setTimeout(kickHls, 300);
+        } else {
+          kickHls();
+        }
+        (function registerKickCleanup() { /* runs with the rest of the effect */ })();
+      } else {
+        hls.attachMedia(videoEl);
+        hls.loadSource(hlsSrc);
+      }
+      try { document.body.setAttribute('data-app-master', String(streamUrl)); document.body.setAttribute('data-app-proxy', String(hlsSrc)); } catch (_e) {}
+      try { document.body.setAttribute('data-app-master', String(streamUrl)); } catch (_e) {}
+      if (isYt) {
+        let ytStallWatch = { ct: -1, at: Date.now() };
+        ytPlayKickTimer = setInterval(() => {
+          if (!autoPlayOnReady) { clearInterval(ytPlayKickTimer); ytPlayKickTimer = null; return; }
+          const now = Date.now();
+          if (liveEl.currentTime > 0.3) {
+            clearInterval(ytPlayKickTimer);
+            ytPlayKickTimer = null;
+            return;
+          }
+          if (liveEl.currentTime !== ytStallWatch.ct) { ytStallWatch.ct = liveEl.currentTime; ytStallWatch.at = now; return; }
+          if (now - ytStallWatch.at <= 1400) return;
+          // Mirror the proven diagnostic hls flow: keep issuing play() (never
+          // pause and never recoverMediaError — both tear down Chromium's media
+          // source mid-parse and abort the in-flight video buffer).
+          liveEl.play().catch(() => {});
+        }, 900);
+      }
 
-      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+      hls.on(hlsEvents.MANIFEST_PARSED, (_event, data) => {
         networkRetryRef.current = 0;
         stallCountRef.current = 0;
+        ytReExtractRef.current = 0;
+        ytReloadRef.current = 0;
+        if (streamUrl) { try { streamUrlRef.current = streamUrl; } catch (_e) {} }
+        if (isYt) ytParsedRef.current = true;
+        try {
+          const lv = (data && Array.isArray(data.levels) ? data.levels : hls.levels || []).map((l) => ({
+            h: l.height, w: l.width, c: (l.codecset || l.videoCodec || '').slice(0, 18), b: Math.round((l.bitrate || 0) / 1000)
+          }));
+          document.body.setAttribute('data-hls-levels', JSON.stringify(lv.slice(0, 12)));
+        } catch (_e) {}
+        if (isYt && Array.isArray(data.levels) && data.levels.length) {
+          // v1.0.68: force a sane starting level. The top tier (usually an
+          // oversized HDR/VP9 or 2160p variant) wedges the zero-time start;
+          // pick the best DECODABLE h264 tier ≤720p so playback begins fast.
+          const pickTarget = (levels) => {
+            let exact = -1; let below = -1;
+            for (let i = 0; i < levels.length; i++) {
+              const l = levels[i] || {};
+              const cc = String(l.codecset || l.videoCodec || '').toLowerCase();
+              const good = !cc.includes('vp') && !cc.includes('av01') && !cc.includes('265') && !cc.includes('hevc');
+              const h = l.height || 0;
+              if (!good) continue;
+              if (h <= 720 && h > (exact < 0 ? 0 : (levels[exact].height || 0))) exact = i;
+              if (h <= 720 && below < 0 && h >= 360) below = i;
+            }
+            return exact >= 0 ? exact : below;
+          };
+          const forced = pickTarget(data.levels);
+          if (forced >= 0) hls.currentLevel = forced;
+          const cap1080 = data.levels.findIndex((lv) => (lv && lv.height || 9999) <= 1080);
+          hls.autoLevelCapping = cap1080 >= 0 ? cap1080 : (data.levels.length - 1);
+          try {
+            const l0 = hls.levels && hls.levels[forced >= 0 ? forced : hls.currentLevel || 0];
+            document.body.setAttribute('data-hls-cur', JSON.stringify({
+              forced, cur: hls.currentLevel, cap: hls.autoLevelCapping,
+              n: hls.levels ? hls.levels.length : -1,
+              h: l0 ? l0.height : -1, c: l0 ? String(l0.codecset || l0.videoCodec || '').slice(0, 30) : null
+            }));
+          } catch (_e) {}
+        }
         const api = window.api || window.electronAPI;
         // v1.0.62: bind the quality menu directly to hls.js's parsed level
         // data (the MANIFEST_PARSED payload) so EVERY .m3u8 stream gets a real
@@ -1598,8 +1787,8 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
         // height-0 level → the old menu showed only "Auto + Quality 1". When
         // the extractor enumerated real variant tiers, prefer those rows and
         // use their per-variant URLs for quality switching.
-        const rich = extractQualityLevels.length
-          ? extractQualityLevels.map((q, i) => ({ ...q, index: i }))
+        const rich = extractQualityLevelsRef.current.length
+          ? extractQualityLevelsRef.current.map((q, i) => ({ ...q, index: i }))
           : [];
         const degenerate = !parsedLevels.length || parsedLevels.length <= 1
           || levelMenu.every((l) => !l.height);
@@ -1664,7 +1853,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             const chosen = lvl >= 0 ? menu[lvl] : null;
             if (chosen && chosen.url && chosen.url !== streamUrl && variantAppliedRef.current !== streamUrl) {
               variantAppliedRef.current = streamUrl;
-              applyVariantLevel(chosen);
+              applyVariantLevelRef.current(chosen);
               return;
             }
             setSelectedQuality(lvl >= 0 ? menu[lvl].label : 'auto');
@@ -1673,17 +1862,33 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
             setSelectedQuality(lvl === -1 ? 'auto' : lvl);
           }
         }
-        if (pendingSeekRef.current) {
+if (pendingSeekRef.current) {
           const pos = pendingSeekRef.current;
           pendingSeekRef.current = null;
           if (shouldResume(pos)) {
-            try { videoEl.currentTime = pos; } catch (e) {}
+            try { liveEl.currentTime = pos; } catch (e) {}
           }
         }
-        if (autoPlayOnReady) videoEl.play().catch(() => {});
+        if (autoPlayOnReady) liveEl.play().catch(() => {});
       });
 
-      hls.on(Hls.Events.ERROR, (event, data) => {
+      hls.on(hlsEvents.ERROR, (event, data) => {
+        {
+          const nd = data && data.networkDetails;
+          console.info('[vhtrace] hlsErr', JSON.stringify({
+            type: data && data.type,
+            details: data && data.details,
+            fatal: !!(data && data.fatal),
+            code: data && data.code,
+            url: data && data.url ? String(data.url).slice(0, 180) : null,
+            responseType: data && data.responseType,
+            response: data && data.response ? String(data.response).slice(0, 160) : null,
+            xhrStatus: nd && nd.xhr ? nd.xhr.status : null,
+            xhrReady: nd && nd.xhr ? nd.xhr.readyState : null,
+            loader: nd ? (nd.constructor && nd.constructor.name) : null,
+            err: nd && nd.err ? String(nd.err).slice(0, 220) : null
+          }).slice(0, 800));
+        }
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
@@ -1695,6 +1900,74 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
                 console.warn('[VideoPlayer] HLS manifest invalid, falling back to native:', data.details);
                 playNative(true);
                 return;
+              }
+              // v1.0.68 YouTube freeze-at-0:00: googlevideo master URLs are
+              // single-use, and rapid back-to-back connects in the same tick
+              // get refused (status 0) by YT's burst filter. A brand-new Hls
+              // instance on the SAME proxied master provably recovers (the
+              // diagnostic inject-and-attach flow succeeds every run) — so try
+              // fresh-instance retries first, then re-resolve for a cold master.
+              if (isYt && data.details === 'manifestLoadError') {
+                // v1.0.68 YT freeze: the harness diagnostic proved the SAME proxied master
+                // parses via hls.js the moment ≥~2.5s pass since the last failed
+                // manifest request (earlyCtrl controlHls at t=2.5s succeeds, and
+                // every app retry spaced 900ms failed — all inside YT's burst
+                // refusal window). Fix: space the fresh-instance retry to 3.5s,
+                // then cold re-resolve. No attempt inside the refusal window.
+                if (ytReloadRef.current < 3) {
+                  ytReloadRef.current += 1;
+                  const attemptN = ytReloadRef.current;
+                  console.warn('[VideoPlayer] YT manifest refused, fresh-instance retry ' + attemptN + '…');
+                  setTimeout(() => {
+                    // v1.0.68: a toastable parse may have succeeded between the
+                    // error and this timer — never destroy a working instance.
+                    if (ytParsedRef.current && (streamUrlRef.current || '') === streamUrl) return;
+                    if (hlsRef.current) { try { hlsRef.current.destroy(); } catch (_e) {} }
+                    hlsRef.current = null;
+                    setHlsRetryKey((k) => k + 1);
+                  }, attemptN === 1 ? 3500 : 5000);
+                  break;
+                }
+                if (ytReExtractRef.current < 3 && video.videoUrl && api?.extractStream) {
+                  ytReExtractRef.current += 1;
+                  const attemptN = ytReExtractRef.current;
+                  setTimeout(() => {
+                    console.warn('[VideoPlayer] YT manifest refused, re-resolving fresh (attempt ' + attemptN + ')…');
+                    (async () => {
+                      let reloaded = false;
+                      try {
+                        const re = await withTimeout(
+                          api.extractStream(String(video.videoUrl)),
+                          STEALTH_EXTRACTION_TIMEOUT_MS,
+                          new Error('YouTube re-extract timed out')
+                        );
+                        if (attemptN === 1) await new Promise((r) => setTimeout(r, 1500));
+                        const nu = re && re.success ? (re.data?.videoUrl || re.streamUrl) : null;
+                        if (nu && nu !== (streamUrlRef.current || streamUrl) && /googlevideo\.com|videoplayback/i.test(String(nu))) {
+                          streamUrlRef.current = String(nu);
+                          try { liveEl.pause(); } catch (_e) {}
+                          hls.stopLoad();
+                          hls.loadSource(getProxiedUrl(String(nu)));
+                          reloaded = true;
+                        }
+                      } catch (_e) {}
+                      if (!reloaded) {
+                        hls.destroy();
+                        setStreamError('YouTube stream could not recover — connection refused: ' + (data.details || ''));
+                        setHasError(true);
+                      }
+                    })();
+                  }, attemptN === 1 ? 2500 : 6000);
+                  break;
+                }
+                if (isZapping || video.sourceSite === 'IPTV' || video.type === 'Web TV') {
+                  handleIptvUnavailableRef.current(false);
+                  return;
+                }
+                hls.destroy();
+                setStreamError('YouTube stream could not recover — connection refused: ' + (data.details || ''));
+                setHasError(true);
+                break;
               }
               // Temporary network blip: recover via startLoad with backoff.
               if (!scheduleRetry(streamUrlRef.current || streamUrl, 'hls')) {
@@ -1758,6 +2031,18 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
     return () => {
       clearIptvWatchRef.current();
+      clearTimeout(hlsKickTimer);
+      if (ytPlayKickTimer) { clearInterval(ytPlayKickTimer); ytPlayKickTimer = null; }
+      // v1.0.68: an enrichment/level-menu re-run with the SAME streamUrl must
+      // NOT destroy the in-flight instance (that is the freeze mechanism).
+      if (isYtEarly && (streamUrlRef.current || '') === streamUrl) {
+        return;
+      }
+      if (ytLiveElRef.current) {
+        try { ytLiveElRef.current.remove(); } catch (_e) {}
+        ytLiveElRef.current = null;
+      }
+      try { if (videoEl && videoEl.style) videoEl.style.display = ''; } catch (_e) {}
       videoEl.removeEventListener('stalled', handleStalled);
       videoEl.removeEventListener('playing', handlePlaying);
       if (hlsRef.current) {

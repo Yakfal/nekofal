@@ -1885,6 +1885,7 @@ async function startVideoServer() {
     res.setHeader('Cache-Control', 'public, max-age=604800', true);
 
     const videoUrl = req.query.src || req.headers['x-video-url'];
+    try { console.log('[proxylog]', req.method, String(videoUrl || '').slice(0, 170)); } catch (_e) {}
     
     // Parse custom headers from query (JSON-encoded from yt-dlp metadata / m3u8)
     let customHeaders = {};
