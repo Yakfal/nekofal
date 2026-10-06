@@ -2338,7 +2338,7 @@ if (pendingSeekRef.current) {
             playsInline
             crossOrigin="anonymous"
             referrerPolicy="no-referrer"
-            onClick={togglePlayPause}
+            onClick={togglePlay}
             onLoadedMetadata={(e) => {
               setDuration(e.target.duration);
               try { syncPlayerWithAppState(); } catch (_e) {}
@@ -2486,7 +2486,7 @@ if (pendingSeekRef.current) {
                 {/* Play/Pause */}
                 <button 
                   className="control-btn" 
-                  onClick={togglePlayPause}
+                  onClick={togglePlay}
                   aria-label={!isPlaying ? 'Play' : 'Pause'}
                 >
                   {!isPlaying ? '▶' : '⏸'}
