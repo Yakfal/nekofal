@@ -706,7 +706,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     } catch (_e) {}
   }, [isMuted, volume, playbackRate, mirrorYt]);
 
-  const togglePlayPause = useCallback(() => {
+  const togglePlay = useCallback(() => {
     const videoEl = videoRef.current;
     if (!videoEl) return;
     if (videoEl.paused) {
