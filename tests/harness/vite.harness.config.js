@@ -20,6 +20,16 @@ export default defineConfig({
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
   },
+resolve: {
+    alias: {
+      // The real dbAdapter drives the Electron DB/cloud bridge, which does not
+      // exist in a plain Chromium harness page. An ES-module namespace object is
+      // frozen, so it cannot be monkey-patched at runtime — alias it at build
+      // time instead. This applies to the harness only.
+      [path.resolve(__dirname, '..', '..', 'src', 'services', 'dbAdapter.js')]:
+        path.resolve(__dirname, 'db-adapter-stub.js'),
+    },
+  },
   build: {
     target: 'chrome120',
     outDir: path.resolve(__dirname, '..', '.harness-dist'),
@@ -27,7 +37,12 @@ export default defineConfig({
     minify: false,
     sourcemap: true,
     rollupOptions: {
-      input: path.join(root, 'index.html'),
+      input: {
+        // Two harness pages: the VideoPlayer playback surface and the
+        // Family-Mode (adult passcode) gate.
+        main: path.join(root, 'index.html'),
+        adult: path.join(root, 'adult.html'),
+      },
       output: {
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',

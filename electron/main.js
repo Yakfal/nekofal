@@ -2370,7 +2370,7 @@ ipcMain.handle('scrapers:extractStream', async (event, { url, formatId, height }
           success: true,
           streamUrl: info.m3u8,
           isHls: typeof info.isHls === 'boolean' ? info.isHls : /(\.m3u8|hanime\.tv\/hls\/)/i.test(info.m3u8),
-          extractor: info.viaWin ? 'hanime-v8-window' : (info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8'),
+          extractor: info.viaV11 ? 'hanime-v11-handshake' : (info.viaWin ? 'hanime-v8-window' : (info.viaSniff ? 'hanime-stealth-sniff' : 'hanime-v8')),
           title: info.title,
           duration: info.duration,
           // v1.0.66: clean, distinct quality objects for BOTH envelope fields —
@@ -5668,6 +5668,163 @@ async function ensureOnOrigin(win, origin) {
   return win;
 }
 
+// ============================================================================
+// v1.0.88 — HAnime: the real, current resolution path.
+//
+// The legacy `/api/v8/video` endpoint the old resolver used has been DELETED by
+// hanime.tv: it now answers HTTP 404 for every slug, which is why HAnime failed
+// the live-source gate while everything else passed.
+//
+// The current protocol (reverse-engineered from the site's own Astro bundles,
+// verified against live traffic) is:
+//
+//   1. The page is injected with `window.ssignature`, `window.stime` and
+//      `window.S` by a WASM module whose key is server-held. The handshake
+//      signature is `x-signature: window.ssignature` with
+//      `x-signature-version: web2` — it CANNOT be recomputed outside the
+//      browser, and guessing it is what produced the HTTP 401 in earlier
+//      attempts. So the handshake must be issued FROM INSIDE the page.
+//   2. POST https://auth.hanime.tv/api/v11/handshake with body
+//      `{"token":"<envelope>"}`, where the envelope is
+//        { v:1, alg:"AES-256-GCM", iv, tag, data }   (base64url)
+//      and `data` is AES-256-GCM( JSON ) under
+//        key  = SHA-256("htv-insecure-handshake-v1")
+//        aad  = "htv-insecure-v1"
+//      of the payload
+//        { timestamp_unix, directive:"htv_player_handshake", slug }
+//   3. The reply's `x-token` RESPONSE HEADER is the same envelope shape,
+//      encrypting `{ is_preroll_enabled, preroll_url(s), ad_variant, sources }`.
+//   4. `sources` lists one entry per quality tier with a ROOT-RELATIVE url
+//      (`/hls/<video_id>/<token>`, no .m3u8 extension) that must be resolved
+//      against https://hanime.tv. It ALSO contains a `kind:"promotion"` entry
+//      with an EMPTY `src` — picking that (it is the highest "height") yields a
+//      blank player, so it must be filtered out explicitly.
+//
+// AES-256-GCM note: WebCrypto's `decrypt()` takes ciphertext||tag CONCATENATED,
+// unlike Node's createDecipheriv+setAuthTag. That mismatch is handled below.
+async function hanimeV11InWindow(slug, win) {
+  const targetPlain = 'https://hanime.tv';
+  win = await ensureOnOrigin(win, targetPlain);
+
+  const js = `(async function(){
+    try {
+      // --- base64url <-> bytes (mirrors the site's own helpers) ----------
+      function b2b(s){
+        var t = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+        var raw = window.atob(t.padEnd(Math.ceil(t.length / 4) * 4, '='));
+        var a = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i += 1) a[i] = raw.charCodeAt(i);
+        return a;
+      }
+      function u2b(b){
+        var s = '';
+        for (var i = 0; i < b.length; i += 1) s += String.fromCharCode(b[i]);
+        return window.btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      }
+      async function aesKey(usages){
+        var d = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('htv-insecure-handshake-v1'));
+        return window.crypto.subtle.importKey('raw', d, { name: 'AES-GCM' }, false, usages);
+      }
+      async function encrypt(obj){
+        var enc = new TextEncoder();
+        var iv = window.crypto.getRandomValues(new Uint8Array(12));
+        var k = await aesKey(['encrypt']);
+        var buf = await window.crypto.subtle.encrypt(
+          { name: 'AES-GCM', iv: iv, additionalData: enc.encode('htv-insecure-v1'), tagLength: 128 },
+          k, enc.encode(JSON.stringify(obj)));
+        var all = new Uint8Array(buf);
+        var env = { v: 1, alg: 'AES-256-GCM', iv: u2b(iv), tag: u2b(all.slice(-16)), data: u2b(all.slice(0, -16)) };
+        return u2b(enc.encode(JSON.stringify(env)));
+      }
+      async function decrypt(str){
+        var enc = new TextEncoder();
+        var env = JSON.parse(new TextDecoder().decode(b2b(str)));
+        var k = await aesKey(['decrypt']);
+        var ct = b2b(env.data), tag = b2b(env.tag);
+        var joined = new Uint8Array(ct.length + tag.length);
+        joined.set(ct, 0); joined.set(tag, ct.length);   // WebCrypto wants ct||tag
+        var pt = await window.crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: b2b(env.iv), additionalData: enc.encode('htv-insecure-v1'), tagLength: 128 },
+          k, joined);
+        return new TextDecoder().decode(pt);
+      }
+
+      // --- the signature is WASM/server-issued; we can only reuse it -------
+      if (typeof window.ssignature !== 'string' || !window.ssignature) {
+        return { __err: 'no window.ssignature (page script did not boot)' };
+      }
+      var payload = {
+        timestamp_unix: parseInt(Date.now() / 1000, 10),
+        directive: 'htv_player_handshake',
+        slug: ${JSON.stringify(slug)}
+      };
+      var token = await encrypt(payload);
+
+      var res = await fetch('https://auth.hanime.tv/api/v11/handshake', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'content-type': 'application/json',
+          'accept': 'application/json',
+          'x-signature-version': 'web2',
+          'x-signature': window.ssignature,
+          'x-time': window.stime,
+          'x-csrf-token': (window.S && window.S.csrf_token) ? window.S.csrf_token : 'null'
+        },
+        body: JSON.stringify({ token: token })
+      });
+
+      var xToken = res.headers.get('x-token');
+      if (!xToken) return { __err: 'no x-token response header (HTTP ' + res.status + ')' };
+      var json;
+      try { json = JSON.parse(await decrypt(xToken)); }
+      catch (e) { return { __err: 'x-token decrypt failed: ' + String((e && e.message) || e) }; }
+
+      var sources = Array.isArray(json.sources) ? json.sources : [];
+      var playable = sources.filter(function (s) {
+        // Drop the ad/promotion entry: kind !== 'normal' AND src === ''.
+        return s && typeof s.src === 'string' && s.src && s.kind !== 'promotion';
+      });
+      if (!playable.length) return { __err: 'handshake returned no playable sources (' + sources.length + ' entries)' };
+
+      return {
+        status: res.status,
+        preroll: !!json.is_preroll_enabled,
+        sources: playable.map(function (s) {
+          return {
+            src: s.src,
+            height: Number(s.height) || 0,
+            width: Number(s.width) || 0,
+            label: String(s.label || '')
+          };
+        })
+      };
+    } catch (e) { return { __err: String((e && e.message) || e) }; }
+  })()`;
+
+  const res = await evalInStealth(js, 20000, win);
+  if (!res || res.__err) throw new Error(`in-window v11 handshake: ${(res && res.__err) || 'no result'}`);
+  if (!Array.isArray(res.sources) || !res.sources.length) throw new Error('in-window v11 handshake: no sources');
+
+  // Highest tier first. Each src is root-relative -> make it absolute.
+  const ranked = res.sources
+    .slice()
+    .sort((a, b) => (b.height || 0) - (a.height || 0));
+  const m3u8 = ranked[0].src.startsWith('http')
+    ? ranked[0].src
+    : 'https://hanime.tv' + (ranked[0].src.startsWith('/') ? '' : '/') + ranked[0].src;
+
+  const qualityLevels = ranked.map((s) => ({
+    label: s.label || `${s.height}p`,
+    height: s.height || 0,
+    width: s.width || 0,
+    url: s.src.startsWith('http') ? s.src : 'https://hanime.tv' + (s.src.startsWith('/') ? '' : '/') + s.src,
+  }));
+
+  console.info(`[hanime] v11 handshake OK — ${ranked.length} tier(s) (${qualityLevels.map((q) => q.height).join('/')}), preroll=${!!res.preroll}`);
+  return { m3u8, qualityLevels };
+}
+
 async function hanimeV8InWindow(slug, win) {
   const targetPlain = 'https://hanime.tv';
   win = await ensureOnOrigin(win, targetPlain);
@@ -5767,6 +5924,25 @@ async function __nudge(){
 return __nudge();
 })()`;
 
+  // v1.0.88 — the v11 handshake is the ONLY live engine. The legacy v8 ladder
+  // is retained only as a last-ditch fallback: it answers 404 for every slug
+  // today, but if hanime.tv ever re-enables it the old path still works.
+  const tryV11Win = async () => {
+    const info = await hanimeV11InWindow(slug);
+    return {
+      ...info,
+      slug,
+      id: `hanime-${slug}`,
+      canPlay: true,
+      isHls: true,
+      duration: 0,
+      title: '',
+      thumbnailUrl: '',
+      viaWin: true,
+      viaV11: true,
+    };
+  };
+
   // v1.0.64: the fastest + most CF-resistant engine is the in-window v8 fetch
   // (persistent singleton window, live cookies). Each round tries it FIRST.
   const tryV8Win = async () => {
@@ -5840,6 +6016,14 @@ return __nudge();
       await solveCloudflareChallenge(pageUrl, { timeoutMs: 18000 });
       if (!withinBudget(5000)) break;
     }
+    try {
+      const v11 = await tryV11Win();
+      if (v11) return v11;
+    } catch (v11Err) {
+      failures.push(`v11: ${v11Err.message}`);
+      console.warn(`[resolveHanimeStream] v11 in-window handshake failed (round ${round}): ${v11Err.message}`);
+    }
+    if (!withinBudget(5000)) break;
     try {
       const v8Win = await tryV8Win();
       if (v8Win) return v8Win;

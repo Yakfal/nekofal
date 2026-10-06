@@ -10,6 +10,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -100,8 +102,53 @@ async function serveFile(req, res, filePath) {
   fs.createReadStream(filePath).pipe(res);
 }
 
+// Route that relays to an absolute upstream URL. Used by the YouTube visual
+// test: the real googlevideo stream has no CORS headers, and <video> is created
+// with crossOrigin="anonymous", so it must be served same-origin. The target is
+// passed via the YT_PROXY_TARGET env var (set by the test right before boot),
+// never from the query string, so the server cannot be turned into an open
+// relay. Range is forwarded so seeking behaves like production.
+const YT_PROXY_PREFIX = '/ytproxy/';
+
+async function proxyUpstream(req, res, upstream) {
+  const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36' };
+  if (req.headers.range) headers.Range = req.headers.range;
+  if (req.headers.referer) headers.Referer = req.headers.referer;
+
+  const upstreamRes = await fetch(upstream, { headers, redirect: 'follow' });
+  const outHeaders = {
+    'Content-Type': upstreamRes.headers.get('content-type') || 'video/mp4',
+    'Accept-Ranges': upstreamRes.headers.get('accept-ranges') || 'bytes',
+    'Cache-Control': 'no-store',
+  };
+  for (const h of ['content-length', 'content-range']) {
+    const v = upstreamRes.headers.get(h);
+    if (v) outHeaders[h === 'content-length' ? 'Content-Length' : 'Content-Range'] = v;
+  }
+  res.writeHead(upstreamRes.status, outHeaders);
+  if (!upstreamRes.body) { res.end(); return; }
+  // MUST stream, not buffer: Chromium opens the media element with an open-ended
+  // Range and needs the first bytes promptly to fire loadedmetadata. Buffering
+  // an 11 MB body first left the element at readyState 0 until it timed out.
+  await pipeline(Readable.fromWeb(upstreamRes.body), res);
+}
+
 export function startStaticServer(port = 0) {
   const server = http.createServer((req, res) => {
+    const urlPath = decodeURIComponent((req.url || '').split('?')[0]);
+    if (urlPath.startsWith(YT_PROXY_PREFIX)) {
+      const upstream = process.env.YT_PROXY_TARGET;
+      if (!upstream || !/^https:\/\//i.test(upstream)) {
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end('ytproxy upstream not configured');
+        return;
+      }
+      proxyUpstream(req, res, upstream).catch((err) => {
+        if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end(String(err && err.message ? err.message : err));
+      });
+      return;
+    }
     const target = resolveRequestPath(req.url || '/');
     if (!target) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });

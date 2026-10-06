@@ -33,4 +33,6 @@ desktop.ini
 
 # Test harness / vitest generated output (rebuilt by `npm run test:e2e` / `npm test`)
 tests/.harness-dist/
+# E2E screenshots written by the visual suites (regenerated on every run)
+tests/.artifacts/
 node_modules/.vite/

@@ -1,6 +1,6 @@
 {
   "name": "nekofal",
-  "version": "1.0.87",
+  "version": "1.0.88",
   "description": "Nekofal - Desktop media streaming hub",
   "main": "electron/main.js",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "npm run build:harness && node tests/e2e/playback.e2e.mjs",
-    "verify": "npm run lint && npm run build && npm run test && npm run test:e2e",
+    "verify": "npm run lint && npm run build && npm run test && npm run test:e2e:all && npm run test:sources",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "electron .",
@@ -20,7 +20,12 @@
     "dist:local": "npm run build && electron-builder --win",
     "cap:sync": "npm run build && npx cap sync android",
     "cap:open": "npx cap open android",
-    "cap:build": "npm run cap:sync && cd android && gradlew assembleDebug"
+    "cap:build": "npm run cap:sync && cd android && gradlew assembleDebug",
+    "test:e2e:player": "npm run build:harness && node tests/e2e/player-v1088.e2e.mjs",
+    "test:e2e:adult": "npm run build:harness && node tests/e2e/adult-gate.e2e.mjs",
+    "test:e2e:youtube": "npm run build:harness && node tests/e2e/youtube-timer.e2e.mjs",
+    "test:e2e:all": "npm run build:harness && node tests/e2e/playback.e2e.mjs && node tests/e2e/player-v1088.e2e.mjs && node tests/e2e/adult-gate.e2e.mjs && node tests/e2e/youtube-timer.e2e.mjs",
+    "test:sources": "electron scripts/test-all-sources.mjs"
   },
   "keywords": [
     "media",

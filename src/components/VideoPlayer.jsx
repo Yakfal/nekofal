@@ -25,6 +25,39 @@ var EXTRACTION_TIMEOUT_MS = 30000;
 // window lives ~20s and can run longer-than-average on slow loads).
 var STEALTH_EXTRACTION_TIMEOUT_MS = 65000;
 var PREF_KEY = 'pmh-preferences';
+
+// v1.0.88 — GLOBAL persistent volume memory.
+// The volume the user picked lives in ONE localStorage key and is re-applied to
+// every <video> element on every source (YouTube/HLS, IPTV, adult scrapers,
+// local files). Previously the choice was only kept in the `pmh-preferences`
+// blob and applied opportunistically, so a fresh element booted at its default
+// of 1.0 and a 10% setting snapped back to 100% on the next video.
+var VOLUME_STORAGE_KEY = 'nekofal_user_volume';
+var CLICK_DEBOUNCE_MS = 250;
+var TIME_POLL_MS = 250;
+
+function clampVolume(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  return Math.max(0, Math.min(1, n));
+}
+
+// Returns the remembered volume, or null when nothing valid is stored.
+function readStoredVolume() {
+  try {
+    const raw = localStorage.getItem(VOLUME_STORAGE_KEY);
+    if (raw === null || raw === undefined || raw === '') return null;
+    return clampVolume(raw);
+  } catch (_e) {
+    return null;
+  }
+}
+
+function writeStoredVolume(v) {
+  const n = clampVolume(v);
+  if (n === null) return;
+  try { localStorage.setItem(VOLUME_STORAGE_KEY, String(n)); } catch (_e) {}
+}
 var SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
 // Standard resolution tiers shown in the quality menu for YouTube/direct
@@ -170,9 +203,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const [isDRM, setIsDRM] = useState(false);
   const [drmWebUrl, setDrmWebUrl] = useState(null);
   const [volume, setVolume] = useState(() => {
-    if (typeof video?.startVolume === 'number') return video.startVolume;
+    // Order matters: the globally remembered volume wins so that loading a
+    // DIFFERENT video does not reset the user's choice. An explicit
+    // `startVolume` (mini-player restore) is still honoured when present,
+    // because that path is deliberately carrying over one specific session's
+    // audio level.
+    if (typeof video?.startVolume === 'number') return clampVolume(video.startVolume);
+    const stored = readStoredVolume();
+    if (stored !== null) return stored;
     const p = readPrefs();
-    return typeof p.defaultVolume === 'number' ? p.defaultVolume : 1;
+    return typeof p.defaultVolume === 'number' ? clampVolume(p.defaultVolume) : 1;
   });
   const [isMuted, setIsMuted] = useState(() => {
     if (typeof video?.startMuted === 'boolean') return video.startMuted;
@@ -670,41 +710,97 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
   }, [resetControlsTimeout]);
 
+// v1.0.88 — the single place a volume change is committed.
+  // Writes BOTH the new global key and the legacy prefs blob, mirrors onto any
+  // YouTube bridge element, and updates React state in one shot so the slider,
+  // the OSD and the media element can never disagree.
+  const commitVolume = useCallback((nextVol, opts) => {
+    const options = opts || {};
+    const v = clampVolume(nextVol);
+    if (v === null) return;
+    const shouldMute = options.muteWhenZero !== undefined
+      ? !!options.muteWhenZero && v === 0
+      : v === 0;
+    const videoEl = videoRef.current;
+    if (videoEl) {
+      try {
+        videoEl.volume = v;
+        videoEl.muted = shouldMute;
+      } catch (_e) {}
+    }
+    mirrorYt((mv) => {
+      try { mv.volume = v; mv.muted = shouldMute; } catch (_e) {}
+    });
+    setVolume(v);
+    setIsMuted(shouldMute);
+    writeStoredVolume(v);
+    writePref('defaultVolume', v);
+  }, [mirrorYt]);
+
+  // v1.0.88 — force the remembered volume onto a freshly attached <video>.
+  // Called on metadata/canplay so a stream that boots at volume 1.0 (or that
+  // Chromium restores from its own per-element cache) is corrected
+  // immediately, for EVERY source type.
+  const forceApplyStoredVolume = useCallback((el) => {
+    const videoEl = el || videoRef.current;
+    if (!videoEl) return;
+    const stored = readStoredVolume();
+    // An explicit per-session level (mini-player restore) outranks the global
+    // preference, but it still has to reach the element.
+    const target = (typeof video?.startVolume === 'number')
+      ? clampVolume(video.startVolume)
+      : (stored !== null ? stored : clampVolume(volume));
+    if (target === null) return;
+    try {
+      videoEl.volume = target;
+      videoEl.muted = target === 0;
+    } catch (_e) {}
+    mirrorYt((mv) => {
+      try { mv.volume = target; mv.muted = target === 0; } catch (_e) {}
+    });
+    setVolume(target);
+    setIsMuted(target === 0);
+  }, [mirrorYt, volume, video]);
+
   // Adjust volume
   const adjustVolume = useCallback((delta) => {
     const videoEl = videoRef.current;
-    if (videoEl) {
-      const newVol = Math.max(0, Math.min(1, videoEl.volume + delta));
-      videoEl.volume = newVol;
-      videoEl.muted = newVol === 0;
-      setVolume(newVol);
-      setIsMuted(newVol === 0);
-      writePref('defaultVolume', newVol);
-    }
-  }, []);
+    if (!videoEl) return;
+    commitVolume((typeof videoEl.volume === 'number' ? videoEl.volume : volume) + delta);
+  }, [commitVolume, volume]);
 
   // Toggle play/pause
   // v1.0.71: ensure UI <-> media are in sync at attach time
   const syncPlayerWithAppState = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
     try {
       const activeSpeed = typeof playbackRate === 'number' && !isNaN(playbackRate) ? playbackRate : 1;
-      video.volume = isMuted ? 0 : (typeof volume === 'number' && !isNaN(volume) ? volume : 1);
-      video.muted = !!isMuted;
-      video.playbackRate = activeSpeed;
-      setDuration(video.duration || 0);
-      setCurrentTime(video.currentTime || 0);
-      setIsPlaying(!video.paused);
-      setVolume(video.muted ? 0 : video.volume);
+      // v1.0.88: prefer the remembered volume over a not-yet-applied element
+      // default. Reading `videoEl.volume` here (as before) latched 1.0 on a fresh
+      // element and then persisted it, permanently destroying the user's
+      // choice. NOTE the local was renamed to `videoEl` because the old name
+      // shadowed the `video` prop, so `video.startVolume` silently resolved to
+      // undefined on the media element.
+      const remembered = (typeof video?.startVolume === 'number')
+        ? clampVolume(video.startVolume)
+        : (readStoredVolume() !== null ? readStoredVolume() : clampVolume(volume));
+      const appliedVol = remembered !== null ? remembered : (videoEl.volume || 0);
+      videoEl.volume = isMuted ? 0 : appliedVol;
+      videoEl.muted = !!isMuted;
+      videoEl.playbackRate = activeSpeed;
+      setDuration(videoEl.duration || 0);
+      setCurrentTime(videoEl.currentTime || 0);
+      setIsPlaying(!videoEl.paused);
+      setVolume(videoEl.muted ? 0 : videoEl.volume);
       setPlaybackRate(activeSpeed);
       mirrorYt((mv) => {
         try {
-          mv.volume = video.volume; mv.muted = video.muted; mv.playbackRate = video.playbackRate;
+          mv.volume = videoEl.volume; mv.muted = videoEl.muted; mv.playbackRate = videoEl.playbackRate;
         } catch (_e) {}
       });
     } catch (_e) {}
-  }, [isMuted, volume, playbackRate, mirrorYt]);
+  }, [isMuted, volume, playbackRate, mirrorYt, video]);
 
   // Single source of truth for play/pause.
   // `paused` is sampled ONCE, before the action is taken. The previous version
@@ -727,25 +823,47 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
   }, [mirrorYt]);
 
-  // Alias for the keyboard / media-key / background-click call sites. This was
-  // referenced but never declared, so those handlers threw a ReferenceError at
-  // runtime (the bundler cannot catch an undefined global at build time).
+  // v1.0.88 — POLLING FALLBACK for the timer / progress bar / duration.
+  // `timeupdate` is unreliable for the streams that actually ship:
+  //   * Chromium coalesces it to ~4 Hz and SKIPS frames entirely while the
+  //     compositor is busy, so an HLS/YouTube segment fetch can starve it.
+  //   * hls.js attaches/detaches media listeners across quality switches, so
+  //     events raised during a swap are lost.
+  //   * A backgrounded/occluded window throttles it further.
+  // The symptom was a video visibly playing while the UI stayed at "0:00 / 0:00"
+  // with a 0% progress bar. Polling the element directly while playing is the
+  // authority; the events are just an optimisation.
+  useEffect(() => {
+    if (!isPlaying) return undefined;
+    const id = setInterval(() => {
+      const el = videoRef.current;
+      if (!el) return;
+      const t = el.currentTime;
+      if (typeof t === 'number' && isFinite(t) && t >= 0) {
+        setCurrentTime((prev) => (Math.abs(prev - t) > 0.04 ? t : prev));
+      }
+      const d = el.duration;
+      if (typeof d === 'number' && isFinite(d) && d > 0) {
+        setDuration((prev) => (prev === d ? prev : d));
+      }
+    }, TIME_POLL_MS);
+    return () => clearInterval(id);
+  }, [isPlaying]);
+
+  // v1.0.88 — ONE debounced click handler for the whole player surface.
+  // (Defined further down, right after `toggleFullscreen`, because it depends
+  // on it and a dep array would otherwise read it inside its temporal dead
+  // zone during the first render.)
+
+  // Alias for the keyboard / media-key call sites.
   const togglePlayPause = togglePlay;
 
   // Container-level click: clicking the video or its letterbox toggles playback.
   // A click that ORIGINATED inside the custom control bar must be ignored here,
   // otherwise it also bubbles through this container and cancels out the
   // control's own onClick — a double toggle that made the play button a no-op.
-  const handleVideoClick = useCallback((e) => {
-    if (e && e.stopPropagation) e.stopPropagation();
-    const target = e && e.target;
-    if (target && typeof target.closest === 'function') {
-      if (target.closest('.player-controls-overlay')) return;
-      if (target.closest('button')) return;
-      if (target.closest('webview')) return;
-    }
-    togglePlay();
-  }, [togglePlay]);
+  // v1.0.88: this is now folded into `handleSurfaceClick`, which debounces and
+  // filters control-area clicks itself.
 
 
   // Pause guard: while paused, controls must stay visible regardless of mouse
@@ -875,6 +993,66 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
   }, []);
 
+// v1.0.88 — ONE debounced click handler for the whole player surface.
+  // Previously the <video>, the container and the backdrop each owned their own
+  // toggle handler, so one physical click could be counted two or three times
+  // and cancel itself out. That is the reported "sometimes pauses, sometimes
+  // needs several clicks, sometimes misses completely" flakiness.
+  //
+  // Single vs double is decided with the browser's NATIVE `dblclick` event, not
+  // by counting clicks in a window. Counting clicks is fragile in exactly the
+  // situation users hit: the first click reveals the control bar, so the second
+  // click of the same gesture lands on the control overlay, is filtered as
+  // "interactive", and leaves the pending single-click toggle armed — the video
+  // then toggles AND never goes fullscreen. `dblclick` is dispatched on the
+  // deepest common ancestor of the two clicks, so it still fires on the
+  // container when the two clicks straddle the video and the control bar.
+  const clickTimerRef = useRef(null);
+
+  const isInteractiveTarget = (target) => {
+    if (!target || typeof target.closest !== 'function') return false;
+    return !!target.closest('.player-controls-overlay, .control-bar, .controls-row-inner, .progress-track, .volume-slider, .volume-overlay, .popup-menu, .osd-banner, .vp-toast, button, webview');
+  };
+
+  const clearPendingClick = () => {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+  };
+
+  const handleSurfaceClick = useCallback((e) => {
+    // Halt propagation so an ancestor handler can never observe the same
+    // physical click (that double-count was the original defect).
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+
+    // ANY new click cancels a pending single-click toggle first. Without this,
+    // a click that lands on a control right after a video click would leave the
+    // old toggle armed and firing 250ms later.
+    clearPendingClick();
+
+    // Controls, menus, sliders, buttons and <webview> own their own clicks.
+    if (isInteractiveTarget(e && e.target)) return;
+
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = null;
+      togglePlay();
+    }, CLICK_DEBOUNCE_MS);
+  }, [togglePlay]);
+
+  const handleSurfaceDoubleClick = useCallback((e) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    clearPendingClick();
+    // Double-clicking a control (e.g. a button) must not fullscreen.
+    if (isInteractiveTarget(e && e.target)) return;
+    toggleFullscreen();
+  }, [toggleFullscreen]);
+
+  // Drop a pending single-click toggle on unmount so play/pause can never fire
+  // against an element that is being torn down.
+  useEffect(() => clearPendingClick, []);
+
+
   // Sync fullscreen state from the browser
   useEffect(() => {
     const sync = () => {
@@ -893,31 +1071,27 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // Toggle mute
   const toggleMute = useCallback(() => {
     const videoEl = videoRef.current;
-    if (videoEl) {
-      videoEl.muted = !videoEl.muted;
-      setIsMuted(videoEl.muted);
-      if (!videoEl.muted && videoEl.volume === 0) {
-        videoEl.volume = 1;
-        setVolume(1);
-        writePref('defaultVolume', 1);
-      }
-      mirrorYt((v) => { v.muted = videoEl.muted; v.volume = videoEl.volume; });
+    if (!videoEl) return;
+    const nextMuted = !videoEl.muted;
+    videoEl.muted = nextMuted;
+    setIsMuted(nextMuted);
+    // Un-muting from a 0 level used to hard-reset to 1.0 and persist that,
+    // silently discarding the user's remembered level.
+    if (!nextMuted && videoEl.volume === 0) commitVolume(1);
+    else if (nextMuted) {
+      // Keep the level, remember that we are muted.
+      writeStoredVolume(videoEl.volume);
+      writePref('defaultVolume', videoEl.volume);
     }
-  }, [mirrorYt]);
+    mirrorYt((v) => { try { v.muted = videoEl.muted; v.volume = videoEl.volume; } catch (_e) {} });
+  }, [mirrorYt, commitVolume]);
 
   // Volume change from slider
   const handleVolumeChange = useCallback((e) => {
-    const videoEl = videoRef.current;
-    const newVol = parseFloat(e.target.value);
-    if (videoEl) {
-      videoEl.volume = newVol;
-      videoEl.muted = newVol === 0;
-      mirrorYt((v) => { try { v.volume = newVol; v.muted = (newVol === 0); } catch (_e) {} });
-    }
-    setVolume(newVol);
-    setIsMuted(newVol === 0);
-    if (!isNaN(newVol)) writePref('defaultVolume', newVol);
-  }, [mirrorYt]);
+    const newVol = parseFloat(e && e.target ? e.target.value : NaN);
+    if (isNaN(newVol)) return;
+    commitVolume(newVol);
+  }, [commitVolume]);
 
   // Volume overlay: keep open while moving into the slider, then close 300ms
   // after the cursor leaves both the button and the slider.
@@ -2120,21 +2294,12 @@ if (pendingSeekRef.current) {
     };
   }, []);
 
-  // Background-level click (the letterbox area around the player). Clicks that
-  // started inside the video, the custom controls, a button or a menu are
-  // handled by their own handlers and must not toggle here as well.
-  const handleOverlayClick = useCallback((e) => {
-    const target = e && e.target;
-    if (!target || typeof target.closest !== 'function') return;
-    if (target.closest('video')) return;
-    if (target.closest('button')) return;
-    if (target.closest('webview')) return;
-    if (target.closest('.player-controls-overlay')) return;
-    if (target.closest('.progress-track')) return;
-    if (target.closest('.volume-slider')) return;
-    if (target.closest('.popup-menu')) return;
-    togglePlayPause();
-  }, [togglePlayPause]);
+  // v1.0.88: the letterbox backdrop, the player container and the <video>
+  // element all share ONE debounced handler (`handleSurfaceClick`, defined
+  // above). Each of these three used to have its own independent play/pause
+  // toggle, so a single physical click could be counted two or three times and
+  // cancel itself out. `handleSurfaceClick` calls stopPropagation(), so exactly
+  // one handler ever sees a given click.
 
   // Video event handlers — bound to the media element so React state tracks the
   // element's real state (previously only onPlay/onPause were wired, which is
@@ -2200,7 +2365,11 @@ if (pendingSeekRef.current) {
     if (!videoEl) return;
     const d = videoEl.duration;
     if (typeof d === 'number' && isFinite(d) && d > 0) setDuration(d);
-  }, []);
+    // v1.0.88: hls.js re-attaches the media element on quality/segment swaps,
+    // which resets per-element state including volume. Re-assert on every
+    // canplay so the remembered level survives mid-playback stream swaps.
+    forceApplyStoredVolume(videoEl);
+  }, [forceApplyStoredVolume]);
 
   // Live/IPTV watchdog disarm: reaching 'canplay' proves the stream is alive,
   // so the dead-channel timer must be cancelled here.
@@ -2342,7 +2511,7 @@ if (pendingSeekRef.current) {
   return (
     <div
       className={`video-player-background ${!isControlsVisible && isFullscreen ? 'cursor-none' : ''}`}
-      onClick={handleOverlayClick}
+      onClick={handleSurfaceClick}
       onMouseLeave={() => {
         if (!isPaused) {
           clearControlsTimer();
@@ -2350,7 +2519,11 @@ if (pendingSeekRef.current) {
         }
       }}
     >
-      <div className="video-player-container" onClick={handleVideoClick}>
+      <div
+        className="video-player-container"
+        onClick={handleSurfaceClick}
+        onDoubleClick={handleSurfaceDoubleClick}
+      >
         {/* Stream-unavailable toast (IPTV dead channel feedback) */}
         {streamUnavailable && <div className="vp-toast">Stream unavailable</div>}
 
@@ -2386,12 +2559,19 @@ if (pendingSeekRef.current) {
             playsInline
             crossOrigin="anonymous"
             referrerPolicy="no-referrer"
-            onClick={handleVideoClick}
+            onClick={handleSurfaceClick}
             onLoadedMetadata={(e) => {
-              const d = e && e.target ? e.target.duration : NaN;
+              const el = e && e.target;
+              const d = el ? el.duration : NaN;
               // Live/unknown-duration streams report Infinity or NaN; guard so
               // the progress bar and the "0:00 / 0:00" label stay sane.
               setDuration(typeof d === 'number' && isFinite(d) && d > 0 ? d : 0);
+              // v1.0.88: re-assert the remembered volume the moment a new
+              // stream reports metadata, before the user can see or hear the
+              // element's default. Without this, a volume set to 10% was
+              // audible-correct on the current video but snapped to 100% on the
+              // next one.
+              forceApplyStoredVolume(el);
               try { syncPlayerWithAppState(); } catch (_e) {}
             }}
             onLoadedData={handleCanPlay}
