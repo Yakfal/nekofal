@@ -10,7 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "npm run build:harness && node tests/e2e/playback.e2e.mjs",
-    "verify": "npm run lint && npm run build && npm run test && npm run test:e2e:all && npm run test:sources",
+    "verify": "npm run lint && npm run build && npm run test && npm run test:e2e:all && npm run test:youtube:controls && npm run test:sources",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "electron .",
@@ -25,7 +25,8 @@
     "test:e2e:adult": "npm run build:harness && node tests/e2e/adult-gate.e2e.mjs",
     "test:e2e:youtube": "npm run build:harness && node tests/e2e/youtube-timer.e2e.mjs",
     "test:e2e:all": "npm run build:harness && node tests/e2e/playback.e2e.mjs && node tests/e2e/player-v1088.e2e.mjs && node tests/e2e/adult-gate.e2e.mjs && node tests/e2e/youtube-timer.e2e.mjs",
-    "test:sources": "electron scripts/test-all-sources.mjs"
+    "test:sources": "electron scripts/test-all-sources.mjs",
+    "test:youtube:controls": "electron scripts/test-youtube-controls.mjs"
   },
   "keywords": [
     "media",
