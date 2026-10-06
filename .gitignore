@@ -30,3 +30,7 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Test harness / vitest generated output (rebuilt by `npm run test:e2e` / `npm test`)
+tests/.harness-dist/
+node_modules/.vite/

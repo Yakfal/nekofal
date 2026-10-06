@@ -332,7 +332,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
           }
           return url;
         }
-        const isLocalFile = url.startsWith('file://') || /^[a-zA-Z]:[\\\/]/.test(url);
+        const isLocalFile = url.startsWith('file://') || /^[a-zA-Z]:[\\/]/.test(url);
         if (isLocalFile) {
           return `http://localhost:${videoProxyPort}/video/proxy/stream?t=${videoProxyToken}&src=${encodeURIComponent(url)}`;
         }
@@ -706,24 +706,46 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     } catch (_e) {}
   }, [isMuted, volume, playbackRate, mirrorYt]);
 
+  // Single source of truth for play/pause.
+  // `paused` is sampled ONCE, before the action is taken. The previous version
+  // re-read videoEl.paused AFTER calling play()/pause(); play() is async, so
+  // that read raced the promise and wrote the opposite value into isPlaying
+  // (the button kept showing the play glyph mid-playback). onPlay/onPause are
+  // still the authority that confirms this state once the element settles.
   const togglePlay = useCallback(() => {
     const videoEl = videoRef.current;
     if (!videoEl) return;
     if (videoEl.paused) {
-      videoEl.play().catch(() => {});
-      mirrorYt((v) => { try { v.play().catch(() => {}); } catch (_e) {} });
+      const p = videoEl.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+      mirrorYt((v) => { try { const q = v.play(); if (q && typeof q.catch === 'function') q.catch(() => {}); } catch (_e) {} });
+      setIsPlaying(true);
     } else {
       videoEl.pause();
       mirrorYt((v) => { try { v.pause(); } catch (_e) {} });
+      setIsPlaying(false);
     }
-    setIsPlaying(!videoEl.paused);
   }, [mirrorYt]);
+
+  // Alias for the keyboard / media-key / background-click call sites. This was
+  // referenced but never declared, so those handlers threw a ReferenceError at
+  // runtime (the bundler cannot catch an undefined global at build time).
+  const togglePlayPause = togglePlay;
+
+  // Container-level click: clicking the video or its letterbox toggles playback.
+  // A click that ORIGINATED inside the custom control bar must be ignored here,
+  // otherwise it also bubbles through this container and cancels out the
+  // control's own onClick — a double toggle that made the play button a no-op.
   const handleVideoClick = useCallback((e) => {
     if (e && e.stopPropagation) e.stopPropagation();
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) { video.play().catch(()=>{}); } else { video.pause(); }
-  }, []);
+    const target = e && e.target;
+    if (target && typeof target.closest === 'function') {
+      if (target.closest('.player-controls-overlay')) return;
+      if (target.closest('button')) return;
+      if (target.closest('webview')) return;
+    }
+    togglePlay();
+  }, [togglePlay]);
 
 
   // Pause guard: while paused, controls must stay visible regardless of mouse
@@ -1541,6 +1563,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   useEffect(() => {
     if (isDRM || !streamUrl) return;
 
+    // Electron IPC bridge for this effect. The YouTube manifest-refusal
+    // re-extraction path below calls api.extractStream, but `api` was only ever
+    // declared inside loadStream's try block — so that path threw
+    // "ReferenceError: api is not defined" whenever YT refused a manifest.
+    const api = (typeof window !== 'undefined') ? (window.api || window.electronAPI) : null;
+
     // v1.0.68: a re-run of this effect (quality-enrichment, level-menu rebuild)
     // with the SAME streamUrl MUST NOT tear down an already-working hls.js
     // instance. Every restart destroys the in-flight manifest XHR and burns
@@ -2092,24 +2120,25 @@ if (pendingSeekRef.current) {
     };
   }, []);
 
-  // Handle overlay click (but not on controls)
+  // Background-level click (the letterbox area around the player). Clicks that
+  // started inside the video, the custom controls, a button or a menu are
+  // handled by their own handlers and must not toggle here as well.
   const handleOverlayClick = useCallback((e) => {
-    if (e.target.closest('video')) return;
-    if (e.target.closest('button')) return;
-    if (e.target.closest('webview')) return;
-    if (e.target.closest('.player-controls-overlay')) return;
-    if (e.target.closest('.progress-track')) return;
-    if (e.target.closest('.volume-slider')) return;
-    if (e.target.closest('.popup-menu')) return;
+    const target = e && e.target;
+    if (!target || typeof target.closest !== 'function') return;
+    if (target.closest('video')) return;
+    if (target.closest('button')) return;
+    if (target.closest('webview')) return;
+    if (target.closest('.player-controls-overlay')) return;
+    if (target.closest('.progress-track')) return;
+    if (target.closest('.volume-slider')) return;
+    if (target.closest('.popup-menu')) return;
     togglePlayPause();
   }, [togglePlayPause]);
 
-  const handleContainerClick = useCallback((e) => {
-    if (e.target.closest('.control-bar, .player-controls-overlay, button, .popup-menu, .progress-track')) return;
-    togglePlayPause();
-  }, [togglePlayPause]);
-
-  // Video event handlers
+  // Video event handlers — bound to the media element so React state tracks the
+  // element's real state (previously only onPlay/onPause were wired, which is
+  // why the progress bar, timer and elapsed label stayed frozen at 0:00).
   const handlePlay = useCallback(() => setIsPlaying(true), []);
   const handlePause = useCallback(() => {
     setIsPlaying(false);
@@ -2134,7 +2163,8 @@ if (pendingSeekRef.current) {
     const videoEl = videoRef.current;
     if (!videoEl) return;
     setCurrentTime(videoEl.currentTime);
-    if (videoEl.duration) setDuration(videoEl.duration);
+    const d = videoEl.duration;
+    if (typeof d === 'number' && isFinite(d) && d > 0) setDuration(d);
 
     // Periodically persist position + continue-watching history (throttled to
     // ~5s) so resume AND cloud-progress stay current mid-play (v1.0.61).
@@ -2155,10 +2185,28 @@ if (pendingSeekRef.current) {
 
   const handleDurationChange = useCallback(() => {
     const videoEl = videoRef.current;
-    if (videoEl && videoEl.duration) {
-      setDuration(videoEl.duration);
-    }
+    if (!videoEl) return;
+    const d = videoEl.duration;
+    // Reject the live-stream sentinels (Infinity / NaN / 0) so the progress bar
+    // and elapsed/total labels never render as "0:00 / 0:00" on a finite file.
+    setDuration(typeof d === 'number' && isFinite(d) && d > 0 ? d : 0);
   }, []);
+
+  // Clears the loading spinner once the element can actually render frames.
+  const handleCanPlay = useCallback(() => {
+    setIsLoading(false);
+    setIsExtracting(false);
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+    const d = videoEl.duration;
+    if (typeof d === 'number' && isFinite(d) && d > 0) setDuration(d);
+  }, []);
+
+  // Live/IPTV watchdog disarm: reaching 'canplay' proves the stream is alive,
+  // so the dead-channel timer must be cancelled here.
+  useEffect(() => {
+    if (!isLoading) clearIptvWatch();
+  }, [isLoading, clearIptvWatch]);
 
   const handleError = useCallback((e) => {
     const error = videoRef.current?.error;
@@ -2338,15 +2386,24 @@ if (pendingSeekRef.current) {
             playsInline
             crossOrigin="anonymous"
             referrerPolicy="no-referrer"
-            onClick={togglePlay}
+            onClick={handleVideoClick}
             onLoadedMetadata={(e) => {
-              setDuration(e.target.duration);
+              const d = e && e.target ? e.target.duration : NaN;
+              // Live/unknown-duration streams report Infinity or NaN; guard so
+              // the progress bar and the "0:00 / 0:00" label stay sane.
+              setDuration(typeof d === 'number' && isFinite(d) && d > 0 ? d : 0);
               try { syncPlayerWithAppState(); } catch (_e) {}
             }}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
+            onLoadedData={handleCanPlay}
+            onCanPlay={handleCanPlay}
+            onPlaying={handlePlay}
+            onPlay={handlePlay}
+            onPause={handlePause}
+            onTimeUpdate={handleTimeUpdate}
+            onProgress={handleTimeUpdate}
+            onDurationChange={handleDurationChange}
+            onEnded={handleEnded}
             onError={handleError}
-            volume={isMuted ? 0 : volume}
             muted={isMuted}
           >
             <p className="vjs-no-js">

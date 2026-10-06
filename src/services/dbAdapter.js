@@ -124,7 +124,7 @@ const MEDIA_REQUEST_RE = /\.(mp4|webm|mkv|m4v|mov|avi|mp3|m4a|flac|wav|ogg|aac|t
 export function isDirectMediaUrl(url) {
   const u = String(url || '').trim();
   if (!u) return false;
-  if (/^file:\/\//i.test(u) || /^[a-zA-Z]:[\\\/]/.test(u)) return true;
+  if (/^file:\/\//i.test(u) || /^[a-zA-Z]:[\\/]/.test(u)) return true;
   if (/^(srt|rtmp|rtsp):\/\//i.test(u)) return true;
   if (/^https?:\/\//i.test(u)) {
     const hostAndPath = u.replace(/^https?:\/\//i, '').toLowerCase();
@@ -709,7 +709,7 @@ async function syncWatchHistory(api, report) {
     if (!updatedAt) continue;
     const payload = {
       media_id: String(p && p.id ? p.id : h.id || key),
-      title: String((h.title || h.videoTitle || (p && p.title) || 'Untitled') || '').trim(),
+      title: String(h.title || h.videoTitle || (p && p.title) || 'Untitled').trim(),
       url: String(h.pageUrl || h.videoUrl || '').trim(),
       type: String(h.sourceSite || h.type || 'video').trim(),
       thumbnail: String(h.thumbnailUrl || '').trim(),

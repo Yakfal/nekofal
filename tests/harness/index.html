@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nekofal VideoPlayer harness</title>
+    <!-- Empty data URI: stops Chromium auto-requesting /favicon.ico, which
+         produced two "Failed to load resource: 404" console lines and muddied
+         the clean-console assertion in the playback E2E. -->
+    <link rel="icon" href="data:," />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+      #root { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.jsx"></script>
+  </body>
+</html>

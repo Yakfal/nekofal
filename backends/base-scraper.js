@@ -7,6 +7,64 @@ const { v4: uuidv4 } = require('uuid');
 // ============================================
 
 /**
+ * Stable, deterministic id for a scraped video.
+ * Same (url, title, page) always yields the same id, so re-running a scrape
+ * updates existing entries instead of duplicating them.
+ *
+ * NOTE: do not "optimise" this back into Buffer.from(key).toString('hex')
+ * .substring(0, 12) - that truncates the HEX STRING and keeps only the first 6
+ * bytes, so every video from the same site collided on one id. Hash, then
+ * truncate.
+ */
+function generateVideoId(sourceUrl, title, page) {
+  const key = `${sourceUrl}-${title || 'Untitled'}${page || 1}`;
+  const hash = require('crypto').createHash('sha1').update(key).digest('hex').substring(0, 12);
+  return `vid-${hash}`;
+}
+
+/**
+ * Whether a scraped candidate looks like a playable video.
+ */
+function shouldAddVideo(video) {
+  if (!video || typeof video !== 'object') return false;
+  const url = String(video.videoUrl || video.url || '').trim();
+  if (!url) return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  const title = String(video.title || '').trim();
+  // Reject entries that are clearly ads/placeholders rather than real content.
+  if (!title || title.length < 2) return false;
+  if (/^(ads?|advertisement|sponsored|promo)$/i.test(title)) return false;
+  return true;
+}
+
+/**
+ * Heuristic "is there another page?" check.
+ * Looks for the common pagination affordances, then falls back to section count.
+ */
+function checkHasMorePages($, page) {
+  const nextSelectors = [
+    'a[rel="next"]',
+    '.pagination a.next',
+    '.pager__item--next a',
+    'a.next.page-numbers',
+    '[class*="pagination"] a[class*="next"]',
+    '[class*="pager"] a[class*="next"]',
+  ];
+  for (const sel of nextSelectors) {
+    try {
+      const $next = $(sel).first();
+      if ($next.length && String($next.attr('href') || '').trim()) return true;
+    } catch (_e) { /* keep probing the remaining selectors */ }
+  }
+  // Fallback heuristic: roughly three new sections appear per page.
+  try {
+    return $('section').length > (page * 3);
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
  * Execute a scraping function with error handling and retry logic
  */
 async function executeScraper(params) {

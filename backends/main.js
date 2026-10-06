@@ -251,7 +251,7 @@ async function extractVideos($, pageUrl, baseUrl) {
       const videoUrl = resolveUrl(href, pageUrl);
       
       if (title && (thumbnail || videoUrl)) {
-        const category = extractCategoryFromContext($el, pageDomain);
+        const category = extractCategoryFromContext($el, pageDomain, $);
         videos.push({
           title: title.substring(0, 150),
           thumbnail,
@@ -289,7 +289,7 @@ async function extractVideos($, pageUrl, baseUrl) {
       const videoUrl = resolveUrl(href, pageUrl);
       
       if (title && title.length > 3 && (thumbnail || videoUrl)) {
-        const category = extractCategoryFromContext($el, pageDomain);
+        const category = extractCategoryFromContext($el, pageDomain, $);
         videos.push({
           title: title.substring(0, 150),
           thumbnail: thumbnail ? resolveUrl(thumbnail, pageUrl) : null,
@@ -487,7 +487,7 @@ function parseCatalogElement($, el, pageUrl, pageDomain) {
   }
   
   // Category extraction from element context
-  const category = extractCategoryFromContext($el, pageDomain);
+  const category = extractCategoryFromContext($el, pageDomain, $);
   
   // Content type detection
   const type = detectContentType($el, category, videoUrl);
@@ -539,7 +539,7 @@ function extractThumbnail(img, $el) {
 /**
  * Extract category from element context (parent containers, breadcrumbs, etc.)
  */
-function extractCategoryFromContext($el, pageDomain) {
+function extractCategoryFromContext($el, pageDomain, $) {
   // Check parent containers for category hints
   const contextSelectors = [
     '[class*="category"]',
@@ -570,7 +570,20 @@ function extractCategoryFromContext($el, pageDomain) {
     'Travel', 'Nature', 'History', 'Science', 'Web TV', 'Free TV'
   ];
   
-  const pageText = $('body').text().toLowerCase();
+  // Page-level category indicators.
+  //
+  // This helper only receives an ELEMENT selection, so a bare `$('body')` here
+  // used to throw ReferenceError on every call that fell through the per-element
+  // context selectors - a path all three call sites hit constantly. The Cheerio
+  // document handle is now passed in as the third argument (`$`); the fallback
+  // keeps the helper safe if a future caller omits it, and a missing body must
+  // never abort the whole extraction.
+  let pageText = '';
+  try {
+    pageText = (($ && $('body').first().text()) || '').toLowerCase();
+  } catch (_e) {
+    pageText = '';
+  }
   for (const cat of pageCategories) {
     if (pageText.includes(cat.toLowerCase())) {
       return cat;
@@ -680,13 +693,23 @@ function getDomain(url) {
 }
 
 function generateVideoId(sourceUrl, title, page) {
-  const hash = Buffer.from(`${sourceUrl}-${title}${page}`)
-    .toString('hex')
-    .substring(0, 12);
+  // This used to be:
+  //   Buffer.from(`${sourceUrl}-${title}${page}`).toString('hex').substring(0, 12)
+  // which hex-encodes the UTF-8 bytes and then truncates the HEX STRING - so it
+  // kept only the first 6 bytes, i.e. the leading characters of the page URL.
+  // Every video scraped from the same site therefore hashed to the same id
+  // (all youtube pages -> "vid-687474703a2f" for "http:"), which made distinct
+  // videos collide in favorites/history/dedup.
+  //
+  // Hash the whole key with sha1 instead, then truncate the digest.
+  const key = `${sourceUrl}-${title || 'Untitled'}${page || 1}`;
+  const hash = require('crypto').createHash('sha1').update(key).digest('hex').substring(0, 12);
   return `vid-${hash}`;
 }
 
-function checkHasMorePages($) {
+function checkHasMorePages($, page) {
+  // `page` must be a parameter: it was read as a free variable here, so every
+  // call threw ReferenceError instead of reporting pagination state.
   return $('section').length > (page * 3);
 }
 

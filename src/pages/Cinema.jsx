@@ -144,7 +144,7 @@ function Cinema() {
       ? `collection:(${COLLECTIONS[coll].replace(/\s+/g, '_')})`
       : ALL_COLLECTIONS_QUERY;
     const trimmed = (q || '').trim();
-    const titlePart = trimmed ? ` AND title:${trimmed.replace(/[()\[\]{}\\\"]/g, ' ')}` : '';
+    const titlePart = trimmed ? ` AND title:${trimmed.replace(/[()[\]{}\\"]/g, ' ')}` : '';
     return `${collPart} AND mediatype:movies${titlePart}`;
   }, []);
 

@@ -7495,6 +7495,7 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, p
     // Deprecated v1.0.1.0.47: hentaihaven's WP loop nav/footer links masquerade as
     // post cards and ad-hijacked overlays keep breaking the parse; the site is
     // pruned from the active suite (see scraper-suite pruning note below).
+    // eslint-disable-next-line no-constant-condition
     if (false && /^https?:\/\//i.test(target) && /(^|\.)hentaihaven\./i.test(new URL(target).hostname)) {
       // Pruned from the active suite in v1.0.1.0.47 — branch disabled.
     }
@@ -7503,6 +7504,7 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, p
     // ad-hijacked .post-item overlays and its stealth DOM work was getting flaky;
     // the site is pruned from the active suite alongside hentaihaven/zhentube/
     // uncensored-hentai (see scraper-suite pruning note).
+    // eslint-disable-next-line no-constant-condition
     if (false && /^https?:\/\//i.test(target) && /(^|\.)hentaimama\./i.test(new URL(target).hostname)) {
       // Pruned from the active suite in v1.0.1.0.47 — branch disabled.
     }
@@ -7588,8 +7590,16 @@ ipcMain.handle('web:search', async (event, { mode, query, siteUrl, count = 25, p
   } catch (err) {
     console.error('[web:search] error:', err.message);
     // yt-dlp threw mid-search: fall back to the server-side gateway before failing.
+    // `q` and `gatewayBase` are declared INSIDE the try block above, so they are
+    // not in scope in this catch (which is a sibling block, not a nested one).
+    // They must be rebuilt from the IPC params, otherwise this fallback threw
+    // ReferenceError, got swallowed by the catch below, and a yt-dlp failure
+    // silently never retried through the gateway at all.
     try {
-      const gatewayResult = await gatewayVideoSearch(gatewayBase, { query: q, mode, siteUrl, count });
+      const gatewayResult = await gatewayVideoSearch(
+        resolveGatewayBaseUrl(gatewayUrl),
+        { query: String(query || '').trim(), mode, siteUrl, count }
+      );
       if (gatewayResult.success) return gatewayResult;
     } catch (_gwErr) { /* keep the original error */ }
     return { success: false, error: 'Search failed: ' + err.message, details: err.message };
@@ -7690,6 +7700,11 @@ ipcMain.handle('web:addVideos', async (event, { videos, tags }) => {
     const silentScraperSync = async () => {
       try {
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          /* eslint-disable no-undef --
+           * The function below is serialised with .toString() and evaluated in
+           * the RENDERER by executeJavaScript, so `window` genuinely is in scope
+           * here even though this file is main-process code.
+           */
           mainWindow.webContents.executeJavaScript(
             '(' + function () {
               const run = async () => {
@@ -7700,6 +7715,7 @@ ipcMain.handle('web:addVideos', async (event, { videos, tags }) => {
               return run();
             }.toString() + ')()'
           ).catch(() => {});
+          /* eslint-enable no-undef */
         }
       } catch (_e) {}
     };
