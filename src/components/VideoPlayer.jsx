@@ -772,16 +772,23 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // Toggle play/pause
   // v1.0.71: ensure UI <-> media are in sync at attach time
   const syncPlayerWithAppState = useCallback(() => {
-    const videoEl = videoRef.current;
+    let videoEl = videoRef.current;
     if (!videoEl) return;
+    const ytLive = ytLiveElRef.current;
+    if (ytLive && ytLive !== videoEl) {
+      const liveAdv = (ytLive.currentTime || 0) > (videoEl.currentTime || 0) + 0.05;
+      const liveHasDur = typeof ytLive.duration === 'number' && isFinite(ytLive.duration) && ytLive.duration > 0;
+      const elHasDur = typeof videoEl.duration === 'number' && isFinite(videoEl.duration) && videoEl.duration > 0;
+      if (liveAdv || (liveHasDur && !elHasDur) || ytLive.currentTime >= 0.5) {
+        videoEl = ytLive;
+      }
+    }
     try {
       const activeSpeed = typeof playbackRate === 'number' && !isNaN(playbackRate) ? playbackRate : 1;
       // v1.0.88: prefer the remembered volume over a not-yet-applied element
       // default. Reading `videoEl.volume` here (as before) latched 1.0 on a fresh
       // element and then persisted it, permanently destroying the user's
-      // choice. NOTE the local was renamed to `videoEl` because the old name
-      // shadowed the `video` prop, so `video.startVolume` silently resolved to
-      // undefined on the media element.
+      // choice.
       const remembered = (typeof video?.startVolume === 'number')
         ? clampVolume(video.startVolume)
         : (readStoredVolume() !== null ? readStoredVolume() : clampVolume(volume));
@@ -809,7 +816,11 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // (the button kept showing the play glyph mid-playback). onPlay/onPause are
   // still the authority that confirms this state once the element settles.
   const togglePlay = useCallback(() => {
-    const videoEl = videoRef.current;
+    let videoEl = videoRef.current;
+    const ytLive = ytLiveElRef.current;
+    if (ytLive && (!videoEl || ytLive.currentTime > (videoEl.currentTime || 0) + 0.05 || (!videoEl.duration && ytLive.duration))) {
+      videoEl = ytLive;
+    }
     if (!videoEl) return;
     if (videoEl.paused) {
       const p = videoEl.play();
@@ -824,31 +835,37 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   }, [mirrorYt]);
 
   // v1.0.88 — POLLING FALLBACK for the timer / progress bar / duration.
-  // `timeupdate` is unreliable for the streams that actually ship:
-  //   * Chromium coalesces it to ~4 Hz and SKIPS frames entirely while the
-  //     compositor is busy, so an HLS/YouTube segment fetch can starve it.
-  //   * hls.js attaches/detaches media listeners across quality switches, so
-  //     events raised during a swap are lost.
-  //   * A backgrounded/occluded window throttles it further.
-  // The symptom was a video visibly playing while the UI stayed at "0:00 / 0:00"
-  // with a 0% progress bar. Polling the element directly while playing is the
-  // authority; the events are just an optimisation.
+  // For YouTube the actual playing element is a dynamically created freshVid
+  // (stored in ytLiveElRef.current); when that element is advancing but the
+  // React-bound <video> node is hidden/stuck, the UI never updates.
   useEffect(() => {
     if (!isPlaying) return undefined;
     const id = setInterval(() => {
-      const el = videoRef.current;
+      let el = videoRef.current;
       if (!el) return;
+      const ytLive = ytLiveElRef.current;
+      if (ytLive && ytLive !== el) {
+        const liveAdv = (ytLive.currentTime || 0) > (el.currentTime || 0) + 0.05;
+        const liveHasDur = typeof ytLive.duration === 'number' && isFinite(ytLive.duration) && ytLive.duration > 0;
+        const elHasDur = typeof el.duration === 'number' && isFinite(el.duration) && el.duration > 0;
+        if (liveAdv || (liveHasDur && !elHasDur) || ytLive.currentTime >= 0.5) {
+          el = ytLive;
+        }
+      }
       const t = el.currentTime;
       if (typeof t === 'number' && isFinite(t) && t >= 0) {
-        setCurrentTime((prev) => (Math.abs(prev - t) > 0.04 ? t : prev));
+        setCurrentTime((prev) => (Math.abs(prev - t) > 0.01 ? t : prev));
       }
       const d = el.duration;
       if (typeof d === 'number' && isFinite(d) && d > 0) {
         setDuration((prev) => (prev === d ? prev : d));
       }
+      if (ytLive && ytLive !== el && ytLive.paused !== isPaused) {
+        setIsPlaying(!ytLive.paused);
+      }
     }, TIME_POLL_MS);
     return () => clearInterval(id);
-  }, [isPlaying]);
+  }, [isPlaying, isPaused]);
 
   // v1.0.88 — ONE debounced click handler for the whole player surface.
   // (Defined further down, right after `toggleFullscreen`, because it depends
