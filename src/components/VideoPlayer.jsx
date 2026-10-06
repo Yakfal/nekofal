@@ -718,6 +718,13 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }
     setIsPlaying(!videoEl.paused);
   }, [mirrorYt]);
+  const handleVideoClick = useCallback((e) => {
+    if (e && e.stopPropagation) e.stopPropagation();
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) { video.play().catch(()=>{}); } else { video.pause(); }
+  }, []);
+
 
   // Pause guard: while paused, controls must stay visible regardless of mouse
   // activity — clear any pending hide timer and force them on.
