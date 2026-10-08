@@ -266,6 +266,19 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   const syncTimerRef = useRef(null);
   const ytLiveElRef = useRef(null); // reserved: legacy YT fresh-element probe, unused in v1.0.68
   const mirrorYt = useCallback((fn) => { try { if (ytLiveElRef.current && typeof fn === "function") fn(ytLiveElRef.current); } catch (_e) {} }, []);
+
+  // --- REAL-TIME ACTIVE MEDIA DOM BRIDGE ---
+  const getActiveMediaElement = () => {
+    if (ytLiveElRef && ytLiveElRef.current && (!ytLiveElRef.current.paused || ytLiveElRef.current.currentTime > 0)) {
+      return ytLiveElRef.current;
+    }
+    if (videoRef && videoRef.current && (!videoRef.current.paused || videoRef.current.currentTime > 0)) {
+      return videoRef.current;
+    }
+    const domVideos = Array.from(document.querySelectorAll('video'));
+    const active = domVideos.find(v => !v.paused || v.currentTime > 0);
+    return active || (videoRef ? videoRef.current : null) || (ytLiveElRef ? ytLiveElRef.current : null);
+  };
   const ytReExtractRef = useRef(0);
   const ytReloadRef = useRef(0); // v1.0.68: bounded fresh-hls-instance retries for YT master refusals
   const ytParsedRef = useRef(false); // v1.0.68: true once the current stream's hls parsed its master (restart guard)
@@ -815,57 +828,48 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
   // that read raced the promise and wrote the opposite value into isPlaying
   // (the button kept showing the play glyph mid-playback). onPlay/onPause are
   // still the authority that confirms this state once the element settles.
-  const togglePlay = useCallback(() => {
-    let videoEl = videoRef.current;
-    const ytLive = ytLiveElRef.current;
-    if (ytLive && (!videoEl || ytLive.currentTime > (videoEl.currentTime || 0) + 0.05 || (!videoEl.duration && ytLive.duration))) {
-      videoEl = ytLive;
-    }
-    if (!videoEl) return;
-    if (videoEl.paused) {
-      const p = videoEl.play();
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-      mirrorYt((v) => { try { const q = v.play(); if (q && typeof q.catch === 'function') q.catch(() => {}); } catch (_e) {} });
-      setIsPlaying(true);
+  const togglePlay = useCallback((e) => {
+    if (e && e.stopPropagation) e.stopPropagation();
+    const activeEl = getActiveMediaElement();
+    if (!activeEl) return;
+
+    if (activeEl.paused) {
+      activeEl.play().catch(console.error);
     } else {
-      videoEl.pause();
-      mirrorYt((v) => { try { v.pause(); } catch (_e) {} });
-      setIsPlaying(false);
+      activeEl.pause();
     }
-  }, [mirrorYt]);
+  }, []);
 
   // v1.0.88 — POLLING FALLBACK for the timer / progress bar / duration.
   // For YouTube the actual playing element is a dynamically created freshVid
   // (stored in ytLiveElRef.current); when that element is advancing but the
   // React-bound <video> node is hidden/stuck, the UI never updates.
   useEffect(() => {
-    if (!isPlaying) return undefined;
-    const id = setInterval(() => {
-      let el = videoRef.current;
-      if (!el) return;
-      const ytLive = ytLiveElRef.current;
-      if (ytLive && ytLive !== el) {
-        const liveAdv = (ytLive.currentTime || 0) > (el.currentTime || 0) + 0.05;
-        const liveHasDur = typeof ytLive.duration === 'number' && isFinite(ytLive.duration) && ytLive.duration > 0;
-        const elHasDur = typeof el.duration === 'number' && isFinite(el.duration) && el.duration > 0;
-        if (liveAdv || (liveHasDur && !elHasDur) || ytLive.currentTime >= 0.5) {
-          el = ytLive;
-        }
+    const syncInterval = setInterval(() => {
+      const activeEl = getActiveMediaElement();
+      if (!activeEl) return;
+
+      // 1. Force Volume Preset Retention
+      const savedVol = parseFloat(localStorage.getItem('nekofal_user_volume') ?? '1.0');
+      if (Math.abs(activeEl.volume - savedVol) > 0.01) {
+        activeEl.volume = savedVol;
       }
-      const t = el.currentTime;
-      if (typeof t === 'number' && isFinite(t) && t >= 0) {
-        setCurrentTime((prev) => (Math.abs(prev - t) > 0.01 ? t : prev));
+
+      // 2. Sync Play/Pause Button Icon State
+      const isCurrentlyPlaying = !activeEl.paused && !activeEl.ended && activeEl.readyState > 1;
+      setIsPlaying(isCurrentlyPlaying);
+
+      // 3. Sync Current Time & Duration
+      if (activeEl.duration && !isNaN(activeEl.duration) && activeEl.duration > 0) {
+        setDuration(activeEl.duration);
       }
-      const d = el.duration;
-      if (typeof d === 'number' && isFinite(d) && d > 0) {
-        setDuration((prev) => (prev === d ? prev : d));
+      if (typeof activeEl.currentTime === 'number') {
+        setCurrentTime(activeEl.currentTime);
       }
-      if (ytLive && ytLive !== el && ytLive.paused !== isPaused) {
-        setIsPlaying(!ytLive.paused);
-      }
-    }, TIME_POLL_MS);
-    return () => clearInterval(id);
-  }, [isPlaying, isPaused]);
+    }, 200);
+
+    return () => clearInterval(syncInterval);
+  }, [currentStreamUrl]);
 
   // v1.0.88 — ONE debounced click handler for the whole player surface.
   // (Defined further down, right after `toggleFullscreen`, because it depends
