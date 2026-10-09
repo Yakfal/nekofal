@@ -869,7 +869,7 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
     }, 200);
 
     return () => clearInterval(syncInterval);
-  }, [currentStreamUrl]);
+  }, []);
 
   // v1.0.88 — ONE debounced click handler for the whole player surface.
   // (Defined further down, right after `toggleFullscreen`, because it depends
