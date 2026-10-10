@@ -866,10 +866,16 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       if (typeof activeEl.currentTime === 'number') {
         setCurrentTime(activeEl.currentTime);
       }
+      // Check for ended state or near end to trigger next video
+      if (activeEl.ended || (activeEl.duration > 0 && activeEl.currentTime >= activeEl.duration - 0.3)) {
+        if (typeof onPlayNext === 'function') {
+          onPlayNext();
+        }
+      }
     }, 200);
 
     return () => clearInterval(syncInterval);
-  }, []);
+  }, [onPlayNext]);
 
   // v1.0.88 — ONE debounced click handler for the whole player surface.
   // (Defined further down, right after `toggleFullscreen`, because it depends
@@ -1132,16 +1138,15 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
 
   // Progress bar click to seek
   const handleProgressClick = useCallback((e) => {
-    const videoEl = videoRef.current;
-    if (videoEl && videoEl.duration && progressRef.current) {
+    const activeEl = getActiveMediaElement();
+    if (activeEl && activeEl.duration && progressRef.current) {
       const rect = progressRef.current.getBoundingClientRect();
       const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const t = percent * videoEl.duration;
-      videoEl.currentTime = t;
-      mirrorYt((v) => { try { v.currentTime = t; } catch (_e) {} });
+      const t = percent * activeEl.duration;
+      activeEl.currentTime = t;
       setCurrentTime(t);
     }
-  }, [mirrorYt]);
+  }, []);
 
   // Switch the active yt-dlp stream to a specific format (non-HLS videos) by
   // re-extracting that exact format from the source page. Accepts a format_id
