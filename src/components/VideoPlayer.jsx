@@ -177,7 +177,7 @@ function dedupeQualityRows(raw) {
   );
 }
 
-function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
+function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo, onPlayNext }) {
   const { setMediaSession } = usePlayback();
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
@@ -868,9 +868,12 @@ function VideoPlayer({ video, onClose, channelList, channelIndex, onZapTo }) {
       }
       // Check for ended state or near end to trigger next video
       if (activeEl.ended || (activeEl.duration > 0 && activeEl.currentTime >= activeEl.duration - 0.3)) {
-        if (typeof onPlayNext === 'function') {
-          onPlayNext();
-        }
+        try {
+          const nextHandler = onPlayNext || (typeof window !== 'undefined' && window.usePlayback && window.usePlayback()?.playNext);
+          if (typeof nextHandler === 'function') {
+            nextHandler();
+          }
+        } catch (_e) {}
       }
     }, 200);
 
